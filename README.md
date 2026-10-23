@@ -14,7 +14,7 @@ DSH 是唯一理解、选择与生成入口。Python 维护实际身份、事件
 
 ## 配置与数据
 
-复制 `config.example.toml` 为 `config.toml`，填写主人账号、NapCat 连接和模型凭据。安装 Python 依赖使用 `.venv\Scripts\python.exe -m pip install -r requirements.txt`。本机 Node、DSH 工作副本及独立 home 路径见配置。桥通过受支持的 `dsh --profile sdk` 启动，桌面 DSH 的会话、插件和凭据不作为 Bot 数据清理目标。
+复制 `config.example.toml` 为 `config.toml`，填写主人账号、NapCat 连接和模型凭据。仓库不含人格文件：复制 `persona.example.md` 为 `persona.md` 后按自己的角色填写。安装 Python 依赖使用 `.venv\Scripts\python.exe -m pip install -r requirements.txt`。本机 Node、DSH 工作副本及独立 home 路径见配置。桥通过受支持的 `dsh --profile sdk` 启动，桌面 DSH 的会话、插件和凭据不作为 Bot 数据清理目标。
 
 `persona.md` 是唯一人格来源，使用 `persona:public` / `persona:private` 注释区块区分公共性格和专属私人内容。原有未分区的私人文件在首次启动时保守放进私密区，原公共内容保留为公共区。其他私聊和群聊使用自动投影的 `personas/public.md`，其源 hash 随普通性格和兴趣更新，不再手工维护第二份人格。可用 `target=persona_public` 修改公共部分。配置允许的群无需 @ 门槛；实际账号决定身份，私人记忆不会预先加载到群上下文。群工具默认关闭，可通过 `public_tools` 明确开放。
 
