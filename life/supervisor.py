@@ -14,6 +14,9 @@ import subprocess
 import sys
 import time
 import uuid
+import logging
+
+log = logging.getLogger(__name__)
 
 
 class ProcessTree:
@@ -112,9 +115,11 @@ class HostSupervisor:
         self.tree = ProcessTree([sys.executable, "-B", str(self.controller.source / "bot.py"),
                                  "--config", str(self.config)], cwd=self.controller.source, env=env)
         self.started = time.monotonic()
+        log.info('Bot 已启动 pid=%s',self.tree.process.pid)
 
     def stop(self):
         if self.tree is not None:
+            log.info('停止 Bot 进程树 pid=%s exit_code=%s',self.tree.process.pid,self.tree.process.poll())
             self.tree.stop()
             self.tree = None
 
@@ -179,11 +184,18 @@ class HostSupervisor:
             if self.tree is not None:
                 code = self.tree.process.poll()
                 ran = time.monotonic() - self.started
+                log.error('Bot 健康检查失败 pid=%s exit_code=%s uptime=%.1fs reason=%s',
+                          self.tree.process.pid,code,ran,'process_exited' if code is not None else 'heartbeat_or_cognition_unhealthy')
                 self.failures = 0 if code == 42 or ran >= 60 else self.failures + 1
                 self.stop()
-                self.retry_after = time.monotonic() + min(30, 2 ** min(self.failures, 5))
+                self.retry_after = time.monotonic() + (60 if self.failures>=3 else min(30, 2 ** min(self.failures, 5)))
             if self.failures >= 3:
-                return "blocked"
+                # Do not permanently abandon a recoverable runtime after three
+                # quick failures. Back off, preserving a stop opportunity.
+                if time.monotonic()<self.retry_after:
+                    return "blocked"
+                log.warning('连续启动失败后的冷却已结束，重新尝试启动 Bot')
+                self.failures = 0
             if time.monotonic() >= self.retry_after:
                 self.start()
             return "restarting"

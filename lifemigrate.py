@@ -29,7 +29,7 @@ def main() -> int:
     ap.add_argument("--adopt-peer", type=int, default=0,
                     help="把该 peer 的 legacy_unknown 数据归到 --conversation")
     ap.add_argument("--conversation", default="",
-                    help="目标会话键，例如 qq:private:763282103")
+                    help="目标会话键，例如 qq:private:123456789")
     ap.add_argument("--confirm-legacy", action="store_true",
                     help="把该会话里 legacy_unverified 候选记忆升为 active")
     args = ap.parse_args()

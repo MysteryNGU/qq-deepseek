@@ -77,9 +77,11 @@ def content_blocks(text, mode='auto', *, paste_threshold=DEFAULT_PASTE_THRESHOLD
     text = (text or '').replace('\r\n', '\n').replace('\r', '\n')
     if not text.strip():
         return []
-    if (mode in {'artifact', 'single'} or len(text.strip()) >= paste_threshold
+    if (mode == 'artifact' or len(text.strip()) >= paste_threshold
             or any(protected(line) for line in text.split('\n'))):
         return [Bubble(text, 'artifact')]
+    if mode == 'single':
+        return [Bubble(text)]
     return [Bubble(line.strip()) for line in text.split('\n') if line.strip()]
 
 
@@ -139,7 +141,7 @@ def expression_parts(parts, paste_threshold=DEFAULT_PASTE_THRESHOLD):
             return
         text = '\n'.join(str(part.get('text', '')) for part in pending)
         if (len(text.strip()) >= paste_threshold
-                or any(part.get('mode') in {'artifact', 'single'} for part in pending)
+                or any(part.get('mode') == 'artifact' for part in pending)
                 or any(protected(line) for line in text.splitlines())):
             result.append(dict(kind='text', text=text, mode='artifact'))
         else:

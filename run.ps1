@@ -53,6 +53,14 @@ if (Test-Path $adb) {
 # ---------- 2. NapCat ----------
 Say ''
 Say '[2/3] QQ 协议端（NapCat）' Cyan
+$qrLoginHelper = Join-Path $root 'tools\napcat-login.ps1'
+if ((Test-Path $napdir) -and (Test-Path $qrLoginHelper)) {
+    $qrPowerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Start-Process -FilePath $qrPowerShell -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$qrLoginHelper`"",
+        '-NapCatDirectory', "`"$napdir`"", '-OwnerProcessId', "$PID"
+    )
+}
 if (Port-Up 3001) {
     Say '  已经在跑，跳过' Green
 } else {
@@ -61,7 +69,7 @@ if (Port-Up 3001) {
         Read-Host '按回车退出'
         exit 1
     }
-    Say '  正在启动…（会开一个最小化的窗口，那里能看到二维码）'
+    Say '  正在启动…二维码会自动弹窗，扫码并在手机确认后自动关闭'
     Start-Process -FilePath 'cmd.exe' `
         -ArgumentList '/c', "cd /d `"$napdir`" && napcat.bat" `
         -WindowStyle Minimized
@@ -74,13 +82,12 @@ if (Port-Up 3001) {
         Say '  已启动（3001 端口通了）' Green
     } else {
         Say '  还没起来：大概率要扫码登录' Yellow
-        Say '  去看那个最小化的窗口，或者开 http://127.0.0.1:6099/webui' Yellow
-        Read-Host '  扫码完按回车继续（也可以先跳过，起来再继续）'
-        for ($i = 0; $i -lt 60; $i++) {
-            if (Port-Up 3001) { break }
+        Say '  等待扫码登录，成功后会自动继续；Ctrl+C 可取消' Yellow
+        Say '  若图片没有弹出，可打开 http://127.0.0.1:6099/webui' Yellow
+        while (-not (Port-Up 3001)) {
             Start-Sleep -Seconds 1
         }
-        if (Port-Up 3001) { Say '  连上了' Green } else { Say '  还是没通，先启动 bot，它自己会一直重试' Yellow }
+        Say '  连上了' Green
     }
 }
 
@@ -99,7 +106,7 @@ if ($running -gt 0) {
 }
 
 if ($NoBot) { Say '（-NoBot：只起服务，不起 bot）' Yellow; Read-Host '按回车关闭'; exit 0 }
-& $py supervise.py
+& (Join-Path $root 'tools\bot-watchdog.ps1') -Root $root -Python $py
 
 Say ''
 Say 'bot 已退出。' Yellow

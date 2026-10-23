@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -63,7 +64,7 @@ def validate_data_compatibility(source, config=None, *, database=None):
 
 
 def say(msg: str) -> None:
-    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [pid={os.getpid()}] {msg}"
     print(line, flush=True)
     try:
         LOGTAIL.parent.mkdir(exist_ok=True)
@@ -103,14 +104,14 @@ def drop_lock() -> None:
         pass
 
 
-def main() -> None:
+def main():
     if not PY.exists():
         say(f"找不到 python：{PY}")
-        return
+        return 1
     LOCK.parent.mkdir(parents=True,exist_ok=True)
     if already_running():
         say("已经有一套在跑了，这次不重复启动。要重启请先「停止.bat」再「一键启动.bat」。")
-        return
+        return 0
     say(f"看守启动，PID {os.getpid()}")
     try:
         (ROOT / "data" / "run_mode.txt").write_text("supervise", "utf-8")
@@ -118,21 +119,36 @@ def main() -> None:
         pass
     # The small singleton bootstrap stays alive while the controller itself can upgrade.
     from life.supervisor import ProcessTree
+    failures = 0
     while True:
         validate_data_compatibility(ROOT,ROOT/'config.toml')
+        started = time.monotonic()
         tree = ProcessTree([str(PY),'-B',str(ROOT/'lifesupervisor.py')],cwd=ROOT,env=dict(os.environ))
+        say(f'发布控制器已启动，PID {tree.process.pid}')
         try:
             code = tree.process.wait()
         finally:
             tree.stop()
-        if code!=42:
-            break
-        say('发布控制器代码已更新，重新加载。')
-    return
+        say(f'发布控制器已退出，PID {tree.process.pid}，exit_code={code}，运行 {time.monotonic()-started:.1f} 秒')
+        if (ROOT/'data/life-control/stop.requested').exists() or code==0:
+            return 0
+        if code==42:
+            failures = 0
+            say('发布控制器代码已更新，重新加载。')
+            continue
+        failures = 1 if time.monotonic()-started>=60 else failures+1
+        delay = min(30,2**min(failures,5))
+        say(f'发布控制器异常退出，{delay} 秒后恢复；详细异常见 supervisor-console.log。')
+        time.sleep(delay)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        say('收到主动中止，停止看守。')
+    except Exception:
+        say('看守异常退出：\n'+traceback.format_exc())
+        raise SystemExit(1)
     finally:
         drop_lock()

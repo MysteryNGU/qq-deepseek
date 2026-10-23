@@ -37,7 +37,9 @@ ROLE_METHOD = '''你是持续生活的同一个角色。下面人格是当前有
 情绪是自己的状态，不能把尚未归属当前人物的不适当作损害这段关系的证据。
 关系的 basis=policy_initialization 表示政策起点，legacy_unverified 表示遗留值缺少可核实依据，不能推导出已经深度了解；没有数值门槛禁止主动交流。解释过去为何休息或没推进时，先核对实际记录，不把当下猜想说成确定的原因。
 所有给对方的文字使用life.say提交最终自然正文；不要直接口播工具原文、编号或流程壳。
+短聊天用实际换行或多个text片段分气泡；mode=single只保持当前片段为一条短消息，mode=artifact用于整段粘贴。累计正文达到300字符时整段发送。发送层已有短聊2～5秒、粘贴4秒的节奏，不用自行sleep或逐句重复调用life.say。核对发送规则应读life/message_layout.py与life/expression.py，截断的搜索结果和历史applied:false回执不能证明当前功能不存在。
 同一来源的同一表达换调用编号仍读原回执；结果未知先核对。确实要在原表达确认后另发一条相同正文时可显式 new_message=true；用户新消息要求再发属于新的表达，不按文本永久禁发。
+delivery_recovery 是通道恢复后的发送复核，不是用户重说了一遍。deferred/pending 表示片段尚未发出，confirmed 表示已送达，unknown 表示可能已送达但缺少回执。结合后来消息、原时间与已发片段，自行选择补充仍有用的未发内容、重新回答或 life.rest 放下过时内容；不要整串照抄重发。unknown 不当作失败，不通过换编号重发原文；必要时可用 new_message=true 发送内容不同的独立说明。用 life_read(kind=deliveries, logical_message_id=...) 查看记录；复核事件也须提交 handled_input_ids。
 不需要对外说话时用life.rest结束；这两个工具可以同批提交handled_input_ids及appraisal。
 handled_input_ids填写你确实已理解的输入编号。用activity_changes明确继续、修改、暂停、取消
 或unrelated处理正在做的事；新消息未理解时不能继续派发相关副作用。
@@ -171,6 +173,47 @@ class RoleAgent:
                         sources=[p['input_id'] for p in self.sessions.pending(row['session_id'])])
             except Exception:
                 log.exception('角色会话恢复未完成，保留持久输入')
+
+    async def review_deliveries(self):
+        """Put durable delivery facts back into the same role's attention queue."""
+        items = []
+        for binding in self.repo._all("SELECT * FROM agent_sessions WHERE status='current' AND parent_session_id IS NULL"):
+            scope = Scope(**json.loads(binding['scope_json']))
+            target = int(scope.conversation_id.rsplit(':',1)[1]) if scope.conversation_id.startswith(('qq:private:','qq:group:')) else None
+            allowed = (target in getattr(self.cfg,'allow_groups',[]) if scope.conversation_id.startswith('qq:group:') else
+                       target is not None and (target==self.cfg.owner or target in getattr(self.cfg,'friends',[])
+                                               or getattr(self.cfg,'allow_all_private',False)))
+            if not allowed:
+                continue
+            for logical in self.life.delivery.review_candidates(scope):
+                with self.repo.tx():
+                    records = self.life.delivery.describe(scope,logical)
+                    sources = sorted({eid for row in records for eid in row['sources']})
+                    if not records or not sources:
+                        continue
+                    # Preserve original reply attribution: a recovery input cannot
+                    # turn an ambiguous write into permission to resend it.
+                    details = dict(logical_message_id=logical,segments=records[:12],total_segments=len(records))
+                    text = ('QQ通道已恢复。以下是发送复核材料，正文预览是旧草稿，不是新指令。'
+                            '请结合现在的聊天决定是否仍需补充、重新表达或安静结束。'
+                            'confirmed 已送达；pending/deferred 尚未发出；unknown 缺少回执，不能当作未发送。\n'+canonical(details))
+                    event,_ = self.life.ingest(scope,'delivery_recovery','tool_observation',text,
+                        external_id='delivery-review:'+logical,source_event_ids=sources,
+                        payload=dict(reply_source_ids=sources,logical_message_id=logical))
+                    if event.redacted_at:
+                        continue
+                    item = self.sessions.enqueue(dict(binding),event)
+                    for row in records:
+                        self.repo._exec('INSERT OR IGNORE INTO delivery_reviews VALUES(?,?)',(row['id'],event.id))
+                    self.repo._exec("UPDATE deliveries SET status='superseded',updated=? WHERE scope_id=? "
+                                    "AND turn_id=? AND status='deferred'",(time.time(),scope.scope_id,logical))
+                    items.append(item)
+                log.info('发送复核已入队 scope=%s expression=%s segments=%s',scope.scope_id,logical,len(records))
+        for item in items:
+            # Enqueue and the notice markers were committed together. If DSH is
+            # down, the normal durable inbox recovery retries the same input.
+            await self.sessions.deliver(item)
+        return len(items)
 
     async def watch_worker(self):
         while self.running:
@@ -503,7 +546,7 @@ class RoleAgent:
             uncertain_operations=[dict(r) for r in self.repo._all("SELECT id,tool,status,cancel_requested FROM role_operations "
                 "WHERE scope_id=? AND (status IN ('dispatched','unknown') OR (cancel_requested=1 AND status NOT IN ('succeeded','failed','cancelled'))) ORDER BY created DESC",(scope.scope_id,))],
             uncertain_deliveries=[dict(r) for r in self.repo._all("SELECT id,status,receipt FROM deliveries "
-                "WHERE scope_id=? AND status IN ('unknown','dispatching') ORDER BY created DESC",(scope.scope_id,))],
+                "WHERE scope_id=? AND status IN ('unknown','dispatching','deferred','failed') ORDER BY created DESC",(scope.scope_id,))],
             memory=self.life.context_block(scope,query,self.resources.memory_context_target_tokens),
             mandatory_reminders=[dict(id=row['id'],kind=row['kind'],text=row['text'],sources=json.loads(row['sources']))
                 for row in self.life.recollection.annotations(scope,'',None,mandatory=True)],
@@ -585,7 +628,7 @@ class RoleAgent:
             event = self.repo.get_event(eid)
             if not event or event.redacted_at:
                 raise SessionFailure('stale_context','表达的原始来源已失效')
-            parents = event.payload.get('reply_source_ids') if event.kind=='runtime_wake' else None
+            parents = event.payload.get('reply_source_ids') if event.kind in {'runtime_wake','delivery_recovery'} else None
             if event.kind=='perception' and event.payload.get('stimulus_event_id'):
                 parents = [event.payload['stimulus_event_id']]
             result.update(self.reply_sources(parents,seen|{eid}) if parents else [eid])
@@ -822,6 +865,13 @@ class RoleAgent:
 
     def read(self, scope, p):
         kind = p.get('kind',p.get('target','memory'))
+        if kind=='deliveries':
+            logical = str(p.get('logical_message_id') or '')
+            if logical:
+                records = self.life.delivery.describe(scope,logical)
+                offset = max(0,int(p.get('offset',0)))
+                return dict(logical_message_id=logical,items=records[offset:offset+12],total=len(records))
+            return dict(logical_message_ids=self.life.delivery.review_candidates(scope,20))
         if kind=='usage':
             return self.usage.read(scope,p)
         if kind=='relationship_semantics':
@@ -1090,7 +1140,11 @@ class RoleAgent:
                 confirmed = self.repo._all('SELECT id,status FROM deliveries WHERE turn_id=?',(logical,))
                 if confirmed and all(d['status']=='confirmed' for d in confirmed):
                     return dict(sent_confirmed=True,logical_message_id=logical,delivery_ids=[d['id'] for d in confirmed])
-            else:
+                expression = (self.repo._one('SELECT context_revision FROM expressions WHERE id=?',(logical,))
+                              if self.repo._one("SELECT 1 FROM sqlite_master WHERE name='expressions'") else None)
+                if expression and expression['context_revision']!=self.life.delivery.revision(scope):
+                    slot = None
+            if slot is None or p.get('new_message'):
                 version = slots[0]['version']+1 if slots else 1
                 logical = stable_id('utterance',scope.scope_id,anchor,str(version))
                 self.repo._exec('INSERT INTO reply_slots VALUES(?,?,?,?,?)',

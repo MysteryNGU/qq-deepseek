@@ -6,6 +6,16 @@
 #   它还在抢同一个聊天窗口 —— 表现出来就是「每句话回两遍」。
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Write-Host '正在停止…' -ForegroundColor Cyan
+# Stop intent must precede killing Python; otherwise the outer watchdog would
+# correctly interpret the terminated supervisor as a crash and restart it.
+$control = Join-Path $root 'data\life-control'
+try {
+    [IO.Directory]::CreateDirectory($control) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $control 'stop.requested'), (Get-Date).ToString('o'))
+} catch {
+    Write-Error "无法保存主动停止标记，停止操作已取消，避免看守立即重新启动：$($_.Exception.Message)"
+    exit 1
+}
 
 $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
          Where-Object { $_.CommandLine -like '*bot.py*' -or $_.CommandLine -like '*supervise.py*' }

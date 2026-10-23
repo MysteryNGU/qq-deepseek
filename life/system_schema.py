@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS deliveries(
  policy_epoch INTEGER NOT NULL, receipt TEXT NOT NULL DEFAULT '{}',
  sources TEXT NOT NULL DEFAULT '[]', created REAL NOT NULL, updated REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS delivery_scope ON deliveries(scope_id,status);
+CREATE TABLE IF NOT EXISTS delivery_reviews(
+ delivery_id TEXT PRIMARY KEY, event_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS conversation_revisions(
  scope_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS interests(

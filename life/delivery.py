@@ -45,6 +45,10 @@ SEND_ACTIONS = {"send_private_msg", "send_group_msg", "send_msg",
                 "upload_private_file", "upload_group_file"}
 
 
+class DeliveryNotSent(ConnectionError):
+    """The transport can prove it never attempted to write this request."""
+
+
 def recipient(action: str, params: dict) -> str:
     if "group_id" in params:
         return "qq:group:" + str(int(params["group_id"]))
@@ -163,7 +167,44 @@ class DeliveryService:
 
     def recover(self):
         with self.repo.tx():
+            # These were prepared by a previous process but never claimed.
+            self.repo._exec("UPDATE deliveries SET status='deferred',updated=? WHERE status='pending'", (self.clock(),))
             return self.repo._exec("UPDATE deliveries SET status='unknown' WHERE status='dispatching'").rowcount
+
+    def not_sent(self, delivery_id, token):
+        with self.repo.tx():
+            self.repo._exec("UPDATE deliveries SET status='deferred',receipt=?,updated=? "
+                            "WHERE id=? AND token=? AND status='dispatching'",
+                            (json.dumps(dict(reason='transport_not_started')), self.clock(), delivery_id, token))
+
+    def review_candidates(self, scope, limit=5):
+        """Return unresolved expressions once, without replaying network writes."""
+        rows = self.repo._all("SELECT d.* FROM deliveries d LEFT JOIN delivery_reviews r ON r.delivery_id=d.id "
+            "WHERE d.scope_id=? AND d.status IN ('deferred','unknown','failed') AND r.delivery_id IS NULL "
+            "ORDER BY d.created,d.segment", (scope.scope_id,))
+        expressions = []
+        for row in rows:
+            if self._valid(row, dispatch=False) and row['turn_id'] not in expressions:
+                expressions.append(row['turn_id'])
+                if len(expressions) >= limit:
+                    break
+        return expressions
+
+    def describe(self, scope, logical_id):
+        rows = self.repo._all('SELECT * FROM deliveries WHERE scope_id=? AND turn_id=? ORDER BY segment',
+                             (scope.scope_id, logical_id))
+        result = []
+        for row in rows:
+            if not self._valid(row, dispatch=False):
+                continue
+            message = json.loads(row['payload']).get('params',{}).get('message','')
+            if not isinstance(message,str):
+                message = ''.join(str(s.get('data',{}).get('text','')) if s.get('type')=='text'
+                                  else '['+str(s.get('type','media'))+']' for s in message)
+            result.append(dict(id=row['id'],segment=row['segment'],status=row['status'],
+                preview=message[:240],truncated=len(message)>240,created_at=row['created'],
+                sources=json.loads(row['sources']),receipt=json.loads(row['receipt'])))
+        return result
 
     async def send(self, ctx, action, params, transport):
         if ctx.lease is not None and not self.runtime.jobs.current(ctx.lease):
@@ -183,6 +224,9 @@ class DeliveryService:
             body = json.loads(stored["payload"])
             action, params = body["action"], body["params"]
             response = await transport(action, params)
+        except DeliveryNotSent:
+            self.not_sent(delivery_id, token)
+            raise
         except BaseException:
             self.settle(delivery_id, token)
             raise

@@ -3,6 +3,10 @@ import argparse
 from pathlib import Path
 import time
 import tomllib
+import logging
+from logging.handlers import RotatingFileHandler
+
+log = logging.getLogger('life.supervisor')
 
 from life.release import NativeWorker, ReleaseController
 from life.supervisor import HostSupervisor
@@ -10,6 +14,11 @@ from life.supervisor import HostSupervisor
 
 def main():
     root = Path(__file__).resolve().parent
+    logs = root/'data/logs'
+    logs.mkdir(parents=True,exist_ok=True)
+    logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(name)s %(message)s',
+        handlers=[logging.StreamHandler(),RotatingFileHandler(logs/'lifesupervisor.log',
+            maxBytes=4*1024*1024,backupCount=2,encoding='utf-8')],force=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(root / "config.toml"))
     parser.add_argument("--control")
@@ -44,11 +53,14 @@ def main():
                              "channel_offline": "运行中，QQ通道未连接；请检查 NapCat 登录",
                              "observed": "运行正常", "rolled_back": "已恢复上一版本",
                              "restarting": "正在重启", "blocked": "连续启动失败，请查看日志"}
-                    print("运行状态：" + notes.get(state, state), flush=True)
+                    log.info("运行状态：%s",notes.get(state, state))
                     previous = state
                 time.sleep(2)
         except KeyboardInterrupt:
-            pass
+            log.info('收到主动中止，停止 Bot')
+        except Exception:
+            log.exception('发布控制器异常退出')
+            raise
         finally:
             supervisor.stop()
 

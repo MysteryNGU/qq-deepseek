@@ -6,7 +6,7 @@ import json
 from contextvars import ContextVar
 
 from .agent_session import SessionFailure,canonical,digest
-from .delivery import DeliveryContext
+from .delivery import DeliveryContext, DeliveryNotSent
 from .message_layout import DEFAULT_PASTE_THRESHOLD,bubble_delay,content_blocks,expression_body,expression_parts,group_chat,transport_parts
 
 expression_guard = ContextVar('expression_guard',default=None)
@@ -124,6 +124,8 @@ class Expressions:
                 continue
             if existing['status'] in {'dispatching','unknown'}:
                 raise SessionFailure('outcome_unknown','原发送结果尚未对账，不重新发送',delivery_id=identity)
+            if existing['status']=='deferred':
+                raise SessionFailure('channel_offline','此片段尚未发出，等待通道恢复后的复核事件',delivery_id=identity)
             self.require_current(scope,row)
             # No transaction or delivery lease is held while simulating typing.
             remaining = delay
@@ -138,6 +140,9 @@ class Expressions:
             payload = json.loads(self.repo._one('SELECT payload FROM deliveries WHERE id=?',(identity,))['payload'])
             try:
                 response = await self.transport(payload['action'],payload['params'])
+            except DeliveryNotSent:
+                self.life.delivery.not_sent(identity,token)
+                raise SessionFailure('channel_offline','QQ通道未连接，本片段尚未发出；重连后会提交复核事件',delivery_id=identity)
             except BaseException:
                 self.life.delivery.settle(identity,token)
                 raise

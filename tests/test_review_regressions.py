@@ -3,7 +3,7 @@ import asyncio
 import json
 import unittest
 
-from audit.review_2026_10_23_probes import Fixture
+from tests.role_fixture import Fixture
 from life.agent_session import SessionFailure
 from life.contracts import Appraisal
 from life.role_agent import RoleAgent

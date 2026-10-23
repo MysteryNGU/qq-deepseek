@@ -22,7 +22,7 @@ dsh_provider = "deepseek-official"
 dsh_timeout = 180
 dsh_tmp = "D:/projects/tools/tmp"
 dsh_pnpm_entry = ""
-bili_plugin = "C:\\Users\\GEUEK\\.dsh\\plugins\\dsh-bili-subagent"
+# bili_plugin defaults to the current user's .dsh/plugins/dsh-bili-subagent.
 public_tools = []
 action_per_hour = 500
 action_per_day = 0

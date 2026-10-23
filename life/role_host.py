@@ -21,10 +21,11 @@ from .runtime import LifeConfig,LifeRuntime
 from .drives import DriveConfig
 from .services.dsh_bridge import DshBridge
 from .voice_catalog import VoiceCatalog
+from .delivery import DeliveryNotSent
 
 log = logging.getLogger(__name__)
 dialogue = logging.getLogger('dialogue')
-ROLE_RUNTIME_VERSION = '2026.10.23.7'
+ROLE_RUNTIME_VERSION = '2026.10.23.9'
 
 
 def runtime_version():
@@ -107,13 +108,14 @@ class RoleHost:
         return result
 
     async def call(self,action,params):
-        if self.ws is None:
-            raise ConnectionError('onebot_disconnected')
+        ws = self.ws
+        if ws is None:
+            raise DeliveryNotSent('onebot_disconnected_before_send')
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._rpc[echo] = future
         try:
-            await self.ws.send(json.dumps(dict(action=action,params=params,echo=echo),ensure_ascii=False))
+            await ws.send(json.dumps(dict(action=action,params=params,echo=echo),ensure_ascii=False))
             return await asyncio.wait_for(future,30)
         finally:
             self._rpc.pop(echo,None)
@@ -226,6 +228,7 @@ class RoleHost:
 
     async def run(self):
         self.spawn(self.health(),'worker-health')
+        self.spawn(self.delivery_recovery(),'delivery-recovery')
         failures,next_report = 0,0
         try:
             while not self.stop.is_set():
@@ -271,6 +274,18 @@ class RoleHost:
             await self.role.close()
             self.life.close()
         return self.exit_code
+
+    async def delivery_recovery(self):
+        while not self.stop.is_set():
+            try:
+                if self.ws is not None and self.boot_ready and self.role.running:
+                    await self.role.review_deliveries()
+            except Exception:
+                log.exception('未送达表达复核暂未完成，保留记录并稍后重试')
+            try:
+                await asyncio.wait_for(self.stop.wait(),5)
+            except asyncio.TimeoutError:
+                pass
 
     async def read(self,ws):
         async for data in ws:

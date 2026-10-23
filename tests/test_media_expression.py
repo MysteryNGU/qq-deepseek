@@ -109,6 +109,19 @@ class MediaExpressionTests(unittest.IsolatedAsyncioTestCase):
         await expression(self.scope,'paste',dict(parts=parts),[self.event.id])
         self.assertEqual(self.sent,[(4,'\n'.join(lines))])
 
+    async def test_model_single_parts_are_separate_paced_bubbles_and_retry_is_idempotent(self):
+        async def transport(action,params):
+            self.sent.append((self.elapsed,params['message'][0]['data']['text']))
+            return dict(retcode=0,data=dict(message_id=len(self.sent)))
+        expression = Expressions(self.life,self.media,self.voices,transport,sleep=self.sleep)
+        texts = ['first\nsecond','b'*60,'last']
+        proposal = dict(parts=[dict(kind='text',text=text,mode='single') for text in texts])
+        await expression(self.scope,'single-parts',proposal,[self.event.id])
+        self.assertEqual(self.sent,[(2,texts[0]),(7,texts[1]),(9,texts[2])])
+        await expression(self.scope,'single-parts',proposal,[self.event.id])
+        self.assertEqual(self.elapsed,9)
+        self.assertEqual(len(self.sent),3)
+
     async def test_300_character_boundary_changes_both_layout_and_wait(self):
         async def transport(action,params):
             self.sent.append((self.elapsed,params['message'][0]['data']['text']))

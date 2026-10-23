@@ -36,6 +36,19 @@ class MessageLayoutTests(unittest.TestCase):
         text = '\n'.join('line '+str(i) for i in range(12))
         self.assertEqual([b.text for b in content_blocks(text)],text.splitlines())
 
+    def test_single_mode_keeps_only_its_own_short_bubble_whole(self):
+        parts = [dict(kind='text',text='first\nsecond',mode='single'),
+                 dict(kind='text',text='third',mode='single')]
+        self.assertEqual(expression_parts(parts),parts)
+        bubbles = content_blocks(parts[0]['text'],'single')
+        self.assertEqual([(b.text,b.kind) for b in bubbles],[('first\nsecond','chat')])
+
+    def test_single_parts_still_obey_the_whole_reply_paste_threshold(self):
+        parts = [dict(kind='text',text='a'*149,mode='single'),
+                 dict(kind='text',text='b'*150,mode='single')]
+        self.assertEqual(expression_parts(parts),
+                         [dict(kind='text',text='a'*149+'\n'+'b'*150,mode='artifact')])
+
     def test_long_and_structured_text_preserves_whole_body_including_newlines(self):
         for text in ('\n'.join(['long paragraph'*10]*10),
                      'example:\n```python\nx = 1\n```\nafterwards',
