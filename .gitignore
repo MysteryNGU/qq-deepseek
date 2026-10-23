@@ -1,0 +1,43 @@
+# 本机配置 / 密钥
+config.toml
+.env
+
+# 运行数据：记忆、日志、截图、数据库
+data/
+backups/
+*.log
+
+# 虚拟环境 / 缓存
+.venv/
+__pycache__/
+*.pyc
+
+# 模拟器 / NapCat 运行时（太大，且是二进制）
+napcat/
+napcat-onekey/
+tools/
+*.zip
+*.apk
+
+# 图片 / 音频 / 数据库
+*.jpg
+*.jpeg
+*.png
+*.mp3
+*.db
+*.db-wal
+*.db-shm
+
+# 重复/临时文件
+persona copy.md
+
+# 人格与记忆：不上传
+persona.md
+persona copy.md
+personas/
+人格设定.md
+self.md
+audit/
+
+# 与本项目无关的游戏自动化脚本
+ZenlessZoneZero-Auto/

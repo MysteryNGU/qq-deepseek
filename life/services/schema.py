@@ -1,0 +1,5 @@
+"""Receipt-only schema for the passive bridge/workshop adapter."""
+SCHEMA = "CREATE TABLE IF NOT EXISTS bridge_operations (\n  id TEXT PRIMARY KEY,\n  scope_id TEXT NOT NULL DEFAULT '',\n  plan_id TEXT NOT NULL DEFAULT '',\n  step_id TEXT NOT NULL DEFAULT '',\n  request_hash TEXT NOT NULL,\n  context TEXT NOT NULL DEFAULT '{}',\n  tool_name TEXT NOT NULL,\n  arguments TEXT NOT NULL DEFAULT '{}',\n  status TEXT NOT NULL,\n  worker_generation TEXT NOT NULL DEFAULT '',\n  tool_generation INTEGER NOT NULL DEFAULT 0,\n  result TEXT,\n  artifact_refs TEXT NOT NULL DEFAULT '[]',\n  updated_at REAL NOT NULL,\n  note TEXT NOT NULL DEFAULT ''\n);\nCREATE TABLE IF NOT EXISTS dsh_edits (\n  id TEXT PRIMARY KEY,\n  ts INTEGER NOT NULL,\n  paths TEXT DEFAULT '[]',\n  base_hashes TEXT DEFAULT '{}',\n  patch TEXT DEFAULT '',\n  status TEXT DEFAULT 'staged',\n  backup_dir TEXT DEFAULT '',\n  reason TEXT DEFAULT '',\n  typecheck TEXT DEFAULT '{}',\n  activation TEXT DEFAULT '{}',\n  rollback_ts INTEGER DEFAULT 0\n);"
+
+def init(conn):
+    conn.executescript(SCHEMA)

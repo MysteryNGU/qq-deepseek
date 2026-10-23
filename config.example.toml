@@ -1,0 +1,45 @@
+# DSH sole-role configuration. Set owner and API credentials before starting.
+# Native tools share action_per_hour/day; 0 means unlimited.
+name = "大肥鱼"
+persona = "persona.md"
+ws_url = "ws://127.0.0.1:3001"
+ws_token = ""
+api_key = ""
+base_url = "https://api.deepseek.com"
+model = "deepseek-flash"
+owner = 0
+friends = []
+known_people = {  }
+allow_groups = []
+allow_all_private = false
+life_db = "data/life.db"
+life_agent = "default"
+life_dynamics = {  }
+dsh_root = "../dsh-bridge-work"
+dsh_home = "../dsh-qq-home"
+dsh_node = "D:/projects/tools/node-v22.19.0-win-x64/node.exe"
+dsh_provider = "deepseek-official"
+dsh_timeout = 180
+dsh_tmp = "D:/projects/tools/tmp"
+dsh_pnpm_entry = ""
+bili_plugin = "C:\\Users\\GEUEK\\.dsh\\plugins\\dsh-bili-subagent"
+public_tools = []
+action_per_hour = 500
+action_per_day = 0
+handoff_seconds = 10
+# Chat waits 2-5 seconds; long/structured text is pasted whole after 4 seconds.
+typing_chars_per_second = 3
+paste_threshold = 300
+media_local_roots = []
+media_max_mb = 64
+asr_model = "small"
+asr_language = "zh"
+[resource_policy]
+idle_base_seconds = 900
+idle_max_seconds = 7200
+unchanged_per_tier = 2
+text_preview_target_tokens = 1500
+text_result_max_tokens = 2000
+text_result_max_utf8_bytes = 12000
+dynamic_context_target_tokens = 3000
+memory_context_target_tokens = 1200
