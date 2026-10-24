@@ -139,7 +139,10 @@ class SelfChange:
         if target=='code' and (not isinstance(proposal.get('patch'),dict)
                 or not ({'file','old','new'}.issubset(proposal['patch']) or 'changes' in proposal['patch'])):
             raise SessionFailure('invalid_input','代码修改需要 patch: {file,old,new} 和独立 probes')
-        checksum = digest(proposal)
+        try:
+            checksum = digest(proposal)
+        except UnicodeError as error:
+            raise SessionFailure('invalid_input','自我修改内容必须是有效的 UTF-8 文本') from error
         async with self.lock:
             from .expression import expression_guard
             guard = expression_guard.get()
@@ -210,6 +213,12 @@ class SelfChange:
                 if expected is not None and expected != current:
                     raise SessionFailure('stale_context','文件已改变，请重新读取',path=item['path'],current_hash=current)
                 content = str(item['content'])
+                if is_method:
+                    from .capability_view import validate_method_body
+                    try:
+                        validate_method_body(content.encode('utf-8'))
+                    except UnicodeError as error:
+                        raise SessionFailure('invalid_input','方法正文必须是有效的 UTF-8 文本') from error
                 if path == self.behavior_path:
                     self.behavior(candidate=json.loads(content))
                 if path == (self.root/self.cfg.persona).resolve():

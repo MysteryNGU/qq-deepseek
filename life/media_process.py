@@ -35,11 +35,8 @@ class MediaProcess:
 
     async def run(self, request, folder, check):
         cfg = self.config
-        from .media_adapters import AdapterRegistry,validate_frozen
-        if '_adapter' not in request['spec']:
-            provider=AdapterRegistry(cfg,Path(__file__).resolve().parents[1]).resolve(request['spec']['kind'])
-            request=dict(request,spec=dict(request['spec'],_adapter=provider))
-        validate_frozen(request['spec'])
+        from .media_adapters import validate_frozen
+        validate_frozen(request['spec'],load=False)
         provider=request['spec']['_adapter']
         environment_spec=provider['environment']
         interpreter = environment_spec['python']

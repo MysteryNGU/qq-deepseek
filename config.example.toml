@@ -37,29 +37,34 @@ media_local_roots = []
 media_max_mb = 64
 asr_model = "small"
 asr_language = "zh"
-# Enable only after both isolated engines and their fixed model versions are installed.
+# Enable after installing at least one explicitly declared provider.
 [local_media]
 enabled = false
 root = "data/local-media"
-voice_python = ""
-voice_engine_root = ""
-voice_model_dir = ""
-voice_model_version = ""
-image_server = ""
-image_model_dir = ""
-image_model_version = ""
 # Optional owner-private reference/sample manifest; imported with verified digests.
 preset_manifest = ""
 timeout_seconds = 600
 min_available_ram_mib = 1024
 min_free_vram_mib = 4096
 max_pending_jobs = 8
-max_text_chars = 1000
-worker_threads = 4
-image_max_vram_gib = 5.0
-# Providers add to legacy engines; matching provider_id replaces/disables only that entry.
+# The sole backend registry; backend-specific settings belong in each provider.config.
 providers = []
 defaults = {}
+# Example: remove providers/defaults above and fill the installed paths and version.
+# [local_media.defaults]
+# image = "qwen-sdcpp"
+# [[local_media.providers]]
+# provider_id = "qwen-sdcpp"
+# module = "life.media_adapters.qwen_sdcpp"
+# adapter_version = "1"
+# model_version = "your-installed-model-revision"
+# [local_media.providers.environment]
+# python = ".venv/Scripts/python.exe"
+# [local_media.providers.config]
+# image_server = "D:/your-engine/sd-server.exe"
+# image_model_dir = "D:/your-models/qwen"
+# image_max_vram_gib = 5.0
+# worker_threads = 4
 
 [resource_policy]
 idle_base_seconds = 900

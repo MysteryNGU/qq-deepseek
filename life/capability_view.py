@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import time
@@ -11,11 +12,24 @@ import time
 from .agent_session import SessionFailure,canonical,digest
 from .resource_policy import estimate_tokens
 
+log=logging.getLogger(__name__)
+METHOD_MAX_BYTES=512*1024
+
+
+def validate_method_body(raw):
+    if len(raw)>METHOD_MAX_BYTES:
+        raise SessionFailure('invalid_input','方法正文过大；请拆成按需读取的短方法')
+    try:
+        return raw.decode('utf-8')
+    except UnicodeError as error:
+        raise SessionFailure('invalid_input','方法文件必须使用有效的 UTF-8 编码') from error
+
 
 class MethodStore:
     def __init__(self,role):
         self.role,self.repo,self.root = role,role.repo,role.root.resolve()
         self.folder = self.root/'skills'
+        self.errors = {}
 
     def path(self,name):
         if not isinstance(name,str) or not name or Path(name).name!=name or '/' in name or '\\' in name:
@@ -48,9 +62,9 @@ class MethodStore:
                 previous.update(state='removed',version=previous['version']+1)
                 self.repo._exec('UPDATE meta SET v=? WHERE k=?',(canonical(previous),'skill_meta:'+previous['id']))
             return None
-        if path.stat().st_size>512*1024:
-            raise SessionFailure('resource_wait','方法正文过大；请拆成按需读取的短方法')
-        raw = path.read_bytes()
+        with path.open('rb') as stream:
+            raw = stream.read(METHOD_MAX_BYTES+1)
+        body = validate_method_body(raw)
         actual = hashlib.sha256(raw).hexdigest()
         if expected_hash and expected_hash!=actual:
             raise SessionFailure('stale_context','方法实际文件与待发布版本不同，请重新读取')
@@ -77,7 +91,7 @@ class MethodStore:
             metadata.pop('description',None)
         description = metadata.get('description')
         if not description:
-            front = re.match(r'\A---\r?\n(.*?)\r?\n---',raw.decode('utf-8'),re.S)
+            front = re.match(r'\A---\r?\n(.*?)\r?\n---',body,re.S)
             value = re.search(r'^description:\s*(.+)$',front[1],re.M) if front else None
             description = value[1].strip().strip('\'"')[:160] if value else '未整理描述'
         current = dict(id=self.identity(name),name=path.name,description=description,body_hash=actual,scope_id=self.owner_scope().scope_id,
@@ -128,25 +142,40 @@ class MethodStore:
 
     def catalog(self,scope,call=None):
         result=[]
+        seen=set()
         # Filter private metadata before constructing any public title or count.
         for path in sorted(self.folder.glob('*.md')):
-            meta = self.get_meta(path.name)
-            private=scope.scope_id==self.owner_scope().scope_id and scope.audience_policy_id==self.owner_scope().audience_policy_id
-            if not private and (not meta or meta['visibility']!='public'):
+            seen.add(path.name)
+            try:
+                meta = self.get_meta(path.name)
+                private=scope.scope_id==self.owner_scope().scope_id and scope.audience_policy_id==self.owner_scope().audience_policy_id
+                if not private and (not meta or meta['visibility']!='public'):
+                    continue
+                meta = self.reconcile(path.name)
+            except (SessionFailure,OSError,UnicodeError,json.JSONDecodeError) as error:
+                reason=error.code if isinstance(error,SessionFailure) else type(error).__name__
+                if self.errors.get(path.name)!=reason:
+                    log.warning('方法暂不可用 file=%s reason=%s；继续加载其他方法',path.name,reason)
+                self.errors[path.name]=reason
                 continue
-            meta = self.reconcile(path.name)
+            self.errors.pop(path.name,None)
             if meta and self.visible(scope,call,meta):
                 result.append(dict(ref='method:bot:'+meta['id'],kind='methods',name=meta['id'],file=meta['name'],
                     summary=meta['description'],version=meta['body_hash'],hash=meta['body_hash'],revision=meta['version'],
                     visibility=meta['visibility'],invocation=dict(tool='skill',arguments=dict(name=meta['id'])),
                     schema_ref='method:bot:'+meta['id'],limits=dict(on_demand=True),
                     availability=dict(registered=True,readiness='ready'),evidence_refs=meta['sources']))
+        self.errors={name:reason for name,reason in self.errors.items() if name in seen}
         return result
 
     def read(self,scope,call=None,*,name=None,ref=None,expected_hash=None):
         items=self.catalog(scope,call)
+        owner=scope.scope_id==self.owner_scope().scope_id and scope.audience_policy_id==self.owner_scope().audience_policy_id
+        diagnostics=[dict(file=n,reason=r) for n,r in sorted(self.errors.items())] if owner and not (call and call.get('caller')=='delegate') else []
         if name is None and ref is None:
-            return dict(items=[i['file'] for i in items],methods=items,version=digest(items))
+            return dict(items=[i['file'] for i in items],methods=items,version=digest(items),unavailable=diagnostics)
+        if name and any(i['file']==name for i in diagnostics):
+            raise SessionFailure('unavailable','此方法文件校验失败，请修复文件后重读',file=name,reason=self.errors[name])
         item=next((i for i in items if i['ref']==ref or name in {i['file'],i['name']}),None)
         if not item:
             raise SessionFailure('scope_mismatch','当前受众没有这个方法；请重新读取方法目录')

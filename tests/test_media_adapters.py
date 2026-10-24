@@ -107,22 +107,87 @@ class MediaAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.f.life.repo._one('SELECT 1 FROM resource_leases'))
         self.assertFalse(owner.exists())
 
-    async def test_A10_upgrade_keeps_original_provider_version_for_existing_job(self):
+    async def test_A10_upgrade_cancels_existing_job_and_uses_only_new_provider(self):
         old=self.submit(key='old')
         old_spec=json.loads(self.f.life.repo._one('SELECT payload FROM work_jobs WHERE id=?',(old['job_id'],))['payload'])['spec']
         replacement=self.root/'installed/image-v2.py'
         shutil.copyfile(self.root/'installed/image_adapter.py',replacement)
         replacement.write_text(replacement.read_text('utf-8')+'\n# Distinct installed revision.\n',encoding='utf-8')
         self.declarations[0].update(path=str(replacement),adapter_version='v2',model_version='synthetic-image-v2')
-        # Removing the former installed entry cannot replace the already frozen code.
+        # Upgrades discard pending inference instead of preserving old code copies.
         (self.root/'installed/image_adapter.py').write_text('raise RuntimeError("old installation replaced")',encoding='utf-8')
         self.service=self.make_service()
+        await self.service.recover()
         new=self.submit(key='new')
         await self.service.run_one();await self.service.run_one()
         self.assertEqual(self.service.status(self.f.scope,old['job_id'])['provider_revision'],'v1')
         self.assertEqual(self.service.status(self.f.scope,new['job_id'])['provider_revision'],'v2')
-        self.assertEqual(self.service.status(self.f.scope,old['job_id'])['status'],'completed')
+        self.assertEqual(self.service.status(self.f.scope,old['job_id'])['status'],'cancelled')
+        self.assertEqual(self.service.status(self.f.scope,new['job_id'])['status'],'completed')
+        self.assertFalse((self.service.root/'adapters').exists())
         self.assertEqual(old_spec,json.loads(self.f.life.repo._one('SELECT payload FROM work_jobs WHERE id=?',(old['job_id'],))['payload'])['spec'])
+
+    async def test_installed_package_resources_and_relative_helpers_survive_real_worker(self):
+        adapter=self.root/'installed/image_adapter.py'
+        source=adapter.read_text('utf-8')
+        source=source.replace('from pathlib import Path','from pathlib import Path\nfrom .helper import COLOR')
+        source=source.replace("output=context.folder/'output.png'", "assert Path(__file__).with_name('recipe.json').read_text('utf-8') == COLOR\n        output=context.folder/'output.png'")
+        adapter.write_text(source,encoding='utf-8')
+        (adapter.parent/'helper.py').write_text("COLOR='blue'\n",encoding='utf-8')
+        (adapter.parent/'recipe.json').write_text('blue',encoding='utf-8')
+        self.service=self.make_service()
+        receipt=self.submit()
+        await self.service.run_one()
+        self.assertEqual(self.service.status(self.f.scope,receipt['job_id'])['status'],'completed')
+        # The same package must also work as an importable module in a fresh worker
+        # whose sys.path initially does not contain the temporary installation.
+        (adapter.parent/'__init__.py').write_text('',encoding='utf-8')
+        sys.path.insert(0,str(self.root))
+        self.addCleanup(lambda:sys.path.remove(str(self.root)))
+        def clear():
+            for name in list(sys.modules):
+                if name=='installed' or name.startswith('installed.'):
+                    sys.modules.pop(name,None)
+        self.addCleanup(clear)
+        self.declarations[0].pop('path')
+        self.declarations[0]['module']='installed.image_adapter'
+        self.service=self.make_service()
+        receipt=self.submit(key='module-package')
+        await self.service.run_one()
+        self.assertEqual(self.service.status(self.f.scope,receipt['job_id'])['status'],'completed')
+
+    def test_module_reload_sees_same_size_source_and_helper_updates(self):
+        import importlib
+        import os
+        import py_compile
+        from life.media_adapters import AdapterRegistry,load_adapter
+        package=self.root/'review_package';package.mkdir()
+        (package/'__init__.py').write_text('',encoding='utf-8')
+        entry=package/'adapter.py';helper=package/'helper.py'
+        helper.write_text('VALUE="v1"\n',encoding='utf-8')
+        entry.write_text('from .helper import VALUE\nclass Adapter:\n    value = VALUE\n    revision = "v1"\n',encoding='utf-8')
+        sys.path.insert(0,str(self.root))
+        self.addCleanup(lambda:sys.path.remove(str(self.root)))
+        def clear():
+            for name in list(sys.modules):
+                if name=='review_package' or name.startswith('review_package.'):
+                    sys.modules.pop(name,None)
+        self.addCleanup(clear)
+        importlib.import_module('review_package.adapter')
+        for path in (helper,entry):
+            py_compile.compile(str(path),doraise=True)
+            stamp=path.stat()
+            path.write_text(path.read_text('utf-8').replace('v1','v2'),encoding='utf-8')
+            os.utime(path,ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+        reference=dict(path=str(entry),digest=hashlib.sha256(entry.read_bytes()).hexdigest(),
+            module='review_package.adapter',import_root=str(self.root))
+        current=load_adapter(reference)
+        self.assertEqual((current.value,current.revision),('v2','v2'))
+
+    def test_removed_media_config_fields_are_rejected(self):
+        from life.local_media_config import LocalMediaConfig
+        with self.assertRaises(ValueError):
+            LocalMediaConfig.parse(dict(image_server='obsolete'))
 
     async def test_A10_existing_change_api_activates_a_provider_config_and_original_pump(self):
         from life.self_change import SelfChange

@@ -70,9 +70,13 @@ class LocalMediaTests(unittest.IsolatedAsyncioTestCase):
         self.other=self.life.scope('qq:group:3','')
         self.media=MediaService(self.life,self.root/'assets')
         self.voices=VoiceCatalog(self.life,self.media)
-        self.cfg=SimpleNamespace(owner=1,local_media=dict(enabled=True,voice_python='python.exe',
-            voice_engine_root='index-tts',voice_model_dir='tts-model',image_server='sd-server.exe',
-            image_model_dir='image-model',voice_model_version='voice-fixed-v1',image_model_version='image-fixed-v1'))
+        self.cfg=SimpleNamespace(owner=1,local_media=dict(enabled=True,providers=[
+            dict(provider_id='qwen-sdcpp',module='life.media_adapters.qwen_sdcpp',adapter_version='1',
+                model_version='image-fixed-v1',environment=dict(python='python.exe'),
+                config=dict(image_server='sd-server.exe',image_model_dir='image-model',image_max_vram_gib=5.0,worker_threads=4)),
+            dict(provider_id='indextts',module='life.media_adapters.indextts',adapter_version='1',
+                model_version='voice-fixed-v1',environment=dict(python='python.exe'),
+                config=dict(voice_engine_root='index-tts',voice_model_dir='tts-model',max_text_chars=1000,worker_threads=4))]))
         self.backend=FakeBackend();self.notified=[]
         async def notify(event):
             self.notified.append(event)

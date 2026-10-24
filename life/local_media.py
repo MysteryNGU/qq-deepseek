@@ -174,6 +174,7 @@ class LocalMedia:
         if isinstance(self.backend,MediaProcess):
             self.backend=MediaProcess(config)
         self._resource_checked_at=-float('inf');self._resource_wait=None
+        await self.retire_changed_jobs()
         if settings.enabled and self.task is None:
             self.import_presets(self.life.scope('qq:private:'+str(self.cfg.owner),str(self.cfg.owner)))
             await self.start()
@@ -282,6 +283,8 @@ class LocalMedia:
         row = self.repo._one('SELECT checkpoint FROM work_jobs WHERE id=?',(lease.id,))
         if json.loads(row['checkpoint']).get('cancel_requested'):
             return 'explicit_cancel'
+        if not self.adapters.current(payload['spec']):
+            return 'adapter_changed_reissue_required'
         scope = Scope(**payload['scope'])
         try:
             self.sources_valid(scope,payload['sources'])
@@ -300,7 +303,7 @@ class LocalMedia:
     def resolve_references(self,scope,spec):
         resolved = dict(spec)
         if spec.get('_adapter'):
-            validate_frozen(spec)
+            validate_frozen(spec,load=False)
         if spec.get('reference_asset_id'):
             frozen = self.voices.local_record(spec['voice_id'],spec['voice_revision'],scope)
             if frozen['reference_digest']!=spec['reference_sha256']:
@@ -509,7 +512,22 @@ class LocalMedia:
             self.repo._exec('UPDATE work_jobs SET checkpoint=? WHERE id=?',
                 (canonical(dict(checkpoint,notified=True)),jid))
 
+    async def retire_changed_jobs(self):
+        """End unstarted work on retired providers; never rebind it to a new version."""
+        for row in self.repo._all("SELECT * FROM work_jobs WHERE kind=? AND status IN ('pending','waiting')",(JOB_KIND,)):
+            payload=json.loads(row['payload'])
+            if not payload or self.adapters.current(payload['spec']):
+                continue
+            reason='adapter_changed_reissue_required'
+            with self.repo.tx():
+                self.repo._exec("UPDATE work_jobs SET status='cancelled',error=?,updated=? WHERE id=? AND status IN ('pending','waiting')",
+                    (reason,time.time(),row['id']))
+                if self.initiative:
+                    self.initiative.finish_job(row['id'],'cancelled',reason,stopped=True)
+            await self.publish(row['id'],payload,'cancelled',error=reason)
+
     async def recover(self):
+        await self.retire_changed_jobs()
         for row in self.repo._all('SELECT * FROM work_jobs WHERE kind=?',(JOB_KIND,)):
             payload = json.loads(row['payload'])
             if not payload:

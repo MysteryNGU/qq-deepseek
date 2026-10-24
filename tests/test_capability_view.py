@@ -158,6 +158,38 @@ class CapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('private unique',canonical(summary))
         self.assertEqual(summary,self.view.summary(self.f.scope,self.f.binding))
 
+    async def test_invalid_method_does_not_block_chat_or_other_methods(self):
+        from life.capability_view import METHOD_MAX_BYTES
+        await self.save('valid')
+        path=self.f.root/'skills/broken-private.md'
+        for content in (b'x'*(METHOD_MAX_BYTES+1),b'\xff\xfe'):
+            path.write_bytes(content)
+            with self.assertLogs('life.capability_view',level='WARNING') as logs:
+                packet=self.role.context(self.f.binding,self.f.scope,{})
+                self.role.context(self.f.binding,self.f.scope,{})
+            self.assertEqual(len(logs.output),1)
+            self.assertTrue(json.loads(packet.split('当前状态与材料：\n',1)[1])['capabilities']['methods'])
+            self.assertEqual(self.store.read(self.f.scope,name='valid.md')['text'],'Actual reusable method.')
+            self.assertEqual(self.store.read(self.f.scope)['unavailable'][0]['file'],path.name)
+            group=self.f.life.scope('qq:group:2','2')
+            self.assertNotIn(path.name,canonical(self.store.read(group)))
+            self.assertNotIn(path.name,canonical(self.store.read(self.f.scope,dict(caller='delegate',session_id='child'))))
+            with self.assertRaises(SessionFailure) as failure:
+                self.store.read(self.f.scope,name=path.name)
+            self.assertEqual(failure.exception.code,'unavailable')
+            # A repaired file is rediscovered without a restart or a sticky quarantine.
+            path.write_text('Repaired method',encoding='utf-8')
+            self.assertEqual(self.store.read(self.f.scope,name=path.name)['text'],'Repaired method')
+            self.assertFalse(self.store.errors)
+
+    async def test_invalid_method_write_is_rejected_before_file_or_manifest_changes(self):
+        from life.capability_view import METHOD_MAX_BYTES
+        for name,content in [('oversize','x'*(METHOD_MAX_BYTES+1)),('invalid','\ud800')]:
+            with self.assertRaises(SessionFailure):
+                await self.save(name,text=content)
+            self.assertFalse((self.f.root/'skills'/f'{name}.md').exists())
+        self.assertFalse(self.f.life.repo._one('SELECT 1 FROM self_changes'))
+
     async def test_A09_large_schema_pages_obey_complete_result_budget_and_version(self):
         from dataclasses import replace
         self.role.resources=replace(self.role.resources,text_preview_target_tokens=200,text_result_max_tokens=600,

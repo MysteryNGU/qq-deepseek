@@ -23,6 +23,12 @@ def normalize_delivery(parameters):
 
 class Adapter:
     def describe(self,config):
+        config.setdefault('worker_threads',4)
+        config.setdefault('max_text_chars',1000)
+        if any(not isinstance(config.get(k),str) or not config[k] for k in ('voice_engine_root','voice_model_dir')):
+            raise ValueError('indextts_engine_and_model_paths_required')
+        if any(type(config[k]) is not int or config[k]<1 for k in ('worker_threads','max_text_chars')):
+            raise ValueError('invalid_indextts_limits')
         return dict(protocol='media-adapter/1',engine='indextts-2.5',kinds=['speech'],resource='gpu:0',
             summary='本地参考音色合成；支持情绪、语速和句间停顿，默认选择由原音色目录管理。',
             operations=['synthesize','audition'],reference_limit=1,voice_reference_required=True,

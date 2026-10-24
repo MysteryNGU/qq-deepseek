@@ -62,7 +62,7 @@ def output_metadata(path,description):
 
 def main():
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-    from life.media_adapters import AdapterRegistry,validate_frozen,frozen_hash
+    from life.media_adapters import validate_frozen,frozen_hash
     path=Path(sys.argv[1]).resolve();folder=path.parent
     request=json.loads(path.read_text(encoding='utf-8'))
     spec=request['spec'];context=None
@@ -80,9 +80,6 @@ def main():
                     raise ValueError('resolved_image_reference_mismatch')
             if frozen_hash(normalized)!=request['frozen_spec_hash']:
                 raise ValueError('resolved_parameters_mismatch')
-        elif '_adapter' not in spec:
-            registry=AdapterRegistry(request['backend'],Path(__file__).resolve().parents[1])
-            spec=dict(spec,_adapter=registry.resolve(spec['kind']))
         adapter=validate_frozen(spec);provider=spec['_adapter']
         context=RunContext(folder,provider['config']);context.check_cancelled()
         output=Path(adapter.execute(spec,context)).resolve()

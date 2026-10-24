@@ -3,15 +3,44 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.abc
+import importlib.machinery
 import importlib.util
 import json
 from pathlib import Path
-import os
 import sys
+import threading
 
 from ..agent_session import SessionFailure,canonical,digest
 
 PROTOCOL='media-adapter/1'
+_load_lock=threading.RLock()
+
+
+class _SourceLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self,fullname):
+        # A same-size edit within one timestamp tick must not reuse a stale .pyc.
+        return self.source_to_code(self.get_data(self.path),self.path)
+
+
+class _PackageSources(importlib.abc.MetaPathFinder):
+    def __init__(self,prefix):
+        self.prefix=prefix
+
+    def find_spec(self,fullname,path=None,target=None):
+        if fullname!=self.prefix and not fullname.startswith(self.prefix+'.'):
+            return None
+        spec=importlib.machinery.PathFinder.find_spec(fullname,path)
+        if spec and isinstance(spec.loader,importlib.machinery.SourceFileLoader):
+            spec.loader=_SourceLoader(fullname,spec.origin)
+        return spec
+
+
+def validate_reference(reference):
+    path=Path(reference['path']).resolve()
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=reference['digest']:
+        raise SessionFailure('unavailable','已安装的 adapter 发生变化；取消原任务并按当前版本重新发起')
+    return path
 
 
 def validate_options(schema,value):
@@ -34,37 +63,55 @@ def validate_options(schema,value):
 
 def load_adapter(reference):
     """Import only a configured, fingerprinted lightweight adapter module."""
-    path=Path(reference['path']).resolve()
-    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=reference['digest']:
-        raise SessionFailure('unavailable','原 adapter 版本不存在或已改变；不使用新版本重跑旧任务')
+    path=validate_reference(reference)
     name=reference.get('module')
-    if name:
-        module=importlib.import_module(name)
-        if Path(module.__file__).resolve()!=path:
-            raise SessionFailure('unavailable','adapter 导入路径与安装记录不一致')
-    else:
-        name=(reference.get('package','')+'.' if reference.get('package') else '')+'_qq_media_adapter_'+reference['digest']
-        module=sys.modules.get(name)
-        if module is None:
-            spec=importlib.util.spec_from_file_location(name,path)
-            module=importlib.util.module_from_spec(spec)
-            sys.modules[name]=module
-            spec.loader.exec_module(module)
-    return module.Adapter()
+    prefix=(name.rpartition('.')[0] or name) if name else '_qq_media_adapter_'+hashlib.sha256(str(path).encode()).hexdigest()
+    name=name or prefix
+    finder=_PackageSources(prefix)
+    # Reload only the adapter-owned namespace, preserving the host's registry and
+    # shared SessionFailure type. Resources stay next to their installed source.
+    with _load_lock:
+        for loaded in list(sys.modules):
+            if loaded!=__name__ and (loaded==prefix or loaded.startswith(prefix+'.')):
+                sys.modules.pop(loaded,None)
+        importlib.invalidate_caches()
+        sys.meta_path.insert(0,finder)
+        import_root=reference.get('import_root')
+        if import_root:
+            sys.path.insert(0,import_root)
+        try:
+            if reference.get('module'):
+                module=importlib.import_module(name)
+            else:
+                spec=importlib.util.spec_from_file_location(name,path,loader=_SourceLoader(name,str(path)),
+                    submodule_search_locations=[str(path.parent)])
+                module=importlib.util.module_from_spec(spec)
+                sys.modules[name]=module
+                spec.loader.exec_module(module)
+            if Path(module.__file__).resolve()!=path:
+                raise SessionFailure('unavailable','adapter 导入路径与安装记录不一致')
+            validate_reference(reference)
+            return module.Adapter()
+        except BaseException:
+            for loaded in list(sys.modules):
+                if loaded!=__name__ and (loaded==prefix or loaded.startswith(prefix+'.')):
+                    sys.modules.pop(loaded,None)
+            raise
+        finally:
+            sys.meta_path.remove(finder)
+            if import_root:
+                sys.path.remove(import_root)
 
 
 class AdapterRegistry:
     def __init__(self,config,project):
         self.config,self.project=config,Path(project).resolve()
         self.providers={}
-        legacy=self.legacy_declarations(config)
-        legacy_defaults={p.pop('_default_kind'):p['provider_id'] for p in legacy}
         explicit=config.get('providers') or []
         ids=[p.get('provider_id') for p in explicit]
         if len(ids)!=len(set(ids)):
             raise ValueError('duplicate_media_provider_id')
-        declarations=[p for p in legacy if p['provider_id'] not in ids]+explicit
-        for declaration in declarations:
+        for declaration in explicit:
             if not isinstance(declaration,dict) or set(declaration)-{'provider_id','module','path','adapter_version','model_version','config','environment','enabled'}:
                 raise ValueError('invalid_media_provider_declaration')
             if declaration.get('enabled',True) is False:
@@ -73,6 +120,7 @@ class AdapterRegistry:
             provider.setdefault('config',{})
             if not isinstance(provider['config'],dict):
                 raise ValueError('media_provider_config_requires_object')
+            provider['config']=dict(provider['config'])
             pid=provider.get('provider_id')
             if not isinstance(pid,str) or not pid or pid in self.providers:
                 raise ValueError('duplicate_or_missing_media_provider_id')
@@ -81,6 +129,8 @@ class AdapterRegistry:
                 if located is None or not located.origin:
                     raise ValueError('media_adapter_module_missing:'+pid)
                 path=Path(located.origin).resolve()
+                depth=len(provider['module'].split('.'))-(path.name!='__init__.py')
+                provider['import_root']=str(path.parents[depth])
             else:
                 path=(self.project/str(provider['path'])).resolve()
             if not path.is_file() or path.is_symlink():
@@ -103,7 +153,7 @@ class AdapterRegistry:
             if description.get('resource','gpu:0')!='gpu:0':
                 raise ValueError('first_media_adapter_requires_managed_gpu_lease:'+pid)
             self.providers[pid]=provider
-        self.defaults=dict(legacy_defaults,**(config.get('defaults') or {}))
+        self.defaults=dict(config.get('defaults') or {})
         if set(self.defaults)-{'image','speech'} or any(not isinstance(v,str) or not v for v in self.defaults.values()):
             raise ValueError('invalid_media_default_configuration')
         for kind in ('image','speech'):
@@ -113,22 +163,6 @@ class AdapterRegistry:
                     self.defaults[kind]=candidates[0]
             if kind in self.defaults and (self.defaults[kind] not in self.providers or kind not in self.providers[self.defaults[kind]]['description']['kinds']):
                 raise ValueError('invalid_default_media_provider:'+kind)
-
-    @staticmethod
-    def legacy_declarations(config):
-        if not config.get('enabled'):
-            return []
-        result=[]
-        if all(config.get(key) for key in ('image_server','image_model_dir','image_model_version')):
-            result.append(dict(provider_id='qwen-sdcpp',module='life.media_adapters.qwen_sdcpp',adapter_version='1',_default_kind='image',
-            model_version=config['image_model_version'],config={key:config[key] for key in
-                ('image_server','image_model_dir','image_max_vram_gib','worker_threads')},environment=dict(python=sys.executable)))
-        if all(config.get(key) for key in ('voice_python','voice_engine_root','voice_model_dir','voice_model_version')):
-            result.append(dict(provider_id='indextts',module='life.media_adapters.indextts',adapter_version='1',_default_kind='speech',
-            model_version=config['voice_model_version'],config={key:config[key] for key in
-                ('voice_engine_root','voice_model_dir','worker_threads','max_text_chars')},
-            environment=dict(python=config['voice_python'])))
-        return result
 
     def resolve(self,kind,provider_id=None,voice=None):
         pid=provider_id or (voice or {}).get('provider_id')
@@ -140,6 +174,18 @@ class AdapterRegistry:
         if provider is None or kind not in provider['description']['kinds']:
             raise SessionFailure('unavailable','没有匹配且已启用的媒体后端；请读取 media 能力目录',provider_id=pid)
         return provider
+
+    def current(self,spec):
+        recorded=spec.get('_adapter',{})
+        provider=self.providers.get(recorded.get('provider_id'))
+        keys=('path','module','digest','adapter_version','model_version','environment','config')
+        if not provider or any(recorded.get(k)!=provider.get(k) for k in keys):
+            return False
+        try:
+            validate_reference(provider)
+        except SessionFailure:
+            return False
+        return True
 
     def for_voice(self,record):
         provider=self.resolve('speech',record.get('provider_id'),record)
@@ -172,24 +218,8 @@ class AdapterRegistry:
         if options:
             spec['provider_options']=options
         # All provider configuration comes from the installed declaration, never model arguments.
-        frozen={k:v for k,v in provider.items() if k not in {'enabled','module'}}
-        archive=Path(self.config['root'])/'adapters'/provider['digest']/'adapter.py'
-        if self.project not in archive.resolve().parents:
-            raise SessionFailure('scope_mismatch','冻结 adapter 必须保存在当前项目的受管目录')
-        archive.parent.mkdir(parents=True,exist_ok=True)
-        if archive.exists():
-            if archive.is_symlink() or hashlib.sha256(archive.read_bytes()).hexdigest()!=provider['digest']:
-                raise SessionFailure('stale_context','已冻结 adapter 被改变，不能覆盖原版本')
-        else:
-            raw=Path(provider['path']).read_bytes()
-            if hashlib.sha256(raw).hexdigest()!=provider['digest']:
-                raise SessionFailure('stale_context','准备期间 adapter 已改变；重新读取当前能力')
-            with archive.open('xb') as output:
-                output.write(raw);output.flush();os.fsync(output.fileno())
-        frozen['path']=str(archive.resolve())
-        if provider.get('module') and '.' in provider['module']:
-            frozen['package']=provider['module'].rsplit('.',1)[0]
-        spec['_adapter']=frozen
+        validate_reference(provider)
+        spec['_adapter']={k:v for k,v in provider.items() if k!='enabled'}
         return spec
 
     def catalog(self):
@@ -209,8 +239,8 @@ def frozen_hash(spec):
     return digest(spec)
 
 
-def validate_frozen(spec):
+def validate_frozen(spec,*,load=True):
     reference=spec.get('_adapter')
     if not isinstance(reference,dict) or reference.get('protocol')!=PROTOCOL:
         raise SessionFailure('unavailable','作业没有匹配的冻结 adapter 记录')
-    return load_adapter(reference)
+    return load_adapter(reference) if load else validate_reference(reference)

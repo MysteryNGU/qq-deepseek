@@ -25,7 +25,7 @@ from .delivery import DeliveryNotSent
 
 log = logging.getLogger(__name__)
 dialogue = logging.getLogger('dialogue')
-ROLE_RUNTIME_VERSION = '2026.10.24.4'
+ROLE_RUNTIME_VERSION = '2026.10.24.5'
 
 
 def runtime_version():

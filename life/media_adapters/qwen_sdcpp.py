@@ -1,6 +1,7 @@
 """Qwen sdcpp's verified recipe; imports no model libraries during discovery."""
 import base64
 import json
+import math
 from pathlib import Path
 import socket
 import subprocess
@@ -15,6 +16,15 @@ SIGMAS=[1,.978453,.95418,.926626,.89508,.845148,.704534,.414568,0]
 
 class Adapter:
     def describe(self,config):
+        config.setdefault('worker_threads',4)
+        config.setdefault('image_max_vram_gib',5.0)
+        if any(not isinstance(config.get(k),str) or not config[k] for k in ('image_server','image_model_dir')):
+            raise ValueError('qwen_engine_and_model_paths_required')
+        if type(config['worker_threads']) is not int or config['worker_threads']<1:
+            raise ValueError('invalid_qwen_worker_threads')
+        vram=config['image_max_vram_gib']
+        if isinstance(vram,bool) or not isinstance(vram,(int,float)) or not math.isfinite(vram) or vram<=0:
+            raise ValueError('invalid_qwen_vram_budget')
         return dict(protocol='media-adapter/1',engine='qwen-image-sdcpp',kinds=['image'],resource='gpu:0',
             summary='本地 Qwen Turbo 作画与单参考图编辑；结果由原角色决定检查或分享。',
             operations=['generate','reference_edit'],reference_limit=1,mask=False,
