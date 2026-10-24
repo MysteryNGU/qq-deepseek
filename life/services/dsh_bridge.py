@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -323,10 +324,50 @@ class DshBridge:
                 "          PYTHONUTF8: '1'","          PYTHONIOENCODING: utf-8"])
         rows.append("")
         body = chr(10).join(rows)
-        if patch.is_file() and patch.read_text(encoding="utf-8") == body:
-            return
-        with open(patch, "w", encoding="utf-8", newline=chr(10)) as fh:
-            fh.write(body)
+        # The core is a bundle layer; the profile patch remains owned by plugins/the role.
+        # Migrate only byte-equivalent rows of the old bridge-owned document.
+        existing=patch.read_text('utf-8') if patch.is_file() else ''
+        chunks=lambda value: [part for part in re.split(r'(?m)(?=^- (?:id:|insert:))',value) if part.strip()]
+        core_chunks=chunks(body)
+        if existing.startswith('# 由 qq-life 桥维护：'):
+            known={part.strip() for part in core_chunks}
+            kept=[part for part in chunks(existing) if part.strip() not in known]
+            remaining=''.join(kept) or '[]\n'
+            backup=prof/'qq-life-profile-before-split.yml'
+            if not backup.exists():
+                backup.write_text(existing,encoding='utf-8')
+            patch.write_text(remaining,encoding='utf-8')
+            existing=remaining
+        elif not existing.strip():
+            patch.write_text('[]\n',encoding='utf-8')
+            existing='[]\n'
+        if re.search(r'(?m)^\s*-?\s*id:\s*qq-life-bili\s*$',existing):
+            core_chunks=[part for part in core_chunks if not re.search(r'(?m)^\s*-?\s*id:\s*qq-life-bili\s*$',part)]
+        core=prof/'qq-life-core'
+        core.mkdir(exist_ok=True)
+        package=dict(name='@qq-life/bridge-core',version='1.0.0',private=True,
+            dsh=dict(bundle=dict(patch='./cordis.patch.yml')))
+        (core/'package.json').write_text(json.dumps(package,indent=2)+'\n',encoding='utf-8')
+        (core/'cordis.patch.yml').write_text(''.join(core_chunks),encoding='utf-8')
+        installed=prof/'node_modules/@qq-life/bridge-core'
+        if installed.is_symlink() or (hasattr(installed,'is_junction') and installed.is_junction()):
+            if installed.resolve()!=core.resolve():
+                raise DshBridgeError('Bot 核心 bundle 链接不属于当前 profile')
+        else:
+            if (installed/'package.json').is_file() and json.loads((installed/'package.json').read_text('utf-8')).get('name')!=package['name']:
+                raise DshBridgeError('Bot 核心 bundle 位置已由其他包占用')
+            installed.mkdir(parents=True,exist_ok=True)
+            for name in ('package.json','cordis.patch.yml'):
+                shutil.copyfile(core/name,installed/name)
+        manifest=prof/'package.json'
+        value=json.loads(manifest.read_text('utf-8'))
+        value.setdefault('dependencies',{})['@qq-life/bridge-core']='file:./qq-life-core'
+        bundles=value.setdefault('dsh',{}).setdefault('profile',{}).setdefault('bundles',[])
+        bundles=[name for name in bundles if name!='@qq-life/bridge-core']
+        position=max((i+1 for i,name in enumerate(bundles) if name in {'@deepseek-ai/dsh-base','@deepseek-ai/dsh-sdk-app'}),default=0)
+        bundles.insert(position,'@qq-life/bridge-core')
+        value['dsh']['profile']['bundles']=bundles
+        manifest.write_text(json.dumps(value,indent=2)+'\n',encoding='utf-8')
 
     def _prepare_bili_backend(self):
         value = str(getattr(self.cfg,'bili_plugin','') or '')
@@ -409,7 +450,7 @@ class DshBridge:
                 "cwd": str(self.root), "provider": self.provider,
                 "model": self.model,
             }, timeout=60.0)
-            hello = self._call_locked("qq_life/hello", {}, timeout=30.0)
+            hello = self._call_locked("qq_life/hello", self._hello_parameters(), timeout=30.0)
             self._verify_identity(hello)
             self._schedule_reconcile()
         except Exception:
@@ -808,10 +849,20 @@ class DshBridge:
     # ---------------------------------------------------------------- 协议
 
     def hello(self) -> dict[str, Any]:
-        hello = self._call("qq_life/hello", {}, timeout=30.0)
+        hello = self._call("qq_life/hello", self._hello_parameters(), timeout=30.0)
         self._verify_identity(hello)
         self.loaded_adapter_version = str(hello.get('roleAdapterVersion') or '')
         return hello
+
+    def _hello_parameters(self):
+        return dict(continuity_protocol=1,continuity_enabled=bool(getattr(self.cfg,'continuity_enabled',False)),
+                    capability_protocol=1,media_adapter_protocol=1)
+
+    def current_agent_catalog(self,session_id,generation):
+        return self._call('qq_life/session/catalog',dict(session_id=session_id,generation=generation),timeout=30)
+
+    def invalidate_methods(self,session_id,generation):
+        return self._call('qq_life/session/methods_changed',dict(session_id=session_id,generation=generation),timeout=30)
 
     def tools(self, limit: int = 200, *, scope: str | None = None) -> list[dict[str, Any]]:
         self._ensure_started()      # 先确定 worker 代数，再取执行域

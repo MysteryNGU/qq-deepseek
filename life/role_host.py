@@ -25,7 +25,7 @@ from .delivery import DeliveryNotSent
 
 log = logging.getLogger(__name__)
 dialogue = logging.getLogger('dialogue')
-ROLE_RUNTIME_VERSION = '2026.10.23.9'
+ROLE_RUNTIME_VERSION = '2026.10.24.4'
 
 
 def runtime_version():
@@ -34,7 +34,7 @@ def runtime_version():
 
 def source_signature(root):
     checksum = hashlib.sha256()
-    for path in sorted([*root.glob('*.py'),*(root/'life').rglob('*.py')]):
+    for path in sorted([*root.glob('*.py'),*(root/'life').rglob('*.py'),*(root/'life').rglob('*.json')]):
         if not path.is_symlink() and root in path.resolve().parents:
             checksum.update(path.relative_to(root).as_posix().encode()+b'\0'+path.read_bytes())
     return checksum.hexdigest()
@@ -75,6 +75,7 @@ class RoleHost:
         self.boot_event_id = None
         self.accept_after = time.time()
         self.started_role = False
+        self.role_ready = asyncio.Event()
         self.media = MediaService(self.life,self.root/'data'/'media',transport or self.call,
             local_roots=[self.root/'napcat',self.root/'napcat-onekey',*cfg.media_local_roots],
             max_bytes=cfg.media_max_mb*1024*1024,
@@ -83,13 +84,14 @@ class RoleHost:
         self.expressions = Expressions(self.life,self.media,self.voices,transport or self.call,
             typing_cps=cfg.typing_chars_per_second,paste_threshold=cfg.paste_threshold)
         self.role = RoleAgent(self.life,self.bridge,cfg,self.root,self.send,self.media,self.voices)
+        from .local_media import LocalMedia
+        self.local_media = LocalMedia(self.life,self.media,self.voices,cfg,self.root,notify=self.role.ingest)
+        self.role.local_media = self.local_media
+        self.local_media.initiative = self.role.initiative
         self.life.delivery.recover()
         self._health_baseline = self.life.repo._one('SELECT COUNT(*) AS n FROM life_calls')['n']
 
     async def send(self,scope,logical,proposal,sources):
-        if not self.boot_ready and (scope.conversation_id!='qq:private:'+str(self.cfg.owner) or self.boot_event_id not in sources):
-            from .agent_session import SessionFailure
-            raise SessionFailure('input_pending','启动时先处理启动事件，自然打招呼；不补回以前未读消息')
         result = await self.expressions(scope,logical,proposal,sources)
         if result.get('sent_confirmed'):
             text = proposal if isinstance(proposal,str) else proposal.get('text') or json.dumps(proposal.get('parts'),ensure_ascii=False)
@@ -103,8 +105,7 @@ class RoleHost:
             if not self.boot_ready and scope.conversation_id=='qq:private:'+str(self.cfg.owner):
                 self.boot_ready = True
                 self.life.startup_greeted = True
-                self.accept_after = time.time()
-                log.info('启动招呼已证实送达；现在接收新消息')
+                log.info('启动后的首次主人表达已证实送达；新消息接收不依赖启动招呼')
         return result
 
     async def call(self,action,params):
@@ -146,12 +147,16 @@ class RoleHost:
         if owner and text.strip() in {'/重启','/状态','/清空记忆'}:
             await self.command(text.strip(),raw)
             return
-        if not self.boot_ready:
-            return
         event,created = accept_onebot(self.life,raw)
         if not created:
             return
         dialogue.info('[收到][%s][%s] %s',event.scope.conversation_id,event.actor_id,event.text or '[媒体消息]')
+        if not self.role_ready.is_set():
+            # Persist the actual input before waiting for DSH initialization.
+            # Recovery can replay it even if the process exits during startup.
+            self.role.stage_input(event)
+            log.info('启动期间的新消息已保存，等待认知就绪 input=%s',event.id)
+            await self.role_ready.wait()
         await self.role.ingest(event)
 
     async def command(self,text,raw):
@@ -185,16 +190,20 @@ class RoleHost:
             return
         self.started_role = True
         try:
-            await self.role.start()
-            log.info('主角色已启动 provider=%s model=%s profile=sdk persona=%s',
-                     self.bridge.provider,self.bridge.model,self.life.persona.current().digest)
             scope = self.life.scope('qq:private:'+str(self.cfg.owner),str(self.cfg.owner))
             event,_ = self.life.ingest(scope,'startup','inference',
-                '程序刚启动。请以自己的自然语气跟主人打个招呼。启动招呼以前的消息已忽略，不追补未读。',
+                '程序刚启动。请以自己的自然语气跟主人打个招呼。只忽略进程启动前的离线消息；启动期间收到的新消息应正常理解和回应。',
                 external_id='startup:'+self.boot_id)
             self.boot_event_id = event.id
             self.life.startup_event_id = event.id
             self.life.startup_greeted = False
+            if self.local_media.settings.enabled:
+                await asyncio.to_thread(self.local_media.import_presets,scope)
+            await self.role.start()
+            await self.local_media.start()
+            self.role_ready.set()
+            log.info('主角色已启动 provider=%s model=%s profile=sdk persona=%s',
+                     self.bridge.provider,self.bridge.model,self.life.persona.current().digest)
             await self.role.ingest(event)
             self.role.schedule(scope,None,self.role.resources.idle_base_seconds,'空闲时觉察自己的状态与想法，自行选择接下来做什么，也可以休息。',kind='idle_probe')
         except BaseException:
@@ -214,6 +223,9 @@ class RoleHost:
                     temporary.write_text(json.dumps(dict(token=os.environ.get('QQ_WORKER_TOKEN',''),pid=os.getpid(),
                         at=time.time(),completed_turns=max(0,completed-self._health_baseline),
                         channel_connected=self.ws is not None,cognition_ready=self.role.running,
+                        extensions=dict(capability_protocol=self.role.capability_protocol,media_adapter_protocol=self.role.media_adapter_protocol),
+                        continuity=dict(enabled=self.role.continuity_ready,protocol=self.role.continuity_protocol,
+                            dsh_adapter_version=getattr(self.bridge,'loaded_adapter_version','')),
                         runtime=self.life.runtime_info)),encoding='utf-8')
                     temporary.replace(path)
                     next_warning = 0
@@ -271,6 +283,7 @@ class RoleHost:
             for task in list(self._tasks):
                 task.cancel()
             await asyncio.gather(*list(self._tasks),return_exceptions=True)
+            await self.local_media.close()
             await self.role.close()
             self.life.close()
         return self.exit_code

@@ -75,6 +75,35 @@ class ReviewRegressions(unittest.IsolatedAsyncioTestCase):
         f.role._observe_result(f.binding['session_id'],dict(type='turn/end',data=dict(turn=7,reason=dict(kind='completed'))))
         self.assertIsNone(f.life.repo._one("SELECT 1 FROM role_wakes WHERE reason=? AND state='pending'",(PROTOCOL_REPAIR,)))
 
+    async def test_recovery_reports_old_settled_inputs_and_can_close_them_across_turns(self):
+        f = self.f
+        old,_ = f.life.ingest(f.scope,'startup','inference','Previous startup still needs acknowledgement')
+        self.consumed(old,1)
+        with f.life.repo.tx():
+            f.life.repo._exec("UPDATE agent_inputs SET state='settled' WHERE input_id=?",(old.id,))
+        recovery,_ = f.life.ingest(f.scope,'runtime_wake','inference','Recheck remaining inputs')
+        self.consumed(recovery,2)
+        result = await f.role.callback(self.call('life.rest','latest-only',dict(handled_input_ids=[recovery.id])))
+        self.assertEqual(result['code'],'input_pending')
+        self.assertIn(old.id,result['message'])  # DSH displays message text only.
+        self.assertEqual(result['pending_inputs'][0]['state'],'settled')
+        self.assertTrue(result['pending_inputs'][0]['can_acknowledge'])
+        read = await f.role.callback(self.call('life.read','read-old',dict(kind='observation',event_id=old.id,mode='lines')))
+        self.assertTrue(read['ok'])
+        self.assertIn('Previous startup',read['lines'][0]['text'])
+        result = await f.role.callback(self.call('life.rest','close-old',dict(handled_input_ids=[old.id])))
+        self.assertTrue(result['ok'])
+        self.assertFalse(f.role.sessions.pending(f.binding['session_id']))
+
+    async def test_recovery_never_acknowledges_unconsumed_input_automatically(self):
+        f = self.f
+        f.role.sessions.enqueue(f.binding,f.event)
+        result = await f.role.callback(self.call('life.rest','unread',{}))
+        self.assertFalse(result['pending_inputs'][0]['can_acknowledge'])
+        rejected = await f.role.callback(self.call('life.rest','premature',dict(handled_input_ids=[f.event.id])))
+        self.assertEqual(rejected['code'],'input_pending')
+        self.assertEqual(len(f.role.sessions.pending(f.binding['session_id'])),1)
+
     async def test_recovery_wake_cannot_disguise_original_unknown_delivery_as_a_new_reply(self):
         f = self.f
         proposal = dict(text='Original final answer',sources=[f.event.id])

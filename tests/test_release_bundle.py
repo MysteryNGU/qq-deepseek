@@ -33,6 +33,34 @@ class ReleaseBundleTests(unittest.TestCase):
         self.controller.request_publish(identity,origin=origin)
         return identity
 
+    def test_ordered_edits_in_one_file_publish_and_roll_back_together(self):
+        patch = dict(changes=[
+            dict(file='worker.py',old='return value - 1',new='return value + 1'),
+            dict(file='worker.py',old='def calc(value):',new='def calc(value=3):')])
+        identity = self.prepared(patch)
+        manifest,_,_ = self.controller._candidate(identity)
+        self.assertEqual(manifest['modified_paths'],['worker.py'])
+        self.assertIn('value - 1',(self.source/'worker.py').read_text('utf-8'))
+        self.controller.install_source(identity)
+        self.assertIn('calc(value=3)',(self.source/'worker.py').read_text('utf-8'))
+        self.assertEqual(self.controller.worker.invoke(self.source,'worker','calc',{})[0],4)
+        self.controller.rollback_source(identity)
+        self.assertIn('value - 1',(self.source/'worker.py').read_text('utf-8'))
+
+    def test_mixed_actions_for_one_file_are_rejected_without_changing_source(self):
+        with self.assertRaisesRegex(ValueError,'conflicting_candidate_file_actions'):
+            self.controller.prepare('conflict',dict(changes=[
+                dict(file='worker.py',old='return value - 1',new='return value + 1'),
+                dict(file='worker.py',action='delete',base_hash=self.controller.digest(self.source/'worker.py'))]))
+        self.assertTrue((self.source/'worker.py').is_file())
+
+    def test_native_release_runs_the_current_protected_test_suite_entrypoint(self):
+        (self.source/'tests').mkdir()
+        (self.source/'tests/run_offline_suite.py').write_text("print('offline suite ran')\n",encoding='utf-8')
+        result = NativeWorker().run_suite(self.source)
+        self.assertTrue(result['ok'],result)
+        self.assertIn('offline suite ran',result['log'])
+
     def test_new_module_and_core_change_activate_as_one_bundle_and_rollback(self):
         identity = self.prepared()
         self.assertFalse((self.source/'helper.py').exists())

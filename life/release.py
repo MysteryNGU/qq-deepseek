@@ -176,7 +176,7 @@ class NativeWorker(DockerWorker):
     def run_suite(self, artifact):
         from .supervisor import ProcessTree
         env = dict(self.environment(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8", QQ_OFFLINE="1", PYTHONDONTWRITEBYTECODE="1")
-        tree = ProcessTree([self.executable, "-B", "-X", "utf8", str(artifact / "audit" / "run_offline_suite.py")],
+        tree = ProcessTree([self.executable, "-B", "-X", "utf8", str(artifact / "tests" / "run_offline_suite.py")],
                            cwd=artifact, env=env, pipes=True)
         try:
             output, error = tree.process.communicate(timeout=240)
@@ -217,7 +217,7 @@ class ReleaseController:
 
     def _files(self):
         files = list(self.source.glob("*.py"))
-        for folder, pattern in (("life", "*.py"),('life','*.cjs'),('tests','*.py'), ("skills", "*.md"), ("audit", "*.py"), ("audit", "*.json")):
+        for folder, pattern in (("life", "*.py"),('life','*.cjs'),('life','*.json'),('tests','*.py'), ("skills", "*.md"), ("audit", "*.py"), ("audit", "*.json")):
             files.extend((self.source / folder).rglob(pattern))
         for path in files:
             if path.is_symlink() or self.source not in path.resolve().parents:

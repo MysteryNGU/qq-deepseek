@@ -41,7 +41,7 @@ class Expressions:
                 for part in parts:
                     if part.get('kind')=='voice':
                         part['voice_id'] = part.get('voice_id') or self.voices.default(scope)
-                        voice = self.voices.require(part['voice_id'],False)
+                        voice = self.voices.require(part['voice_id'],False,scope)
                         part['voice_revision'] = voice['revision']
                 event,_ = self.life.ingest(scope,'expression','inference','',external_id=logical,
                     source_event_ids=sources,payload=dict(parts=parts))

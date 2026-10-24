@@ -19,6 +19,8 @@ class ResourcePolicy:
     text_result_max_utf8_bytes: int = 12000
     dynamic_context_target_tokens: int = 3000
     memory_context_target_tokens: int = 1200
+    continuity_context_target_tokens: int = 400
+    autonomous_no_progress_limit: int = 3
 
     @classmethod
     def parse(cls,raw=None):
@@ -29,7 +31,8 @@ class ResourcePolicy:
         if any(type(v) is not int or v<=0 for v in asdict(result).values()):
             raise ValueError('resource_policy_requires_positive_integers')
         if (result.idle_max_seconds<result.idle_base_seconds or result.text_result_max_tokens<result.text_preview_target_tokens
-                or result.text_result_max_tokens<128 or result.text_result_max_utf8_bytes<512):
+                or result.text_result_max_tokens<128 or result.text_result_max_utf8_bytes<512
+                or result.continuity_context_target_tokens>result.memory_context_target_tokens):
             raise ValueError('invalid_resource_policy_bounds')
         return result
 
@@ -87,6 +90,11 @@ class AttentionPlans:
     def schedule(self,scope,ref,seconds,reason,*,kind='self_scheduled',sources=None,semantic_key=None):
         if kind not in self.KINDS or isinstance(seconds,bool) or not isinstance(seconds,(int,float)) or not math.isfinite(seconds) or seconds<0:
             raise SessionFailure('invalid_input','唤醒种类或时间无效')
+        if kind=='recovery' and getattr(self.role,'continuity_ready',False):
+            binding = self.role.sessions.binding(scope)
+            guard = self.role.initiative.get('initiative:guard:'+scope.scope_id+':protocol:'+binding['session_id'])
+            if guard and guard['phase']=='suspended':
+                return None
         if ref and self.role.tasks.blocker(ref,scope.scope_id):
             return
         binding = self.role.sessions.binding(scope)
@@ -110,6 +118,41 @@ class AttentionPlans:
             self.repo._exec('INSERT INTO idle_states VALUES(?,0,?,NULL) ON CONFLICT(scope_id) DO UPDATE SET unchanged_streak=0',
                 (scope.scope_id,time.time()))
 
+    def wait_resource(self,scope,candidate,reason):
+        ref = candidate if self.role.tasks.get(candidate or '',scope.scope_id) else None
+        with self.repo.tx():
+            key = self.schedule(scope,ref,0,'后台资源等待：'+reason,kind='tool_result',semantic_key='resource:'+scope.scope_id)
+            if key:
+                self.repo._exec("UPDATE role_wakes SET state='waiting_resource' WHERE id=?",(key,))
+        return key
+
+    def resource_ready_one(self):
+        offered = self.repo._one("SELECT v FROM meta WHERE k='initiative:resource_offer'")
+        if offered:
+            value = json.loads(offered['v'])
+            plan = self.repo._one('SELECT state FROM role_wakes WHERE id=?',(value['plan_id'],))
+            if plan and plan['state'] not in {'cancelled','waiting_resource'} and value['forget_epoch']==self.repo.forget_epoch(value['scope_id']):
+                return
+            self.repo._exec("DELETE FROM meta WHERE k='initiative:resource_offer'")
+        for plan in self.repo._all("SELECT w.* FROM role_wakes w LEFT JOIN meta m ON m.k='initiative:intent:'||w.intent_ref "
+                "WHERE w.state='waiting_resource' ORDER BY CASE WHEN json_extract(m.v,'$.classification')='interactive' THEN 0 ELSE 1 END,w.due,w.id"):
+            binding = self.repo._one("SELECT * FROM agent_sessions WHERE scope_id=? AND status='current' AND parent_session_id IS NULL",(plan['scope_id'],))
+            if (not binding or binding['generation']!=plan['generation'] or
+                    self.repo.forget_epoch(plan['scope_id'])!=plan['forget_epoch'] or
+                    plan['intent_ref'] and self.role.tasks.blocker(plan['intent_ref'],plan['scope_id'])):
+                self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE id=?",(plan['id'],))
+                continue
+            self.repo._exec("UPDATE role_wakes SET state='pending',due=?,reason=? WHERE id=? AND state='waiting_resource'",
+                (time.time(),'资源已可用；结合现在的消息决定是否继续原候选事项，也可以放下。',plan['id']))
+            self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',('initiative:resource_offer',canonical(dict(
+                scope_id=plan['scope_id'],plan_id=plan['id'],generation=plan['generation'],forget_epoch=plan['forget_epoch']))))
+            return plan['id']
+
+    def finish_resource_offer(self,scope_id):
+        row = self.repo._one("SELECT v FROM meta WHERE k='initiative:resource_offer'")
+        if row and json.loads(row['v'])['scope_id']==scope_id:
+            self.repo._exec("DELETE FROM meta WHERE k='initiative:resource_offer'")
+
     async def dispatch_due(self,now):
         import asyncio
         from .contracts import Scope
@@ -126,6 +169,7 @@ class AttentionPlans:
                 if invalid:
                     with self.repo.tx():
                         self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE id=? AND plan_revision=?",(plan['id'],plan['plan_revision']))
+                        self.finish_resource_offer(scope_id)
                 else:
                     batch.append(plan)
             if not batch:

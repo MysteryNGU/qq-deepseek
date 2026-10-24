@@ -83,6 +83,29 @@ def accept_onebot(life,raw):
     return event,created
 
 
+def validate_generated_media(data,kind):
+    """Validate actual bytes; local synthesis currently produces PCM WAV or PNG."""
+    import io
+    if kind=='image':
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as picture:
+            picture.load()
+            if picture.width*picture.height>16*1024*1024:
+                raise SessionFailure('invalid_input','图片像素数超过本机导入范围')
+            return Image.MIME[picture.format]
+    if kind=='audio':
+        import wave
+        import array
+        with wave.open(io.BytesIO(data),'rb') as audio:
+            if audio.getnchannels() not in {1,2} or audio.getsampwidth()!=2 or not 8000<=audio.getframerate()<=96000:
+                raise SessionFailure('invalid_input','本地音频导入需要 16bit PCM WAV')
+            samples = array.array('h',audio.readframes(audio.getnframes()))
+            if not len(samples) or not any(samples) or len(samples)!=audio.getnframes()*audio.getnchannels():
+                raise SessionFailure('invalid_input','音频为空、全静音或数据不完整')
+        return 'audio/wav'
+    raise SessionFailure('invalid_input','本机导入仅支持图片或 PCM WAV')
+
+
 class MediaService:
     def __init__(self,life,root,platform=None,local_roots=(),max_bytes=64*1024*1024,asr=None):
         self.life,self.repo,self.root = life,life.repo,Path(root).resolve()

@@ -34,6 +34,8 @@ class EditJournal:
 
 
 def queue_change(service,scope,proposal,identity,checksum):
+    if proposal.get('target')=='worker' and proposal.get('component','dsh') not in {'dsh','media'}:
+        raise SessionFailure('invalid_input','worker component 为 dsh 或 media')
     if proposal.get('target')=='dsh' and (not isinstance(proposal.get('edits'),list) or not proposal['edits']):
         raise SessionFailure('invalid_input','DSH 修改需要 edits:[{path,old,new}] 和具体验证目标')
     if proposal.get('target')=='plugin' and (proposal.get('action')!='remove' or not proposal.get('bundle')):
@@ -43,9 +45,10 @@ def queue_change(service,scope,proposal,identity,checksum):
     receipt = dict(change_id=identity,phase='dsh_queued',applied=False,behavior_validated=False,
                    verification_goal=proposal['verification_goal'])
     proposal = dict(proposal)
-    binding = service.repo._one("SELECT intent_ref,intent_revision FROM agent_sessions WHERE scope_id=? AND status='current'",(scope.scope_id,)) if service.repo._one("SELECT 1 FROM sqlite_master WHERE name='agent_sessions'") else None
+    binding = service.repo._one("SELECT session_id,intent_ref,intent_revision FROM agent_sessions WHERE scope_id=? AND status='current'",(scope.scope_id,)) if service.repo._one("SELECT 1 FROM sqlite_master WHERE name='agent_sessions'") else None
     if binding:
         proposal['_intent_ref'],proposal['_intent_revision'] = binding['intent_ref'],binding['intent_revision']
+        proposal['_origin_session_id']=binding['session_id']
     with service.repo.tx():
         service.repo._exec('INSERT INTO self_changes VALUES(?,?,?,?,?,?,?,?)',
             (identity,checksum,scope.scope_id,'dsh_queued',canonical(proposal),canonical(receipt),time.time(),time.time()))
@@ -61,6 +64,11 @@ async def process_queued(role):
     # unhandled input. A new message can still enter during build; activation
     # performs the same check again on the owning event loop.
     def eligible():
+        proposal=json.loads(rows[0]['manifest'])
+        if proposal.get('target')=='worker' and proposal.get('component')=='media':
+            media=role.local_media
+            if not media or media.active or media.blocked_reason or role.repo._one("SELECT 1 FROM work_jobs WHERE kind='local_media' AND status='running'"):
+                return False
         for root in role.repo._all("SELECT * FROM agent_sessions WHERE status='current'"):
             if role.sessions.pending(root['session_id']):
                 return False
@@ -96,7 +104,10 @@ async def process_queued(role):
                 return dict(ok=False,error='input_pending: 新消息到达，本次升级不切换 worker')
             return super().activate(timeout)
     try:
-        if proposal['target']=='dsh':
+        if proposal['target']=='worker' and proposal.get('component')=='media':
+            result=await role.local_media.refresh()
+            role.capabilities.snapshots.clear()
+        elif proposal['target']=='dsh':
             shop = Workshop(role.bridge.dsh_root,EditJournal(role.repo.path),role.bridge,role.cfg)
             result = await asyncio.to_thread(shop.apply_edits,proposal['edits'],proposal.get('reason',''),True,True)
         else:
@@ -107,9 +118,8 @@ async def process_queued(role):
             else:
                 await asyncio.to_thread(role.bridge.restart_worker)
             hello = await asyncio.to_thread(role.bridge.hello)
-            tools = await asyncio.to_thread(role.bridge.tools)
             result = dict(activated=True,worker_generation=hello.get('workerGeneration'),
-                          tool_names=[tool.get('name') for tool in tools])
+                          tool_snapshot='pending_current_agent_recovery')
         receipt = dict(change_id=row['id'],phase='applied' if result.get('activated') else 'failed',
             applied=bool(result.get('activated')),behavior_validated=False,verification_goal=proposal['verification_goal'],
             result=result,loaded_adapter_version=getattr(role.bridge,'loaded_adapter_version',''))
@@ -118,9 +128,20 @@ async def process_queued(role):
     with role.repo.tx():
         role.repo._exec('UPDATE self_changes SET phase=?,receipt=?,updated=? WHERE id=?',
             (receipt['phase'],canonical(receipt),time.time(),row['id']))
-    await role.recover()
+    if not (proposal['target']=='worker' and proposal.get('component')=='media'):
+        await role.recover()
     from .contracts import Scope
-    binding = role.repo._one("SELECT scope_json FROM agent_sessions WHERE scope_id=? AND status='current'",(row['scope_id'],))
+    binding = role.repo._one("SELECT * FROM agent_sessions WHERE scope_id=? AND status='current'",(row['scope_id'],))
     if binding:
-        role.schedule(Scope(**json.loads(binding['scope_json'])),None,1,
+        if receipt.get('applied') and not (proposal['target']=='worker' and proposal.get('component')=='media'):
+            try:
+                tools=await asyncio.to_thread(role.bridge.tools,scope=binding['session_id'])
+                receipt['current_agent_snapshot']=dict(session_id=binding['session_id'],generation=binding['generation'],
+                    tool_names=[t.get('name') for t in tools],original_intent_ref=proposal.get('_intent_ref'),
+                    verified_use=False)
+            except Exception as error:
+                receipt['current_agent_snapshot']=dict(status='unavailable',error=str(error)[:500],verified_use=False)
+            with role.repo.tx():
+                role.repo._exec('UPDATE self_changes SET receipt=? WHERE id=?',(canonical(receipt),row['id']))
+        role.schedule(Scope(**json.loads(binding['scope_json'])),proposal.get('_intent_ref'),1,
             'DSH 自我修改有新回执，请读取 self_changes，核对运行版本后回到原目标验证；不要把构建成功当成目标完成。',kind='recovery')

@@ -196,15 +196,18 @@ class MemoryService:
     # ---------------------------------------------------------------- 检索
 
     def retrieve(self, scope: Scope, query: str, now: float | None = None,
-                 budget: int | None = None, mode: str = "current") -> RetrievalPacket:
+                 budget: int | None = None, mode: str = "current", *, _queries=None, _exclude=()) -> RetrievalPacket:
         now = now_ts() if now is None else now
         budget = max(0, int(self.cfg.token_budget if budget is None else budget))
-        qterms = text_terms(query or "")[:96]
+        queries = [query or ''] if _queries is None else list(_queries)[:3]
+        qterms = list(dict.fromkeys(t for q in queries for t in text_terms(q)[:96]))
         statuses = ["active", "disputed"] if mode == "current" else [
             "active", "disputed", "superseded", "archived"]
 
-        candidates = self.repo.search_memories(
-            scope, qterms, statuses, limit=self.cfg.candidate_limit) if qterms else []
+        candidates = []
+        for cue in queries:
+            candidates += self.repo.search_memories(scope,text_terms(cue)[:96],statuses,
+                limit=20 if _queries is not None else self.cfg.candidate_limit)
         candidates += self.repo.recent_memories(scope, statuses, limit=30)
         if getattr(self, 'recollection', None):
             candidates += self.recollection.expansion(scope, query)
@@ -212,7 +215,7 @@ class MemoryService:
         # verified fact. Other candidate memories keep their existing policy.
         candidates += [memory for memory in self.repo.recent_memories(scope, ["candidate"], limit=30)
                        if memory.kind == "knowledge" and memory.source_kind == "tool_observation"]
-        by_id: dict[str, Memory] = {m.id: m for m in candidates}
+        by_id: dict[str, Memory] = {m.id: m for m in candidates if m.id not in _exclude}
         loops = self.repo.active_open_loops(scope, limit=8)
         loop_terms = {l.id: set(text_terms(l.summary + " " + l.next_step)) for l in loops}
 
@@ -221,7 +224,9 @@ class MemoryService:
         for m in by_id.values():
             sources = self.repo.events_by_ids(s.event_id for s in m.sources)
             if (len(sources) != len({s.event_id for s in m.sources})
-                    or any(source.scope.private_key != scope.private_key for source in sources)):
+                    or m.scope.audience_policy_id != scope.audience_policy_id
+                    or any(source.scope.private_key != scope.private_key or
+                           source.scope.audience_policy_id != scope.audience_policy_id for source in sources)):
                 continue
             mterms = set(self.repo.memory_terms(m.id))
             relevance = (len(set(qterms) & mterms) / max(1, len(set(qterms)))) if qterms else 0.0
@@ -240,12 +245,22 @@ class MemoryService:
         scored.sort(key=lambda x: (-x[0], -x[1].updated_at))
         chosen: list[Memory] = []
         per_group: dict[str, int] = {}
+        seen_evidence = set()
+        if _queries is not None:
+            for identity in _exclude:
+                item = self.repo.get_memory(identity)
+                if item and item.scope.private_key==scope.private_key:
+                    seen_evidence.update(s.event_id for s in item.sources)
         for _score, m in scored:
+            evidence = {s.event_id for s in m.sources}
+            if _queries is not None and evidence & seen_evidence:
+                continue
             group = m.event_group_id or m.id
             if per_group.get(group, 0) >= self.cfg.max_per_event_group:
                 continue
             per_group[group] = per_group.get(group, 0) + 1
             chosen.append(m)
+            seen_evidence.update(evidence)
             if len(chosen) >= self.cfg.max_items:
                 break
 
@@ -265,6 +280,10 @@ class MemoryService:
 
         packet.text, packet.token_estimate, packet.missing = self._render(packet, budget, now)
         return packet
+
+    def retrieve_multi(self, scope, cues, *, budget, exclude=()):
+        """At most three lexical routes, merged before a single budget is rendered."""
+        return self.retrieve(scope,' '.join(cues),budget=budget,_queries=cues,_exclude=exclude)
 
     def _render(self, packet: RetrievalPacket, budget: int, now: float | None = None) -> tuple[str, int, list[str]]:
         now = now_ts() if now is None else now

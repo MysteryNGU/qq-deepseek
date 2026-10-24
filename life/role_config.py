@@ -25,6 +25,9 @@ class Config:
     life_db: str = 'data/life.db'
     life_agent: str = 'default'
     resource_policy: dict = field(default_factory=dict)
+    continuity_enabled: bool = False
+    capability_policies: list[dict] = field(default_factory=list)
+    local_media: dict = field(default_factory=dict)
     life_dynamics: dict = field(default_factory=dict)
     dsh_root: str = '../dsh-bridge-work'
     dsh_home: str = '../dsh-qq-home'
@@ -53,6 +56,9 @@ def load_config(path: Path):
     if unknown:
         raise ValueError('obsolete_or_unknown_config: '+', '.join(sorted(unknown)))
     cfg = Config(**raw)
+    cfg._source_path=str(Path(path).resolve())
+    if type(cfg.continuity_enabled) is not bool:
+        raise ValueError('continuity_enabled_requires_boolean')
     from .resource_policy import ResourcePolicy
     if cfg.idle_seconds is not None:
         import logging
@@ -63,6 +69,8 @@ def load_config(path: Path):
         cfg.resource_policy.setdefault('idle_base_seconds',previous_idle)
         logging.getLogger(__name__).warning('旧 idle_seconds 已映射为 resource_policy.idle_base_seconds；请迁移配置')
     cfg.resource_policy = ResourcePolicy.parse(cfg.resource_policy).__dict__.copy()
+    from .local_media_config import LocalMediaConfig
+    cfg.local_media = LocalMediaConfig.parse(cfg.local_media).__dict__.copy()
     cfg.api_key = os.environ.get('DEEPSEEK_API_KEY',cfg.api_key)
     cfg.ws_url = os.environ.get('QQ_WS_URL',cfg.ws_url)
     if not cfg.owner:

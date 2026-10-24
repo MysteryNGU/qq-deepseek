@@ -26,6 +26,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         cfg = Config(owner=1,friends=[2],allow_groups=[3])
         bridge = SimpleNamespace(provider='test',model='test',_generation=1)
         self.host = RoleHost(cfg,root,transport=transport,bridge=bridge)
+        self.host.role_ready.set()
         self.host.expressions.sleep = AsyncMock()
         self.ingest = AsyncMock()
         self.host.role.ingest = self.ingest
@@ -39,18 +40,48 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             user_id=user,message_id=100+user,time=time or int(self.host.accept_after)+1,
             message=[dict(type='text',data=dict(text='hello'))])
 
-    async def test_startup_gate_ignores_old_and_before_greeting_then_accepts_new(self):
-        await self.host.receive(self.raw())
+    async def test_live_messages_do_not_depend_on_startup_greeting(self):
+        cutoff = self.host.accept_after
+        await self.host.receive(self.raw(time=int(cutoff)-2))
         self.ingest.assert_not_called()
+        await self.host.receive(self.raw())
+        self.ingest.assert_awaited_once()
         scope = self.host.life.scope('qq:private:1','1')
         event,_ = self.host.life.ingest(scope,'startup','inference','test boot')
         self.host.boot_event_id = event.id
         await self.host.send(scope,'greet',dict(text='hello'),[event.id])
         self.assertTrue(self.host.boot_ready)
-        await self.host.receive(self.raw(time=int(self.host.accept_after)-2))
-        self.ingest.assert_not_called()
+        self.assertEqual(self.host.accept_after,cutoff)
+        # Duplicate delivery during startup is still deduplicated.
         await self.host.receive(self.raw())
         self.ingest.assert_awaited_once()
+
+    async def test_friends_and_groups_can_reply_before_owner_greeting(self):
+        for user,group in ((2,False),(1,True)):
+            await self.host.receive(self.raw(user=user,group=group))
+            event = self.ingest.call_args.args[0]
+            result = await self.host.send(event.scope,'reply:'+event.id,dict(text='hello'),[event.id])
+            self.assertTrue(result['sent_confirmed'])
+        self.assertEqual(self.ingest.await_count,2)
+        self.assertFalse(self.host.boot_ready)
+
+    async def test_messages_are_durable_while_cognition_is_initializing(self):
+        self.host.role_ready.clear()
+        task = asyncio.create_task(self.host.receive(self.raw()))
+        try:
+            await asyncio.sleep(0)
+            self.ingest.assert_not_called()
+            row = self.host.life.repo._one('SELECT * FROM agent_inputs')
+            self.assertIsNotNone(row)
+            self.assertEqual(row['state'],'pending')
+            self.assertEqual(self.host.life.repo.get_event(row['input_id']).text,'hello')
+            self.host.role_ready.set()
+            await task
+            self.ingest.assert_awaited_once()
+            self.assertEqual(self.ingest.call_args.args[0].id,row['input_id'])
+        finally:
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
 
     async def test_group_no_mention_and_owner_has_only_public_context(self):
         self.host.boot_ready = True

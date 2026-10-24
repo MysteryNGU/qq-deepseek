@@ -73,6 +73,36 @@ class BridgeTestCase(unittest.TestCase):
         return sum(1 for line in self.count.read_text(encoding="utf-8").splitlines()
                    if line.split("\t")[0] == op)
 
+    def test_A10_bridge_bundle_does_not_overwrite_plugin_profile_configuration(self):
+        import json
+        bridge=self.new_bridge();bridge.ensure_profile()
+        profile=bridge.profile_dir();patch=profile/'cordis.patch.yml'
+        custom='- insert:\n    - id: ordinary-plugin\n      name: ordinary-plugin\n      config:\n        setting: retained\n'
+        # Upgrade from the exact former managed patch plus a plugin-owned addition.
+        old=(profile/'qq-life-core/cordis.patch.yml').read_text('utf-8')
+        patch.write_text(old+custom,encoding='utf-8')
+        bridge.ensure_profile()
+        self.assertEqual(patch.read_text('utf-8'),custom)
+        manifest=profile/'package.json';value=json.loads(manifest.read_text('utf-8'))
+        value['dsh']['profile']['bundles'].append('ordinary-bundle')
+        value['dependencies']['ordinary-bundle']='1.0.0'
+        manifest.write_text(json.dumps(value),encoding='utf-8')
+        bridge.ensure_profile();bridge.ensure_profile()
+        self.assertEqual(patch.read_text('utf-8'),custom)
+        current=json.loads(manifest.read_text('utf-8'))
+        self.assertEqual(current['dependencies']['ordinary-bundle'],'1.0.0')
+        self.assertEqual(current['dsh']['profile']['bundles'].count('@qq-life/bridge-core'),1)
+        self.assertIn('ordinary-bundle',current['dsh']['profile']['bundles'])
+
+    def test_A10_empty_profile_remains_a_valid_loader_patch_list(self):
+        import json
+        bridge=self.new_bridge();bridge.ensure_profile()
+        profile=bridge.profile_dir();patch=profile/'cordis.patch.yml'
+        self.assertEqual(json.loads(patch.read_text('utf-8')),[])
+        patch.write_text((profile/'qq-life-core/cordis.patch.yml').read_text('utf-8'),encoding='utf-8')
+        bridge.ensure_profile()
+        self.assertEqual(json.loads(patch.read_text('utf-8')),[])
+
     def test_handshake_requires_real_ownership(self) -> None:
         os.environ["STUB_OWNED"] = "0"
         bridge = self.new_bridge()

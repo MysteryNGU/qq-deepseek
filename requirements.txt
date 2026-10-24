@@ -10,3 +10,4 @@ pydantic>=2.11,<2.12
 qrcode[pil]>=8
 tzdata
 jsonschema>=4.23,<5
+psutil>=7,<8

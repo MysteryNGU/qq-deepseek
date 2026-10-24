@@ -124,7 +124,7 @@ class SelfChange:
             raise SessionFailure('scope_mismatch','不通过符号链接修改人格或方法')
         return target
 
-    async def apply(self, scope, proposal, change_id):
+    async def apply(self, scope, proposal, change_id, *, require_skill_baseline=False):
         if scope.participant_id != str(self.cfg.owner):
             raise SessionFailure('scope_mismatch','全局自我修改属于主人会话与自主生活')
         if not isinstance(proposal,dict):
@@ -169,7 +169,26 @@ class SelfChange:
                 name = str(proposal['name'])
                 if not name.endswith('.md'):
                     name += '.md'
-                candidates = [dict(path='skills/'+name,content=str(proposal['content']))]
+                path=self.path('skills/'+name)
+                current=file_hash(path)
+                if require_skill_baseline:
+                    if current is None:
+                        if proposal.get('create') is not True or proposal.get('base_hash') is not None:
+                            raise SessionFailure('stale_context','创建方法需要 create:true、base_hash:null，预期文件不存在')
+                    elif proposal.get('create') or not isinstance(proposal.get('base_hash'),str) or proposal['base_hash']!=current:
+                        raise SessionFailure('stale_context','方法已存在或 hash 已改变；读取最新方法后合并',current_hash=current)
+                elif 'base_hash' in proposal and proposal['base_hash']!=current:
+                    raise SessionFailure('stale_context','方法 hash 已改变；请重新读取',current_hash=current)
+                metadata=proposal.get('metadata')
+                methods=getattr(self.life,'method_store',None)
+                if metadata is not None and methods:
+                    methods.validate_metadata(metadata)
+                item=dict(path='skills/'+name,content=str(proposal['content']),base_hash=current)
+                if not require_skill_baseline and 'base_hash' not in proposal:
+                    item['legacy_skill_write']=True
+                if metadata is not None:
+                    item['method_metadata']=metadata
+                candidates=[item]
             elif proposal.get('files'):
                 candidates = proposal['files']
             else:
@@ -179,6 +198,14 @@ class SelfChange:
             for item in candidates:
                 path = self.path(item['path'])
                 current = file_hash(path)
+                is_method=path.parent==(self.root/'skills').resolve()
+                if is_method and require_skill_baseline and proposal.get('target')!='skill':
+                    valid=(item.get('create') is True and item.get('base_hash') is None) if current is None else (
+                        not item.get('create') and isinstance(item.get('base_hash'),str) and item['base_hash']==current)
+                    if not valid:
+                        raise SessionFailure('stale_context','所有方法写入都需要实际 base_hash，创建须显式 create:true')
+                if is_method and 'method_metadata' in item and getattr(self.life,'method_store',None):
+                    self.life.method_store.validate_metadata(item['method_metadata'])
                 expected = item.get('base_hash',current)
                 if expected is not None and expected != current:
                     raise SessionFailure('stale_context','文件已改变，请重新读取',path=item['path'],current_hash=current)
@@ -192,6 +219,10 @@ class SelfChange:
                     compile_persona(path,source_text=content)
                 manifest.append(dict(path=path.relative_to(self.root).as_posix(),base_hash=current,
                     content=content,target_hash=hashlib.sha256(content.encode()).hexdigest()))
+                if 'method_metadata' in item:
+                    manifest[-1]['method_metadata']=item['method_metadata']
+                if item.get('legacy_skill_write') or (is_method and not require_skill_baseline and 'base_hash' not in proposal and 'base_hash' not in item):
+                    manifest[-1]['legacy_skill_write']=True
             with self.repo.tx():
                 self.repo._exec('INSERT INTO self_changes VALUES(?,?,?,?,?,?,?,?)',
                     (change_id,checksum,scope.scope_id,'prepared',canonical(manifest),None,time.time(),time.time()))
@@ -221,8 +252,18 @@ class SelfChange:
         effective = {item['path']:file_hash(self.path(item['path'])) for item in manifest}
         if any(effective[item['path']]!=item['target_hash'] for item in manifest):
             raise SessionFailure('stale_context','实际加载版本与候选不一致')
+        method_versions=[]
+        methods=getattr(self.life,'method_store',None)
+        if methods:
+            for item in manifest:
+                if item['path'].startswith('skills/'):
+                    method_versions.append(methods.reconcile(Path(item['path']).name,item.get('method_metadata'),item['target_hash']))
         receipt = dict(change_id=change['id'],phase='applied',persona_hash=spec.digest,
             behavior_hash=behavior_hash,effective=effective,behavior_validated=False)
+        if method_versions:
+            receipt['methods']=[dict(ref='method:bot:'+m['id'],hash=m['body_hash'],version=m['version'],visibility=m['visibility']) for m in method_versions if m]
+        if any(item.get('legacy_skill_write') for item in manifest):
+            receipt['compatibility_notice']='旧方法写入未提供基线；升级会话后更新需 base_hash，新建需 create:true、base_hash:null。'
         with self.repo.tx():
             self.repo._exec("UPDATE self_changes SET phase='applied',receipt=?,updated=? WHERE id=?",
                 (canonical(receipt),time.time(),change['id']))
@@ -267,7 +308,11 @@ class SelfChange:
         # between preparation and this receipt cannot create another candidate.
         with controller._db() as database:
             found = database.execute("SELECT id FROM candidates WHERE json_extract(manifest,'$.proposal_id')=?",(change_id,)).fetchone()
-        identity = found[0] if found else await asyncio.to_thread(controller.prepare,change_id,proposal['patch'])
+        try:
+            identity = found[0] if found else await asyncio.to_thread(controller.prepare,change_id,proposal['patch'])
+        except (ValueError, PermissionError) as error:
+            raise SessionFailure('invalid_candidate', '候选补丁未生成：'+str(error),
+                applied=False, hint='核对候选路径与补丁基线；这不是项目目录的系统写权限错误。') from error
         with self.repo.tx():
             self.repo._exec("INSERT INTO self_changes VALUES(?,?,?,'code_prepared',?,NULL,?,?) ON CONFLICT(id) DO NOTHING",
                 (change_id,checksum,scope.scope_id,canonical(proposal),time.time(),time.time()))

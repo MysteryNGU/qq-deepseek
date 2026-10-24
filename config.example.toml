@@ -14,6 +14,9 @@ allow_groups = []
 allow_all_private = false
 life_db = "data/life.db"
 life_agent = "default"
+continuity_enabled = false
+# Optional policy overrides; ordinary packages can supply installed identity/policy metadata.
+capability_policies = []
 life_dynamics = {  }
 dsh_root = "../dsh-bridge-work"
 dsh_home = "../dsh-qq-home"
@@ -34,6 +37,30 @@ media_local_roots = []
 media_max_mb = 64
 asr_model = "small"
 asr_language = "zh"
+# Enable only after both isolated engines and their fixed model versions are installed.
+[local_media]
+enabled = false
+root = "data/local-media"
+voice_python = ""
+voice_engine_root = ""
+voice_model_dir = ""
+voice_model_version = ""
+image_server = ""
+image_model_dir = ""
+image_model_version = ""
+# Optional owner-private reference/sample manifest; imported with verified digests.
+preset_manifest = ""
+timeout_seconds = 600
+min_available_ram_mib = 1024
+min_free_vram_mib = 4096
+max_pending_jobs = 8
+max_text_chars = 1000
+worker_threads = 4
+image_max_vram_gib = 5.0
+# Providers add to legacy engines; matching provider_id replaces/disables only that entry.
+providers = []
+defaults = {}
+
 [resource_policy]
 idle_base_seconds = 900
 idle_max_seconds = 7200
@@ -43,3 +70,5 @@ text_result_max_tokens = 2000
 text_result_max_utf8_bytes = 12000
 dynamic_context_target_tokens = 3000
 memory_context_target_tokens = 1200
+continuity_context_target_tokens = 400
+autonomous_no_progress_limit = 3

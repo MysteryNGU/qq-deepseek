@@ -1,0 +1,479 @@
+[
+  {
+    "tool": "mcp__bili__bili_login_check",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_check_credential",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_search",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_comments",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_subtitle",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_danmaku",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_video_info",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_crawl",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_video_zones",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_hot_videos",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_hot_buzzwords",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_weekly_hot",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_rank",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_user_info",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_user_videos",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_favorite_lists",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_favorite_content",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_unread_messages",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_dm_recent",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_received_replies",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_received_at_and_likes",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_reply",
+    "effect": "write",
+    "principal_adoption": true,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_send_dynamic",
+    "effect": "write",
+    "principal_adoption": true,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_upload_video",
+    "effect": "write",
+    "principal_adoption": true,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_upload_video_multi",
+    "effect": "write",
+    "principal_adoption": true,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_send_opus",
+    "effect": "write",
+    "principal_adoption": true,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_send_message",
+    "effect": "write",
+    "principal_adoption": true,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "mcp__bili__bili_triple",
+    "effect": "write",
+    "principal_adoption": true,
+    "audience": "owner",
+    "account": "installed-bili-account",
+    "resource": "network",
+    "source": "legacy-owned-bili-profile"
+  },
+  {
+    "tool": "read_file",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "read",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "glob",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "grep",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "search",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "web_search",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "web_fetch",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "fetch",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "list_directory",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "skill",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "list_agents",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "wait_agent",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "subagent_status",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "subagent",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "send_message",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "cancel_agent",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "interrupt_agent",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "subagent_cancel",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "shell",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "bash",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "terminal",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "exec_command",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "write_file",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "edit_file",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  },
+  {
+    "tool": "apply_patch",
+    "effect": "unknown",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-local-compatibility"
+  }
+]

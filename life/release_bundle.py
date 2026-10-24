@@ -16,20 +16,23 @@ def prepare(controller,proposal_id,patch):
         raise ValueError('empty_or_invalid_code_changes')
     originals = {p.relative_to(controller.source).as_posix():p for p in controller._files()}
     updates = {}
-    seen = set()
+    seen = {}
     for item in changes:
         path = (controller.source/str(item['file']).replace('\\','/')).resolve()
         relative = path.relative_to(controller.source).as_posix()
-        if (relative.casefold() in seen or relative.casefold() in {p.casefold() for p in controller.PROTECTED}
+        action = item.get('action','replace')
+        previous = seen.get(relative.casefold())
+        if (previous and (previous != (relative, 'replace') or action != 'replace')):
+            raise ValueError('conflicting_candidate_file_actions')
+        if (relative.casefold() in {p.casefold() for p in controller.PROTECTED}
                 or relative.casefold().startswith(('audit/','tests/','data/','.git/'))
                 or path.name.casefold().endswith('test.py') or path.name.casefold().startswith('test_')
                 or path.suffix!='.py' or (relative not in originals and not (
                     path.parent==controller.source or relative.startswith('life/')))):
             raise PermissionError('protected_or_unknown_candidate_path')
-        seen.add(relative.casefold())
+        seen[relative.casefold()] = (relative, action)
         if path.is_symlink():
             raise ValueError('source_symlink_not_allowed')
-        action = item.get('action','replace')
         if action=='create':
             if path.exists():
                 raise ValueError('new_file_already_exists')
@@ -37,7 +40,8 @@ def prepare(controller,proposal_id,patch):
         else:
             if relative not in originals:
                 raise ValueError('patch_source_missing')
-            text = path.read_text('utf-8')
+            # Several ordered replacements in one file are one candidate change.
+            text = updates.get(relative, path.read_text('utf-8'))
             if action in {'write','delete'}:
                 if item.get('base_hash')!=controller.digest(path):
                     raise ValueError('patch_base_mismatch')
@@ -49,9 +53,10 @@ def prepare(controller,proposal_id,patch):
                 content = text.replace(old,new,1)
             else:
                 raise ValueError('unknown_patch_action')
+        updates[relative] = content
+    for relative,content in updates.items():
         if content is not None:
             compile(content,relative,'exec')
-        updates[relative] = content
     from .release_migrations import validate
     migrations = patch.get('migrations',[])
     validate(migrations)

@@ -76,6 +76,34 @@ class TombstoneLedger:
                 repo._exec("UPDATE role_wakes SET state='cancelled' WHERE scope_id=?",(scope.scope_id,))
                 repo._exec("UPDATE role_operations SET arguments='{}',result='{}',cancel_requested=1 WHERE scope_id=?",(scope.scope_id,))
                 repo._exec("DELETE FROM meta WHERE k LIKE 'action_task:%' AND json_extract(v,'$.scope_id')=?",(scope.scope_id,))
+                repo._exec("DELETE FROM meta WHERE k IN (SELECT 'delegate_methods:'||session_id FROM agent_sessions WHERE scope_id=?)",(scope.scope_id,))
+                repo._exec("DELETE FROM meta WHERE k IN (SELECT 'delegate_method_sources:'||id FROM role_operations WHERE scope_id=?)",(scope.scope_id,))
+                for row in repo._all("SELECT k,v FROM meta WHERE k LIKE 'skill_meta:%'"):
+                    method=json.loads(row['v'])
+                    if method.get('scope_id')!=scope.scope_id:
+                        continue
+                    if method.get('visibility')=='public' and not method.get('sources'):
+                        method['forget_epoch']=epoch
+                    else:
+                        method.update(state='revoked',description='',sources=[],version=method['version']+1)
+                    repo._exec('UPDATE meta SET v=? WHERE k=?',(json.dumps(method,ensure_ascii=False),row['k']))
+                repo._exec("DELETE FROM meta WHERE k=? OR (k LIKE 'continuity:expression:%' AND json_extract(v,'$.scope_id')=?)",
+                           ('continuity:reflection:'+scope.scope_id,scope.scope_id))
+                for control in repo._all("SELECT k,v FROM meta WHERE k LIKE 'initiative:%'"):
+                    value = json.loads(control['v'])
+                    if value.get('scope_id')!=scope.scope_id and value.get('root_scope_id')!=scope.scope_id:
+                        continue
+                    if control['k'].startswith(('initiative:guard:','initiative:intent:')) or control['k']=='initiative:resource_offer':
+                        repo._exec('DELETE FROM meta WHERE k=?',(control['k'],))
+                    else:
+                        # Keep only ownership needed to stop/reconcile live work.
+                        value.pop('arguments',None)
+                        value.pop('trigger_refs',None)
+                        if 'attribution' in value:
+                            value['attribution']['trigger_refs']=[]
+                        if value.get('members'):
+                            value['phase']='outcome_unknown'
+                        repo._exec('UPDATE meta SET v=? WHERE k=?',(json.dumps(value,ensure_ascii=False),control['k']))
             if repo._one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='expressions'"):
                 repo._exec("UPDATE expressions SET plan='{}',rendered=NULL WHERE scope_id=?",(scope.scope_id,))
             if repo._one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='self_changes'"):

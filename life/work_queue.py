@@ -51,7 +51,7 @@ class WorkQueue:
                  self.repo.forget_epoch(scope.scope_id), self.policy_epoch(scope.scope_id), now, now))
         return key
 
-    def claim(self, job_id: str | None = None, ttl: float = 120) -> Lease | None:
+    def claim(self, job_id: str | None = None, ttl: float = 120, *, kinds=None) -> Lease | None:
         now = self.clock()
         with self.repo.tx():
             sql = ("SELECT * FROM work_jobs WHERE due<=? AND "
@@ -60,6 +60,12 @@ class WorkQueue:
             if job_id:
                 sql += " AND id=?"
                 args.append(job_id)
+            if kinds is not None:
+                kinds = tuple(kinds)
+                if not kinds:
+                    return None
+                sql += " AND kind IN (" + ','.join('?' for _ in kinds) + ")"
+                args.extend(kinds)
             row = self.repo._one(sql + " ORDER BY due,created LIMIT 1", args)
             if not row:
                 return None
@@ -106,7 +112,7 @@ class WorkQueue:
             return True
 
     def finish(self, lease: Lease, status="done", *, checkpoint=None, delay=0, error="") -> bool:
-        if status not in {"done", "pending", "paused", "waiting", "unknown", "quarantined", "cancelled"}:
+        if status not in {"done", "pending", "paused", "waiting", "unknown", "quarantined", "cancelled", "failed"}:
             raise ValueError("invalid_job_status")
         with self.repo.tx():
             if not self.current(lease):
@@ -123,7 +129,7 @@ class WorkQueue:
             if not self.current(lease):
                 return False
             row = self.repo._one("SELECT * FROM resource_leases WHERE resource=?", (resource,))
-            if row and row["until"] > self.clock() and row["token"] != lease.token:
+            if row and row["token"] != lease.token and (resource.startswith('gpu:') or row["until"] > self.clock()):
                 return False
             self.repo._exec("INSERT OR REPLACE INTO resource_leases VALUES(?,?,?,?)",
                             (resource, lease.id, lease.token, self.clock() + ttl))

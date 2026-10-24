@@ -20,10 +20,10 @@ log = logging.getLogger(__name__)
 
 
 class ProcessTree:
-    def __init__(self, command, *, cwd, env, pipes=False,text=False,stderr_file=None):
+    def __init__(self, command, *, cwd, env, pipes=False,text=False,stderr_file=None,stdout_file=None):
         self.job = None
         self.process = subprocess.Popen(command, cwd=cwd, env=env,
-            stdin=subprocess.PIPE if pipes else None, stdout=subprocess.PIPE if pipes else None,
+            stdin=subprocess.PIPE if pipes else None, stdout=stdout_file if stdout_file is not None else (subprocess.PIPE if pipes else None),
             stderr=stderr_file if stderr_file is not None else (subprocess.PIPE if pipes else None),
             text=text,encoding='utf-8' if text else None,errors='replace' if text else None,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), start_new_session=os.name != "nt")

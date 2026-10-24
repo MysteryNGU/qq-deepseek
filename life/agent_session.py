@@ -178,6 +178,29 @@ class AgentSessions:
         return [dict(r) for r in self.repo._all('SELECT * FROM agent_inputs WHERE session_id=? '
             "AND handled=0 AND state!='rejected' ORDER BY ordinal", (session_id,))]
 
+    def pending_view(self, session_id):
+        """Transport completion is not acknowledgement of understanding."""
+        result = []
+        for item in self.pending(session_id):
+            event = self.repo.get_event(item['input_id'])
+            result.append(dict(input_id=item['input_id'], state=item['state'],
+                ordinal=item['ordinal'], handled=False,
+                can_acknowledge=item['state'] in {'consumed','settled'},
+                kind=event.kind if event else None,
+                preview=event.text[:240] if event and not event.redacted_at else '',
+                read_kind='observation'))
+        return result
+
+    def pending_failure(self, session_id):
+        pending = self.pending_view(session_id)
+        # The DSH tool adapter displays the message, not arbitrary receipt fields.
+        # Include a bounded, actionable batch here as well as structured metadata.
+        message = ('本次理解进度已保存，仍有未确认处理的输入。settled 只表示所在模型轮已结束，'
+            '不表示你已处理；consumed/settled 都可以在理解后提交 handled_input_ids，跨轮也有效。'
+            '需要原文时用 life_read(kind=observation,event_id=input_id)；pending/accepted 先等实际进入模型。'
+            '请处理下列剩余输入后再表达或休息：'+canonical(pending[:12]))
+        return SessionFailure('input_pending', message, pending_inputs=pending[:12], pending_count=len(pending))
+
     def apply_event(self, sid, event):
         checksum, seq = digest(event), int(event['seq'])
         with self.repo.tx():
