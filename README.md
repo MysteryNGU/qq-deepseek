@@ -95,7 +95,7 @@ python -m venv .venv
 
 ## Git 与本地资料
 
-迁移到另一台电脑时，双击 `导出个人配置.bat`。默认在 `backups/` 生成含源码、真实配置、人格、记忆、音色素材及 Bot 专用 DSH 状态的迁移 ZIP，并逐文件校验。脚本也可直接运行：
+迁移到另一台电脑时，双击 `导出个人配置.bat`。默认在 `backups/` 生成含源码、真实配置、人格、记忆、音色素材及 Bot 专用 DSH 状态的迁移 ZIP，默认只打包、不做额外校验。需要时可显式添加 `--verify`。脚本也可直接运行：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 scripts/export_private_bundle.py

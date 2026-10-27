@@ -11,6 +11,6 @@ if exist ".venv\Scripts\python.exe" (
 )
 set "export_result=%ERRORLEVEL%"
 if not "%export_result%"=="0" echo 导出失败，请查看上面的原因；不要使用 .partial 文件。
-if "%export_result%"=="0" echo 已导出并校验，默认输出在项目 backups 文件夹。
+if "%export_result%"=="0" echo 已导出，默认不做额外校验。输出在项目 backups 文件夹。
 pause
 exit /b %export_result%

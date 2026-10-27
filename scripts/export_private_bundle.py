@@ -36,8 +36,9 @@ def file_hash(path):
 
 
 class Exporter:
-    def __init__(self, root, destination):
+    def __init__(self, root, destination, *, verify=False):
         self.root, self.destination = root.resolve(), destination.resolve()
+        self.verify = verify
         self.files, self.excluded, self.roots, self.manual = {}, [], [], []
         self.missing = []
 
@@ -177,7 +178,7 @@ class Exporter:
                     outgoing = sqlite3.connect(source)
                     try:
                         incoming.backup(outgoing, pages=256, progress=progress)
-                        if outgoing.execute('PRAGMA quick_check').fetchone()[0] != 'ok':raise ValueError('sqlite_integrity_failed')
+                        if self.verify and outgoing.execute('PRAGMA quick_check').fetchone()[0] != 'ok':raise ValueError('sqlite_integrity_failed')
                     finally:outgoing.close();incoming.close()
                     mode = 'sqlite_consistent_backup'
                 before = source.stat();digest = hashlib.sha256()
@@ -198,21 +199,21 @@ class Exporter:
                 paths_to_review=self.manual, sqlite_snapshot=True, cross_store_atomic=False)
             archive.writestr('migration/manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2))
             archive.writestr('迁移说明.txt', MIGRATION_GUIDE)
-        print('Verifying every archived file...', flush=True)
-        with zipfile.ZipFile(partial) as archive:
-            for entry in entries:
-                with archive.open(entry['path']) as stream:
-                    if hashlib.file_digest(stream, 'sha256').hexdigest() != entry['sha256']:
-                        raise ValueError('archive_hash_mismatch: '+entry['path'])
-            # Reading all members also checks their CRC, including generated metadata.
-            for name in ('migration/manifest.json', 'migration/environment.private.json', '迁移说明.txt'):
-                archive.read(name)
+        if self.verify:
+            print('Verifying every archived file...', flush=True)
+            with zipfile.ZipFile(partial) as archive:
+                for entry in entries:
+                    with archive.open(entry['path']) as stream:
+                        if hashlib.file_digest(stream, 'sha256').hexdigest() != entry['sha256']:
+                            raise ValueError('archive_hash_mismatch: '+entry['path'])
+                for name in ('migration/manifest.json', 'migration/environment.private.json', '迁移说明.txt'):
+                    archive.read(name)
         partial.rename(target)
-        checksum = file_hash(target)
-        target.with_suffix('.zip.sha256').write_text(checksum+'  '+target.name+'\n', encoding='utf-8')
+        checksum = file_hash(target) if self.verify else None
+        if checksum:target.with_suffix('.zip.sha256').write_text(checksum+'  '+target.name+'\n', encoding='utf-8')
         result = dict(archive=str(target), bytes=target.stat().st_size, files=len(entries),
                       sqlite_databases=sum(e['mode']=='sqlite_consistent_backup' for e in entries),
-                      sha256=checksum, verified=True, missing_optional=self.missing)
+                      sha256=checksum, verified=self.verify, missing_optional=self.missing)
         target.with_suffix('.summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return target
@@ -231,7 +232,7 @@ recovery-only/ 保存旧发布控制数据库及维护命令材料，仅供核�
 
 新机步骤：
 1. 停止旧电脑 Bot，并保持停止，避免两个副本同时回复。当前包是导出时快照，之后发生的新对话不在包中。
-2. 校验 ZIP 的 SHA256，在空目录解压；先保留一份原包。project/ 可放到新机项目目录。
+2. 在空目录解压并保留一份原包。project/ 可放到新机项目目录。默认不做额外校验；显式 --verify 才生成校验文件。
 3. 按 migration/manifest.json 的 roots 放置 external/ 各目录。尽量保留原盘符/目录，但用户名不同的路径仍需调整。
 4. 新建 Python 虚拟环境并安装 requirements.txt；配置兼容 DSH、Node/pnpm、QQ 与 NapCat。
 5. 检查 config.toml、咨询 config、DSH profile、音色 manifest 中的绝对路径。
@@ -252,8 +253,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--verify', action='store_true', help='Optional archive readback and database integrity check; disabled by default')
     args = parser.parse_args()
-    try:Exporter(args.root, args.output_dir or args.root/'backups').write()
+    try:Exporter(args.root, args.output_dir or args.root/'backups', verify=args.verify).write()
     except Exception as error:
         print('EXPORT FAILED:', str(error));return 1
     return 0
