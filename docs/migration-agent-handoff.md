@@ -10,13 +10,13 @@
 
 | 来源 | 提供什么 | 不提供什么 |
 |---|---|---|
-| `https://github.com/MysteryNGU/qq-deepseek.git`，`main` | Bot 当前源码、网页、启动工具、依赖声明、通用维护脚本和设计 | 真实凭据、人格、记忆、模型、外部定制 DSH 工程 |
+| `https://github.com/MysteryNGU/qq-deepseek.git`，`main` | Bot 当前源码、配套定制 DSH（vendor/dsh-bridge-work）、网页、启动工具、依赖声明、通用维护脚本和设计 | 真实凭据、人格、记忆、模型、安装后的依赖 |
 | 用户提供的精简 ZIP | 当前配置和人格、life.db、日记/self、skills、专用 DSH 配置/会话/持久存储、NapCat 配置和设置页登录资料 | 源码、插件代码、scripts、媒体素材、权重、虚拟环境、node_modules、第三方安装包 |
-| 官方安装源或旧电脑补取 | Python/Node/QQ/NapCat、模型运行环境、定制 DSH、插件和个人素材等 | 不保证公开上游包含旧机的本地补丁 |
+| 官方安装源或旧电脑补取 | Python/Node/QQ/NapCat、模型运行环境、外部插件和个人素材等 | 不保证公开上游包含旧机的本地补丁 |
 
 本次精简包名：`xiaoyu-private-migration-20261027-094202.zip`，178 个文件，约 91 MiB。用户会另行发送，实际位置由用户提供。不要使用此前误打包的约 578 MB 大包作为必需输入。
 
-**仅有 Git + 精简 ZIP，不能保证恢复全部功能。** 下列定制 DSH、插件和私人素材可能需要另行获取。不能在缺失它们时声称“全体获取完成”。默认不做 ZIP 哈希/逐文件校验，正常解压失败则如实处理。
+**仅有 Git + 精简 ZIP，不能保证恢复全部功能。** 定制 DSH 源码已在 Git；下列外部插件和私人素材仍可能需要另行获取。不能在缺失它们时声称“全体获取完成”。默认不做 ZIP 哈希/逐文件校验，正常解压失败则如实处理。
 
 ## 2. 不要改变的既有需求
 
@@ -34,7 +34,7 @@
 
 ```text
 D:\projects\qq-deepseek       主项目
-D:\projects\dsh-bridge-work   此 Bot 配套的定制 DSH 源码
+D:\projects\qq-deepseek\vendor\dsh-bridge-work   Git 内的配套定制 DSH 源码
 D:\projects\dsh-qq-home       此 Bot 的独立 DSH 数据目录
 D:\projects\bot-codex         可选 Codex 咨询工作目录
 ```
@@ -105,22 +105,13 @@ python -m venv .venv
 
 ### 5.2 定制 DSH：核心必需，不能用任意上游版替代
 
-旧机实际源码位置：`D:\projects\dsh-bridge-work`。本机检查时该目录不是 Git 工作树；它不在 qq-deepseek Git，也不在精简 ZIP。当前项目依赖其中的 QQ life、记忆整理、连续活动、媒体、咨询等定制协议。
+定制工程已纳入同一 Git 仓库的 `vendor/dsh-bridge-work/`。它来自旧机 `D:\projects\dsh-bridge-work` 的源码快照，包含 QQ life、记忆整理、连续活动、媒体、咨询等配套协议；不是任意官方发行版的替代安装说明。无需再向用户索取该核心工程压缩包。
 
-**优先获取旧机这份工程，或包含相同补丁的用户指定仓库/归档。** 目前没有确认一个可直接还原这些本地补丁的公开 Git 地址；缺文件时向用户索取，不猜仓库、不拿原版安装成功冒充兼容。
+**执行 [DSH 获取与构建说明](dsh-build.md) 的步骤。** 新机器仍需安装 Node 和 `pnpm@11.28.5`，在该目录执行 `pnpm install --frozen-lockfile`，然后构建 native host 与 Host libraries；完整命令及安装时的 Git hooks 处理均在该文档。不要把 Desktop/Web 全量构建设为 QQ 聊天的必经门槛。
 
-至少需要完整工程的 `package.json`、锁文件、workspace 配置、`apps/`、`packages/`、`scripts/`、`native/`、`vendor/` 和必要资源。关键实现包括 `packages/sdk/server/src/qq-life-sessions.ts` 及其他配套 SDK 文件；只复制这一份文件不能替代整个匹配版本。
+基线：DSH `0.2.1-rc.2`，Node `^22.19.0 || >=24.0.0`（旧机 22.19.0）。Git 不包含 `node_modules`、生成的 `lib` 或运行数据，旧机也不会因这次源码纳入自动切换运行目录。
 
-旧机 package.json 的已知基线（不是最新版本推荐）：
-
-- 包版本 `0.2.1-rc.2`。
-- Node 范围 `^22.19.0 || >=24.0.0`，旧机采用 Node 22.19.0。
-- 包管理器 `pnpm@11.28.5`；以实际收到工程的 packageManager 和 lockfile 为准。
-- 桥接实际以 `node --import tsx/esm apps/cli/src/bin.ts --profile sdk` 启动。
-
-在收到的工程中按其说明安装固定依赖，优先锁文件安装，不忽略安装失败。只构建 CLI/SDK/宿主需要的产物；原工程有 native Windows 依赖，必要时按报错补编译工具。不要把完整 Desktop/Web 构建当作本次迁移必须门槛，也不修改桥接协议来绕过未安装的组件。
-
-恢复 `dsh-qq-home/profiles/sdk` 的包依赖和本地 link 路径。保留 profile 归属标记及会话身份；缺少 node_modules 应重新安装，不删除 profile 重新创建另一个角色。
+导入 ZIP 后，将真实配置的 `dsh_root` 改为 `vendor/dsh-bridge-work`，调整 `dsh_node`、`dsh_pnpm_entry` 等本机路径。恢复 `dsh-qq-home/profiles/sdk` 的包依赖和本地 link 路径；保留归属标记与会话身份，重新安装依赖，不删除 profile 重建角色。桥接由 Bot 以 `node --import tsx/esm apps/cli/src/bin.ts --profile sdk` 启动。
 
 ### 5.3 QQ 与 NapCat
 
@@ -224,11 +215,10 @@ Set-Location D:\projects\qq-deepseek
 
 先查用户已提供的位置或共享盘，确实没有再集中询问：
 
-1. **核心必需：** 旧机定制 `dsh-bridge-work` 工程或等价补丁仓库。
-2. **按 profile 的实际引用：** `dsh-bili-subagent`、`dsh-bili-whale-main` 插件代码及本地修改。
-3. **保持现有音色必需：** voice-presets 中 manifest 引用的 reference/sample WAV；要求历史媒体可用时追加数据库引用的图片、音频和收藏目录。
-4. **完整媒体能力：** IndexTTS 源码/版本和权重、sd.cpp 程序、Qwen 及辅助模型；可公开下载的部分自行安装，私人素材必须用户提供。
-5. **完整私人方法/咨询：** skills 引用但 Git 没有的本机脚本，以及 `bot-codex` 专用初始化资料。
-6. **交互授权：** QQ 扫码、失效的B站登录、Codex 登录等由用户在新机完成。
+1. **按 profile 的实际引用：** `dsh-bili-subagent`、`dsh-bili-whale-main` 插件代码及本地修改。
+2. **保持现有音色必需：** voice-presets 中 manifest 引用的 reference/sample WAV；要求历史媒体可用时追加数据库引用的图片、音频和收藏目录。
+3. **完整媒体能力：** IndexTTS 源码/版本和权重、sd.cpp 程序、Qwen 及辅助模型；可公开下载的部分自行安装，私人素材必须用户提供。
+4. **完整私人方法/咨询：** skills 引用但 Git 没有的本机脚本，以及 `bot-codex` 专用初始化资料。
+5. **交互授权：** QQ 扫码、失效的B站登录、Codex 登录等由用户在新机完成。
 
 不要重新向用户索取已在精简 ZIP 中的 API key、人格或 life.db。不要把“公开依赖可以重新下载”和“私有补丁/素材已经取得”混为一谈。

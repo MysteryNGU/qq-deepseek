@@ -26,7 +26,7 @@ consult_config = ""
 # Optional policy overrides; ordinary packages can supply installed identity/policy metadata.
 capability_policies = []
 life_dynamics = {  }
-dsh_root = "../dsh-bridge-work"
+dsh_root = "vendor/dsh-bridge-work"
 dsh_home = "../dsh-qq-home"
 dsh_node = "D:/projects/tools/node-v22.19.0-win-x64/node.exe"
 dsh_provider = "deepseek-official"

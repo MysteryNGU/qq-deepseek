@@ -57,7 +57,7 @@
 1. 准备 Windows、Python 3.11+ 和虚拟环境，安装 `requirements.txt`。
 2. 复制 `config.example.toml` 为 `config.toml`，填写真实 `owner`、模型接口/凭据、允许的好友和群、NapCat 连接及 DSH 路径。
 3. 复制 `persona.example.md` 为 `persona.md`，设置一份统一人格，保持 `unified_persona = true`。
-4. 单独准备兼容本项目协议的 DSH 工程/运行环境、Node 和 NapCat。当前机器使用旁边的 `dsh-bridge-work`；这些不包含在本仓库中。
+4. 安装 Node 和 NapCat，构建配套 DSH。定制源码已包含在 `vendor/dsh-bridge-work`，新机按 [DSH 构建说明](docs/dsh-build.md) 安装依赖并构建 Host。旧机仍使用原旁边目录，不自动切换。
 5. 语音、生图、本地向量模型、音色素材及相关运行环境按需配置。向量依赖单列在 `requirements-embedding.txt`，不要把普通聊天接口当作向量接口。
 6. 启动并扫码，先确认宿主、QQ、认知服务分别就绪，再观察普通聊天。
 
@@ -82,6 +82,7 @@ python -m venv .venv
 | `supervise.py`、`lifesupervisor.py`、`tools/bot-watchdog.ps1` | 监督启动与恢复 |
 | `tests/`、`drivetest.py` | 自动回归；`tests/manual/` 为按需人工验收，不等于全部已执行 |
 | `docs/` | 当前状态、需求、概要/详细设计与维护说明 |
+| `vendor/dsh-bridge-work/` | 当前配套定制 DSH 完整 workspace 源码；新机安装依赖并构建 |
 
 - [当前实施状态](docs/life-implementation-status.md)
 - [需求基线](docs/life-continuity-requirements.md) · [历史需求参考](docs/historical-requirements.md)

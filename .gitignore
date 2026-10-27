@@ -79,3 +79,12 @@ ZenlessZoneZero-Auto/
 /docs/acceptance/memory-sharing-runtime-20261026.json
 /docs/acceptance/person-continuity-runtime-20261027.json
 /docs/acceptance/unified-persona-autonomy-runtime-20261027.json
+
+# Vendored DSH source only; runtime home and secrets stay outside Git.
+/vendor/dsh-bridge-work/.dsh-home/
+/vendor/dsh-bridge-work/data/
+.credentials.yaml
+*.pem
+*.key
+*.p12
+*.pfx

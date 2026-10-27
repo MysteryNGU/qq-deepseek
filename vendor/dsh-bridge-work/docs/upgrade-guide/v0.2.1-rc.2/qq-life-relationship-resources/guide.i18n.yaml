@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-rc.2/qq-life-relationship-resources/guide.md
+/:
+  en: d658a8a15db883cc
+  zh: 5fde932e463da9ad
+/qq-bot-relationship-and-resource-protocols:
+  en: 7b34f8896dfb3193
+  zh: 359a96a370468d78
+/qq-bot-relationship-and-resource-protocols/change:
+  en: 7438fc31d734e5c6
+  zh: 6f80d5c076bc583b
+/qq-bot-relationship-and-resource-protocols/migration:
+  en: 15b1048ab2fea387
+  zh: 76a214587839c47a
