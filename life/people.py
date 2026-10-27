@@ -127,6 +127,25 @@ class People:
             if len(result)>=4:break
         return list(reversed(result))
 
+    def group_material(self,scope,root,limit=12):
+        """近期群聊原话；角色自己安排的群内一轮同样要先看见大家在说什么。"""
+        if not scope.conversation_id.startswith('qq:group:'):return []
+        ctx=self.life.life_access.bind(scope,session_id=root['session_id'],generation=root['generation'])
+        rows=self.repo._all("SELECT id FROM events WHERE agent_id=? AND conversation_id=? AND redacted_at IS NULL "
+            "AND kind IN ('message','delivered_segment') AND received_at>=? ORDER BY ingest_seq DESC LIMIT ?",
+            (scope.agent_id,scope.conversation_id,self.life.clock()-43200,max(limit*4,16)))
+        result=[]
+        for row in rows:
+            try:resource,body=self.life.life_access.load(ctx,row['id'])
+            except RecallError:continue
+            event=self.repo.get_event(row['id'])
+            result.append(dict(ref=resource['resource_id'],source_version=resource['source_version'],
+                actor_id=event.actor_id,speaker=str((event.payload.get('actor') or {}).get('display_name') or ''),
+                occurred_at=event.occurred_at,source_kind=event.source_kind,
+                text=event.text[:480],has_more=len(event.text)>480,read_kind='life_source'))
+            if len(result)>=limit:break
+        return list(reversed(result))
+
     def visible(self,scope,actor,root=None,*,offset=0,limit=12):
         ctx=self.life.life_access.bind(scope,**(dict(session_id=root['session_id'],generation=root['generation']) if root else {}))
         result=[];seen=set()

@@ -37,7 +37,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
     def raw(self,user=1,group=False,time=None):
         return dict(post_type='message',message_type='group' if group else 'private',group_id=3,
-            user_id=user,message_id=100+user,time=time or int(self.host.accept_after)+1,
+            self_id=999,user_id=user,message_id=100+user,time=time or int(self.host.accept_after)+1,
             message=[dict(type='text',data=dict(text='hello'))])
 
     async def test_settings_restart_waits_for_active_turn_and_records_idle_receipt(self):
@@ -91,6 +91,32 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.host.role.people.identity(scope,'2')['recognized'])
         row=self.host.life.repo._one("SELECT state FROM person_encounters WHERE actor_id='2'")
         self.assertEqual(row['state'],'pending')
+
+    async def test_group_at_only_persists_material_without_waking_cognition(self):
+        self.host.cfg.group_at_only=True
+        self.ingest.reset_mock()
+        await self.host.receive(self.raw(user=2,group=True))
+        self.ingest.assert_not_awaited()
+        scope=self.host.life.scope('qq:group:3','')
+        rows=self.host.life.repo._all("SELECT id FROM events WHERE conversation_id=? AND kind='message'",(scope.conversation_id,))
+        self.assertEqual(len(rows),1)
+        # 真的 @ 到本账号时才进入认知。
+        raw=self.raw(user=2,group=True)
+        raw['self_id']=999;raw['message_id']=601
+        raw['message']=[dict(type='at',data=dict(qq='999')),dict(type='text',data=dict(text=' hello'))]
+        await self.host.receive(raw)
+        self.ingest.assert_awaited_once()
+        # @ 别人（或群里没有 @）不算对角色开口。
+        raw['message']=[dict(type='at',data=dict(qq='2')),dict(type='text',data=dict(text=' hello'))]
+        raw['user_id']=3;raw['message_id']=555
+        await self.host.receive(raw)
+        self.ingest.assert_awaited_once()
+
+    async def test_private_messages_need_no_mention_when_at_only(self):
+        self.host.cfg.group_at_only=True
+        self.ingest.reset_mock()
+        await self.host.receive(self.raw())
+        self.ingest.assert_awaited_once()
 
     async def test_failed_startup_greeting_does_not_block_delivery_review(self):
         self.host.ws=object();self.host.role.running=True

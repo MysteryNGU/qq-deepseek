@@ -19,6 +19,7 @@ SECRET=re.compile(r'(?:^|_)(?:api_?key|(?<!per_)token|password|secret|authorizat
 CATEGORIES={
     'name':'基础与连接','owner':'基础与连接','friends':'基础与连接','known_people':'基础与连接','allow_groups':'基础与连接',
     'allow_all_private':'基础与连接','ws_url':'基础与连接','ws_token':'基础与连接',
+    'group_at_only':'基础与连接','group_initiative':'基础与连接',
     'api_key':'模型与工具','base_url':'模型与工具','model':'模型与工具','public_tools':'模型与工具','consult_config':'模型与工具',
     'resource_policy':'行为与节奏','continuity_enabled':'行为与节奏','acknowledge_before_work':'行为与节奏',
     'typing_chars_per_second':'表达与语音','paste_threshold':'表达与语音','local_media':'表达与语音',
@@ -33,7 +34,8 @@ CATEGORIES={
 LABELS=dict(name='显示名称',owner='主人 QQ',friends='允许私聊的好友',known_people='联系人名称与 QQ',allow_groups='允许的群聊',
     activity='连续活动',profile_backfill='历史人物画像复核',
     media_library='表情与图片收藏',
-    allow_all_private='接收所有私聊',ws_url='QQ 连接地址',ws_token='QQ 连接密钥',api_key='模型 API 密钥',base_url='模型接口地址',model='模型名称',
+    allow_all_private='接收所有私聊',group_at_only='群消息仅在被艾特时唤醒',
+    group_initiative='群里可以自己想起来查看和开口',ws_url='QQ 连接地址',ws_token='QQ 连接密钥',api_key='模型 API 密钥',base_url='模型接口地址',model='模型名称',
     public_tools='公开场景可用工具',consult_config='咨询配置位置',resource_policy='等待时间与上下文限额',continuity_enabled='持续生活',
     acknowledge_before_work='先应答再执行',typing_chars_per_second='文字发送节奏（字/秒）',paste_threshold='长消息发送阈值',
     local_media='语音、图片与本地生成',media_local_roots='可用媒体目录',media_max_mb='媒体大小上限（MB）',asr_model='语音识别模型',

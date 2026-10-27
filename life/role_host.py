@@ -25,7 +25,7 @@ from .delivery import DeliveryNotSent
 
 log = logging.getLogger(__name__)
 dialogue = logging.getLogger('dialogue')
-ROLE_RUNTIME_VERSION = '2026.10.27.15'
+ROLE_RUNTIME_VERSION = '2026.10.27.17'
 
 
 def runtime_version():
@@ -180,6 +180,18 @@ class RoleHost:
         task.add_done_callback(done)
         return task
 
+    def addressed(self,raw):
+        """群消息只有真的 @ 本账号才算对角色开口。"""
+        if raw.get('message_type')!='group':return True
+        account = str(raw.get('self_id') or '')
+        if not account:
+            # 缺账号信息时不能据此静音整群，退回旧行为。
+            return True
+        for segment in onebot_segments(raw.get('message',[])):
+            if segment.get('type')=='at' and str((segment.get('data') or {}).get('qq',''))==account:
+                return True
+        return False
+
     def allowed(self,raw):
         actor = int(raw.get('user_id') or 0)
         if raw.get('message_type')=='group':
@@ -201,6 +213,13 @@ class RoleHost:
             return
         self.role.people.observe(event)
         dialogue.info('[收到][%s][%s] %s',event.scope.conversation_id,event.actor_id,event.text or '[媒体消息]')
+        if (event.scope.conversation_id.startswith('qq:group:') and self.cfg.group_at_only
+                and not self.addressed(raw)):
+            log.info('群消息未艾特角色，只留存材料不消耗模型轮次 input=%s conversation=%s',
+                     event.id,event.scope.conversation_id)
+            # 只攒材料；等群里安静下来才给一次自己看和开口的机会。
+            self.role.note_group_material(event)
+            return
         if not self.role_ready.is_set():
             # Persist the actual input before waiting for DSH initialization.
             # Recovery can replay it even if the process exits during startup.

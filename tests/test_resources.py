@@ -351,3 +351,40 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
         self.input()
         third = self.role.rest(self.scope,dict(reflection_outcome='new_thought',thought='A private imagined view'),self.root)
         self.assertEqual(third['attention']['unchanged_streak'],0)
+
+    def test_group_material_wake_needs_opt_in_and_never_opens_a_per_message_loop(self):
+        group = self.life.scope('qq:group:3','1')
+        self.role.sessions.binding(group)
+        event,_ = self.life.ingest(group,'message','user_report','没艾特的一句',payload=dict(text='没艾特的一句'))
+        self.assertIsNone(self.role.note_group_material(event))
+        self.cfg.group_initiative = True
+        key = self.role.note_group_material(event)
+        self.assertTrue(key)
+        first = self.life.repo._one("SELECT due,plan_revision FROM role_wakes WHERE id=?",(key,))
+        self.assertEqual(self.role.note_group_material(event),key)
+        rows = self.life.repo._all("SELECT * FROM role_wakes WHERE scope_id=? AND kind='idle_probe'",(group.scope_id,))
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['state'],'pending')
+        # 多来一句只把同一个定时往后推，不叠成第二个定时。
+        self.assertEqual(rows[0]['plan_revision'],first['plan_revision']+1)
+        self.assertGreaterEqual(rows[0]['due'],first['due'])
+
+    def test_group_quiet_turn_does_not_rearm_any_timer(self):
+        group = self.life.scope('qq:group:3','1')
+        self.cfg.group_initiative = True
+        self.input('idle_probe',scope=group)
+        got = self.role.rest(group,dict(reflection_outcome='unchanged'),self.role.sessions.binding(group))
+        self.assertNotIn('attention',got)
+        self.assertFalse(self.life.repo._one(
+            "SELECT 1 FROM role_wakes WHERE scope_id=? AND kind='idle_probe' AND state='pending'",(group.scope_id,)))
+        self.assertFalse(self.life.repo._one(
+            "SELECT 1 FROM meta WHERE k=?",('idle_after_sequence:'+group.scope_id,)))
+
+    def test_group_material_reads_unmentioned_lines_only_inside_that_group(self):
+        group = self.life.scope('qq:group:3','1')
+        root = self.role.sessions.binding(group)
+        self.life.ingest(group,'message','user_report','没艾特也说过的一句',payload=dict(text='没艾特也说过的一句'))
+        got = self.role.people.group_material(group,root)
+        self.assertEqual([r['text'] for r in got],['没艾特也说过的一句'])
+        self.assertEqual(got[0]['source_kind'],'user_report')
+        self.assertEqual(self.role.people.group_material(self.scope,self.root),[])

@@ -28,6 +28,8 @@ class Config:
     friends: list[int] = field(default_factory=list)
     known_people: dict[str,int] = field(default_factory=dict)
     allow_groups: list[int] = field(default_factory=list)
+    group_at_only: bool = False
+    group_initiative: bool = False
     allow_all_private: bool = False
     life_db: str = 'data/life.db'
     life_agent: str = 'default'
@@ -80,6 +82,10 @@ def load_config(path: Path):
         raise ValueError('unified_persona_requires_boolean')
     if type(cfg.same_person_group_recall) is not bool or type(cfg.profile_review_enabled) is not bool:
         raise ValueError('person_continuity_requires_boolean')
+    if type(cfg.group_at_only) is not bool:
+        raise ValueError('group_at_only_requires_boolean')
+    if type(cfg.group_initiative) is not bool:
+        raise ValueError('group_initiative_requires_boolean')
     from .resource_policy import ResourcePolicy
     if cfg.idle_seconds is not None:
         import logging

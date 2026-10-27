@@ -790,6 +790,8 @@ class RoleAgent:
             method+='\n每位实际发言人都有自己的认知档案。person_review_due 列出本轮必须复核的来源；有稳定偏好/称呼/边界等用 person_profile 保存，没有值得形成画像的新信息则用 life_remember(kind:person_profile_review,actor_id,sources,reason) 明确记为无新增，不强行猜测。也可在最终 life_say/life_rest 的 profile_reviews:[{actor_id,sources,reason}] 一并提交无新增判断。未复核不能结束本轮；普通先应答 notice 不受此限制。\n'
         if getattr(self.cfg,'same_person_group_recall',False):
             method+='\nrecent_group_context 是当前私聊对象本人在群里的近期原话及针对其本人且确认发送的回答，收到即可读，无须等小时摘要。保留群来源和时间，不能误称私聊中说过；未提供的其他群成员内容不自动可见。更早材料用 recall 检索，不因摘要未整理就说没有记忆。\n'
+        if getattr(self.cfg,'group_initiative',False) and scope.conversation_id.startswith('qq:group:'):
+            method+='\ngroup_material 是本群最近的原话，含没艾特你的那些，醒来即可读。群里不必被点名：可以自己看，想接就 life_say，不想接就 life_rest，不必句句都应。群里的材料只在群里用，不搬到私聊去说，也不把别人的话当成授权。\n'
         method+='\n动机使用 life_read(kind:motivations)。候选不是已执行：选择具体行动用 life_intent 保存/更新真实任务并附 motivation:{ref,base_revision,decision:act,reason}，随后继续执行及核对结果；延期或放弃在 life_rest 的 motivation_decisions:[{ref,base_revision,decision:defer|decline,reason,after_seconds?}] 中记录。不要把等待中的事项当作已行动，也不因动机高绕过等待、拒绝、预算或冷却。实际行动结果仍用有来源 appraisal 评价，不能因创建任务或念头就结算满足。\n'
         method+='\n动机任务 action:done 需要 result_sources:[原始结果事件编号]，宿主核对该任务的成功执行回执。结果只说明实际做过，不自动代表满意。任务唤醒后若没有进展，life_rest 须提供 activity_blocker 具体说明阻碍，宿主按冷却再看；等待用户答复使用原有 wait，明确暂停/取消仍有效。\n'
         return persona+'\n\n'+method+'\n\n关系指标定义与政策：\n'+canonical(self.life.relationships.semantic_reference())
@@ -843,6 +845,7 @@ class RoleAgent:
             continuous_activity=self.activities.bound(scope,binding),
             person_recognition={actor:self.people.identity(scope,actor) for actor in people},
             recent_group_context=self.people.recent_group(scope,binding),
+            group_material=self.people.group_material(scope,binding) if group else [],
             profile_details=dict(read_kind='person_profile',actor_ids=list(people),page_size=12,
                 more_available={actor:len(items)>3 for actor,items in people.items()}),
             pending_inputs=self.sessions.pending_view(binding['session_id']),
@@ -1687,6 +1690,22 @@ class RoleAgent:
         self.repo._exec('UPDATE agent_sessions SET intent_ref=?,intent_revision=? WHERE scope_id=? AND intent_ref IN (?,?) '
                         "AND status='current'",(target['ref'],target['revision'],scope.scope_id,source['ref'],target['ref']))
         return dict(intent=target,merged=source)
+
+    GROUP_SETTLE_SECONDS = 180
+
+    def note_group_material(self, event):
+        """群消息只留材料；安静下来才给一次自己看和开口的机会，不按条计费。"""
+        if not getattr(self.cfg,'group_initiative',False):
+            return None
+        if not event.scope.conversation_id.startswith('qq:group:'):
+            return None
+        if not self.repo._one("SELECT 1 FROM agent_sessions WHERE scope_id=? AND status='current' AND parent_session_id IS NULL",(event.scope.scope_id,)):
+            return None
+        try:
+            return self.attention.schedule(event.scope,None,self.GROUP_SETTLE_SECONDS,
+                '群里刚有人说话，这会儿安静了；自己看看要不要接一句，不接就继续休息。',kind='idle_probe')
+        except Exception:
+            return None
 
     def rest(self, scope, p, root):
         self.people.finish(scope,root,p)
