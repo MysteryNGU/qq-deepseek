@@ -182,6 +182,22 @@ threads = 2
 # continuous input. The current user must explicitly confirm context and mode.
 [experience]
 simulation_enabled = true
+private_enabled = true
+# Protocol 2: peak permission is always single-use; stop resets the whole episode.
+sensitivity_gain = 0.06
+threshold_gain = 0.015
+round_interval_k = 0.9
+permission_timeout = 90.0
+settle_tau_min = 60.0
+settle_tau_max = 120.0
+self_init_threshold = 0.65
+relief_amount = 0.25
+relief_half_life = 1800.0
+rate_gain_per_run = 0.05
+rate_gain_cap = 1.0
+# Persistent sensitivity gain per completed private run; effective sensitivity <= 1.5.
+private_sensitivity_gain_per_run = 0.02
+private_sensitivity_gain_cap = 0.5
 expression_policy = "existing_chat"
 threshold = 0.55
 release_threshold = 0.35

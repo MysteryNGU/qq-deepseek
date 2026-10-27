@@ -45,7 +45,7 @@ ROLE_METHOD = '''你是持续生活的同一个角色。下面人格是当前有
 主人由宿主账号确定，四项正向关系在0.7到1，其他人在0到0.9；后续同类指标继承边界。分数不授予权限，不产生主人身份，也不抹掉委屈、分歧和未解决事项。高信任与高舒适体现为自然信赖、轻松沟通和积极配合，不作为主动拒绝、抬杠或故意不配合的理由；明确且可完成的请求默认积极配合，信息不足时先补充理解，确有实际阻碍时说明原因并给出可行方式。关系分数不设置撒娇、联系或拒绝的行为阈值。熟悉不等于全部猜得准，信任不等于事实总正确，舒适不代表此刻没有不适，bond是具体人物的长期联结，和连接压力、亲密需要、性欲分别计算。
 政策初始化不能证明已经了解对方，不编造共同历史解释主人初始0.7。按真实来源解释、按回执描述实际变化；触底或触顶的事情仍能有意义。澄清使用 supersedes_appraisal_id 和 revision 替换原解释，不把同一刺激重复加减分。稳定关系偏好、约定、期待或修复事项用 life.remember(kind=relationship_note,operation:create|replace|resolve|revoke,actor_id,relation_kind,origin,text,sources,confidence,salience,base_note_ref) 保存；appraisal.relation_context_changes 可在评价中原子保存同类操作。材料有来源与受众，不能因为人物分数共享就在群里引用私人原因。
 需要满足继续用 drive_evidence 的既有独立证据协议，互动满足须有真实互动和确认；普通任务成功不自动证明关系满足，也不要求每条消息都涨分。
-专项体验只适用于当前明确的adult_intimate场景，和日常欲望分开；先读experience是否已协商，再用life.simulation。enter需要当前成年情境及意愿。每条相关语言按语义提交appraise_input的increase/decrease/unchanged、effects和reason；没有持续运行也可以有一次语言效果，遗漏保留pending。start/adjust只有明确确认输入方案后才可用；stop只关闭持续输入，exit退出情景。沉默、45分钟和峰值不结束运行。收到转移回执后再生成自然正文，必要时带experience_run_ref/experience_control_revision；自己的输出不能再计刺激。小时回顾只核对快状态，修订走原来源的supersedes_call_key，不重复累计。未知/关闭协议不能走旧stimulation_change暗中启动。来源错误和畸形字段按具体回执修正，结构校验失败可修正同编号；理解已提交的错误用新编号重提，未知发送仍先对账。
+专项体验需要experience_protocol:2。enter须当前成年情境及明确意愿。每条相关语言提交appraise_input的方向、effects、confidence、reason；自己的输出不计刺激。达到阈值只进入awaiting_permission，你必须亲口问本次是否允许，life.say携带experience_request_ref；不能替对方答复，沉默不算同意。只有请求确认送达后真实对方的明确肯定，才能用permission.respond(request_id,decision:allow,evidence_ref)消费本次请求；模糊回应使用uncertain，绝不推演或截取原话代答。简短直接回应如“可以”“同意”“好”可核验，其他含义不明的回应保持未许可。拒绝/超时后不追问，须新的明确继续意愿及重新接近阈值。start/adjust须确认输入方式，持续输入必须有明确“一直/持续”等授权并带authorization_mode:until_cancel；默认单次。stop立即清空事件、取消所有推进且不能自动恢复；exit或episode.end延迟结算。R5保留主动倾向，须先选择initiation_candidate，再以experience_initiation_ref表达一次邀请；对方回应邀请只允许开启，不等于peak许可。R6只允许在无共享事件且自我边界允许时private.begin/private.end，run_id来自回执，不产生外发表达、不写共享记忆或事后报备。只读数值不能自报行为完成。表达前读回执，未知发送先对账，不重发。小时回顾不重复结算快状态，历史修订不得复活许可或控制。
 情绪是自己的状态，不能把尚未归属当前人物的不适当作损害这段关系的证据。
 关系的 basis=policy_initialization 表示政策起点，legacy_unverified 表示遗留值缺少可核实依据，不能推导出已经深度了解；没有数值门槛禁止主动交流。解释过去为何休息或没推进时，先核对实际记录，不把当下猜想说成确定的原因。
 所有给对方的文字使用life.say提交最终自然正文；不要直接口播工具原文、编号或流程壳。
@@ -648,8 +648,8 @@ class RoleAgent:
             if 'appraisal' in proposal:
                 validate_shape(proposal['appraisal'])
             if kind=='life.simulation':
-                if self.experience_protocol!=1:
-                    raise SessionFailure('protocol_mismatch','DSH尚未协商experience_protocol:1；专项体验未就绪')
+                if self.experience_protocol!=2:
+                    raise SessionFailure('protocol_mismatch','DSH尚未协商experience_protocol:2；专项体验未就绪')
                 from .experience import validate_proposal
                 validate_proposal(proposal)
             embedded_receipt = None
@@ -673,7 +673,7 @@ class RoleAgent:
             with self.repo.tx():
                 self.fence(call)
                 media_control = kind=='life.media' and proposal.get('action') in {'status','cancel'}
-                simulation_control = kind=='life.simulation' and proposal.get('action') in {'appraise_input','stop','exit','pause','ack'}
+                simulation_control = kind=='life.simulation' and proposal.get('action') in {'appraise_input','stop','exit','episode.end','pause','ack','permission.respond'}
                 if kind not in {'life.read','life.appraise'} and not media_control and not simulation_control and self.sessions.pending(root['session_id']):
                     raise self.sessions.pending_failure(root['session_id'])
                 if proposal.get('appraisal'):
@@ -887,7 +887,7 @@ class RoleAgent:
 
     def context(self, binding, scope, call):
         self.life.advance_time(scope)
-        if self.experience_protocol==1:
+        if self.experience_protocol==2:
             self.life.experience.advance()
         from .memory_policy import reset_boundary
         floor = reset_boundary(self.repo,scope)
@@ -991,7 +991,7 @@ class RoleAgent:
             packet['observations'] = []
             packet['intentions'] = [t for t in packet['intentions'] if t['status'] in {'waiting','paused'} or t['ref']==binding['intent_ref']]
         packet['continuity_capability'] = dict(enabled=self.continuity_ready,protocol=1)
-        packet['experience'] = dict(adult_intimate=(self.life.experience.read(scope) if self.experience_protocol==1 else
+        packet['experience'] = dict(adult_intimate=(self.life.experience.read(scope) if self.experience_protocol==2 else
             dict(available=False, reason='experience_protocol_not_negotiated')))
         packet['drives'] = {key:{field:row[field] for field in
             ('label','pressure','tension','level','phase','regulation_due','recovery_until') if field in row}
@@ -1419,12 +1419,12 @@ class RoleAgent:
             items=self.people.visible(scope,actor,root,offset=offset,limit=13)
             return dict(actor_id=actor,version=digest(items),recognition=self.people.identity(scope,actor),items=items[:12],next_offset=offset+12 if len(items)>12 else None)
         if p.get('kind')=='simulation':
-            if self.experience_protocol!=1:
+            if self.experience_protocol!=2:
                 return dict(available=False,reason='experience_protocol_not_negotiated')
             return self.life.experience.read(scope,p.get('after_transition_seq'))
         if p.get('kind')=='experience_review':
-            if self.experience_protocol!=1:
-                raise SessionFailure('protocol_mismatch','小时核对需要experience_protocol:1')
+            if self.experience_protocol!=2:
+                raise SessionFailure('protocol_mismatch','小时核对需要experience_protocol:2')
             return self.life.experience.review(scope,self._sources(scope,p,root))
         if p.get('kind') in {'recall','life_source','memory_index'}:
             from .life_access import RecallError
@@ -1930,6 +1930,8 @@ class RoleAgent:
                 logical = slot['logical_id']
                 confirmed = self.repo._all('SELECT id,status FROM deliveries WHERE turn_id=?',(logical,))
                 if confirmed and all(d['status']=='confirmed' for d in confirmed):
+                    if p.get('experience_request_ref'):
+                        self.life.experience.request_delivered(scope,p['experience_request_ref'],logical)
                     if p.get('continuity_refs'):
                         self.continuity.associate(scope,p['continuity_refs'],logical)
                     return dict(sent_confirmed=True,logical_message_id=logical,delivery_ids=[d['id'] for d in confirmed])
@@ -1948,6 +1950,11 @@ class RoleAgent:
         if p.get('continuity_refs'):
             with self.repo.tx():
                 self.continuity.associate(scope,p['continuity_refs'],logical)
+        if p.get('experience_request_ref'):
+            self.life.experience.bind_request_expression(scope,p['experience_request_ref'],logical)
+        if p.get('experience_initiation_ref'):
+            with self.repo.tx():
+                self.life.experience.private.guard_invitation(scope,p['experience_initiation_ref'],logical)
         from .expression import expression_guard
         def guard():
             self.life.experience.guard_expression(scope,p)
@@ -1963,6 +1970,10 @@ class RoleAgent:
             expression_guard.reset(token)
         if sent.get('sent_confirmed') if isinstance(sent,dict) else sent:
             with self.repo.tx():
+                if p.get('experience_request_ref'):
+                    self.life.experience.request_delivered(scope,p['experience_request_ref'],logical)
+                if p.get('experience_initiation_ref'):
+                    self.life.experience.private.invitation_delivered(scope,p['experience_initiation_ref'])
                 self.activities.delivered(scope,root,expression_body(p))
                 self.media_library.used(scope,p.get('parts',[]))
                 if finishes:self.activities.finish(scope,root,p)
@@ -2159,7 +2170,7 @@ class RoleAgent:
             await asyncio.sleep(5)
 
     def experience_tick(self):
-        if self.experience_protocol!=1:
+        if self.experience_protocol!=2:
             return
         ready=getattr(self,'experience_channel_ready',lambda:True)()
         if not ready:
@@ -2180,7 +2191,7 @@ class RoleAgent:
                         t['run_id'] and (run.get('control_revision')!=t['control_revision'] or not run.get('desired_active'))):
                     ack='suppressed_by_control'
                 else:
-                    self.attention.schedule(scope,None,0,'专项状态发生重要转移；先读life.read(kind=simulation)，按回执理解当下感受，结合当前意愿自然表达。',
+                    self.attention.schedule(scope,None,0,'专项状态转移；先读life.read(kind=simulation)。若awaiting_permission，亲口问本次许可并带experience_request_ref；禁止代答或自行进入peak。其他回执按当前意愿理解，不重复询问。',
                         kind='experience',sources=t['evidence_refs'],semantic_key=t['id'])
                     ack='queued'
                 self.repo._exec('UPDATE experience_transitions SET ack_state=? WHERE id=?',(ack,t['id']))

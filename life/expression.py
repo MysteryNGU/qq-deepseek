@@ -47,7 +47,7 @@ class Expressions:
                     source_event_ids=sources,payload=dict(parts=parts))
                 plan = dict(parts=parts,event_id=event.id,sources=sources)
                 plan['new_message'] = bool(proposal.get('new_message'))
-                for field in ('experience_run_ref','experience_control_revision'):
+                for field in ('experience_run_ref','experience_control_revision','experience_request_ref','experience_initiation_ref'):
                     if field in proposal:
                         plan[field]=proposal[field]
                 if not proposal.get('new_message') and self.media_continuation(sources):

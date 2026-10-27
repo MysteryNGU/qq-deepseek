@@ -892,7 +892,7 @@ class DshBridge:
         return hello
 
     def _hello_parameters(self):
-        return dict(experience_protocol=1,continuity_protocol=1,continuity_enabled=bool(getattr(self.cfg,'continuity_enabled',False)),
+        return dict(experience_protocol=2,continuity_protocol=1,continuity_enabled=bool(getattr(self.cfg,'continuity_enabled',False)),
                     capability_protocol=1,media_adapter_protocol=1,compact_tool_protocol=1,
                     consult_protocol=1 if getattr(self.cfg,'consult_config','') else None)
 

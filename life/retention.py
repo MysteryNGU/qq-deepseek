@@ -77,6 +77,8 @@ class TombstoneLedger:
             repo._exec("DELETE FROM study_threads WHERE agent_id=? AND conversation_id=?", scope.private_key)
             runtime = getattr(self, "runtime", None)
             if runtime is not None:
+                if hasattr(runtime,'experience'):
+                    runtime.experience.erase(scope)
                 runtime.rebuild_after_forget(scope, journal)
             if repo._one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_sessions'"):
                 repo._exec("UPDATE agent_sessions SET status='retired' WHERE scope_id=?",(scope.scope_id,))

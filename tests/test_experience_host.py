@@ -10,7 +10,7 @@ class ExperienceHostTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.f=Fixture();self.addCleanup(self.f.close)
         self.role,self.life=self.f.role,self.f.life
-        self.role.experience_protocol=1
+        self.role.experience_protocol=2
         self.at=1000.
         self.life.clock=self.life.catalog.clock=self.life.jobs.clock=lambda:self.at
         self.number=0
@@ -30,7 +30,7 @@ class ExperienceHostTests(unittest.IsolatedAsyncioTestCase):
     async def simulation(self,action,**fields):
         self.number+=1
         state=self.life.experience.read(self.f.scope)
-        p=dict(experience_protocol=1,experience_domain='adult_intimate',base_revision=state['state_revision'],
+        p=dict(experience_protocol=2,experience_domain='adult_intimate',base_revision=state['state_revision'],
             action=action,sources=[self.event.id],subject_actor_id='1',handled_input_ids=[self.event.id],**fields)
         result=await self.role.callback(self.call('life.simulation',str(self.number),p))
         self.assertTrue(result['ok'],result)
@@ -78,7 +78,7 @@ class ExperienceHostTests(unittest.IsolatedAsyncioTestCase):
     async def test_old_protocol_is_explicitly_unready_and_cannot_use_legacy_drive_field(self):
         self.source('普通闲聊')
         self.role.experience_protocol=None
-        p=dict(experience_protocol=1,experience_domain='adult_intimate',action='enter',base_revision=0,
+        p=dict(experience_protocol=2,experience_domain='adult_intimate',action='enter',base_revision=0,
             sources=[self.event.id],subject_actor_id='1',adult_participants=True,context_confirmed=True,willingness='interested')
         result=await self.role.callback(self.call('life.simulation','old-worker',p))
         self.assertEqual(result['code'],'protocol_mismatch')
@@ -145,6 +145,82 @@ class ExperienceHostTests(unittest.IsolatedAsyncioTestCase):
         self.role.experience_tick()
         self.at+=30;self.role.experience_tick()
         self.assertGreater(self.life.experience.read(self.f.scope)['arousal'],0)
+        self.assertFalse(self.f.sent)
+
+    async def test_permission_question_is_confirmed_by_real_send_before_allow(self):
+        await self.peak()
+        request=self.life.experience.read(self.f.scope)['permission_request']['request_id']
+        async def confirmed(action,params):
+            self.f.sent.append(params)
+            return dict(retcode=0,data=dict(message_id=42))
+        self.f.expressions.transport=confirmed
+        result=await self.role.callback(self.call('life.say','permission-question',dict(
+            text='这一次可以吗？',sources=[self.event.id],experience_request_ref=request)))
+        self.assertTrue(result['sent_confirmed'],result)
+        state=self.life.experience.read(self.f.scope)
+        self.assertEqual(state['permission_request']['delivery_status'],'confirmed')
+        self.assertEqual(state['peak_count'],0)
+        self.source('可以')
+        await self.simulation('permission.respond',request_id=request,decision='allow',evidence_ref=self.event.id)
+        self.assertEqual(self.life.experience.read(self.f.scope)['peak_count'],1)
+        self.assertEqual(len(self.f.sent),1)
+
+    async def test_unknown_question_delivery_cannot_be_consumed_or_asked_twice(self):
+        await self.peak()
+        request=self.life.experience.read(self.f.scope)['permission_request']['request_id']
+        proposal=dict(text='这一次可以吗？',sources=[self.event.id],experience_request_ref=request)
+        result=await self.role.callback(self.call('life.say','unknown-question',proposal))
+        self.assertFalse(result.get('sent_confirmed',False))
+        self.assertEqual(len(self.f.sent),1)
+        self.source('可以')
+        p=dict(experience_protocol=2,experience_domain='adult_intimate',action='permission.respond',
+            base_revision=self.life.experience.read(self.f.scope)['state_revision'],
+            sources=[self.event.id],subject_actor_id='1',request_id=request,decision='allow',evidence_ref=self.event.id,
+            handled_input_ids=[self.event.id])
+        result=await self.role.callback(self.call('life.simulation','unknown-allow',p))
+        self.assertFalse(result['ok'],result)
+        self.assertEqual(self.life.experience.read(self.f.scope)['peak_count'],0)
+        result=await self.role.callback(self.call('life.say','repeat-question',proposal))
+        self.assertFalse(result.get('sent_confirmed',False))
+        self.assertEqual(len(self.f.sent),1)
+
+    async def test_stop_during_question_preparation_cancels_transport(self):
+        await self.peak()
+        request=self.life.experience.read(self.f.scope)['permission_request']['request_id']
+        async def stop_during_typing(_delay):
+            self.life.ingest_message(self.f.scope,'停止')
+        self.f.expressions.sleep=stop_during_typing
+        result=await self.role.callback(self.call('life.say','cancel-question',dict(
+            text='这一次可以吗？',sources=[self.event.id],experience_request_ref=request)))
+        self.assertFalse(result.get('sent_confirmed',False))
+        self.assertFalse(self.f.sent)
+        self.assertEqual(self.life.experience.read(self.f.scope)['phase'],'idle')
+
+    async def test_r5_actual_invitation_is_single_use_and_does_not_open_shared_event(self):
+        await self.enter();self.source('结束亲密场景')
+        self.at+=60120;self.life.experience.advance()
+        candidate=self.life.experience.private.candidate(self.f.scope)
+        await self.simulation('initiation.select',candidate_id=candidate['candidate_id'],decision='act')
+        async def confirmed(action,params):
+            self.f.sent.append(params)
+            return dict(retcode=0,data=dict(message_id=44))
+        self.f.expressions.transport=confirmed
+        p=dict(text='想和你一起待一会儿，可以吗？',sources=[self.event.id],experience_initiation_ref=candidate['candidate_id'])
+        result=await self.role.callback(self.call('life.say','one-invitation',p))
+        self.assertTrue(result.get('sent_confirmed'),result)
+        self.assertEqual(self.life.experience.read(self.f.scope)['mode'],'none')
+        result=await self.role.callback(self.call('life.say','another-invitation',dict(p,new_message=True)))
+        self.assertFalse(result.get('sent_confirmed'))
+        self.assertEqual(len(self.f.sent),1)
+
+    async def test_private_event_has_no_outbound_expression(self):
+        await self.enter();self.source('结束亲密场景')
+        self.at+=120;self.life.experience.advance()
+        result=await self.simulation('private.begin')
+        self.assertIn('run_id',result)
+        result=await self.role.callback(self.call('life.say','private-leak',dict(text='一条外显表达',sources=[self.event.id])))
+        self.assertFalse(result.get('sent_confirmed'))
+        self.assertEqual(result['code'],'cancel_requested')
         self.assertFalse(self.f.sent)
 
 

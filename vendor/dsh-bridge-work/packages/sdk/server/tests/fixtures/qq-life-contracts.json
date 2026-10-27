@@ -1,5 +1,5 @@
 {
-  "version": "61ed4a0404813eab90786ebbedd8d16b24777820f1378b28e5f9939acabcfc7f",
+  "version": "927d4a5065cb3381f4b4cce0fdefba8e431e3e25c5047ffd7a55d8abfc4a5b8e",
   "items": [
     {
       "name": "life_read",
@@ -1216,6 +1216,12 @@
               "experience_control_revision": {
                 "type": "integer"
               },
+              "experience_request_ref": {
+                "type": "string"
+              },
+              "experience_initiation_ref": {
+                "type": "string"
+              },
               "continuity_refs": {
                 "type": "array",
                 "items": {
@@ -1233,7 +1239,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_say",
-      "schema_hash": "7fad67069812a1b543cae7e54aeb369edc1614d4ab8251ed702ce1fb2965f581",
+      "schema_hash": "a3c2f6cd33720b00057854fd556ffcb4aec1837e5e542851bbddae11071ea308",
       "version": 1
     },
     {
@@ -5433,7 +5439,12 @@
                   "resume",
                   "stop",
                   "exit",
-                  "ack"
+                  "episode.end",
+                  "ack",
+                  "permission.respond",
+                  "private.begin",
+                  "private.end",
+                  "initiation.select"
                 ]
               },
               "base_revision": {
@@ -5484,6 +5495,13 @@
               "profile_confirmed": {
                 "type": "boolean"
               },
+              "authorization_mode": {
+                "type": "string",
+                "enum": [
+                  "one_shot",
+                  "until_cancel"
+                ]
+              },
               "input_profile": {
                 "type": "object",
                 "properties": {
@@ -5524,10 +5542,47 @@
               },
               "supersedes_call_key": {
                 "type": "string"
+              },
+              "request_id": {
+                "type": "string"
+              },
+              "decision": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "deny",
+                  "uncertain",
+                  "act",
+                  "defer",
+                  "decline"
+                ]
+              },
+              "evidence_ref": {
+                "type": "string"
+              },
+              "evidence_text": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "aborted"
+                ]
+              },
+              "candidate_id": {
+                "type": "string"
+              },
+              "episode_id": {
+                "type": "string"
               }
             },
             "required": [
               "action",
+              "experience_protocol",
               "experience_domain",
               "base_revision"
             ],
@@ -5540,7 +5595,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_simulation",
-      "schema_hash": "72bffa3eb60c769230acf94314e4418d95bbb5cbf05300ef147c0cb9c39924d3",
+      "schema_hash": "ab7fd90199f7e0bb784eb90d7881218f9d3cdbfd6d576395bc09f5b86198b637",
       "version": 1
     }
   ]

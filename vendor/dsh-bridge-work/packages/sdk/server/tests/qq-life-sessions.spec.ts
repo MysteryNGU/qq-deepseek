@@ -255,7 +255,7 @@ describe('complete bot request preparation', () => {
 describe('identified role Agent inputs', () => {
   it('forwards the negotiated experience tool and logs its receipt before the next request', async () => {
     const f = await fixture(undefined, [
-      toolCallResponse('effect', 'life_simulation', { proposal: { experience_protocol: 1, experience_domain: 'adult_intimate', action: 'appraise_input', base_revision: 2, sources: ['input-1'], subject_actor_id: '1', direction: 'increase', effects: { arousal: 0.1 }, confidence: 1, reason: 'current language meaning' } }),
+      toolCallResponse('effect', 'life_simulation', { proposal: { experience_protocol: 2, experience_domain: 'adult_intimate', action: 'appraise_input', base_revision: 2, sources: ['input-1'], subject_actor_id: '1', direction: 'increase', effects: { arousal: 0.1 }, confidence: 1, reason: 'current language meaning' } }),
       toolCallResponse('read-state', 'life_read', { proposal: { kind: 'simulation' } }),
       toolCallResponse('rest', 'life_rest', { proposal: {} }),
     ], false, false, true, false, true)
@@ -268,7 +268,9 @@ describe('identified role Agent inputs', () => {
       const agent = f.ctx.agents.get(SessionId('main'))!
       await agent.whenIdle()
       expect(JSON.stringify(f.adapter.requests[0]!.tools)).toContain('life_simulation')
-      expect(JSON.stringify(f.adapter.requests[0]!.tools)).toContain('stop disables continuous input')
+      expect(JSON.stringify(f.adapter.requests[0]!.tools)).toContain('stop immediately resets the episode')
+      expect(JSON.stringify(f.adapter.requests[0]!.tools)).toContain('experience_protocol:2')
+      expect(JSON.stringify(f.adapter.requests[0]!.tools)).toContain('Silence, imagined answers')
       expect(JSON.stringify(f.adapter.requests[1])).toContain('transition-one')
       expect(f.request.mock.calls.filter(([, p]) => 'kind' in p && p.kind === 'life.simulation')).toHaveLength(1)
       f.sessions.dispose()

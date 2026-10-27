@@ -167,6 +167,14 @@ class DeliveryService:
                 receipt['retcode']=response['retcode']
             self.repo._exec("UPDATE deliveries SET status=?,receipt=?,updated=? WHERE id=? AND token=?",
                             (status, json.dumps(receipt), self.clock(), delivery_id, token))
+            if status=='failed' and hasattr(self.runtime,'experience') and self.repo._one(
+                    "SELECT 1 FROM sqlite_master WHERE name='expressions'"):
+                expression=self.repo._one('SELECT plan FROM expressions WHERE id=?',(row['turn_id'],))
+                if expression:
+                    request=json.loads(expression['plan']).get('experience_request_ref')
+                    current=self.runtime.experience._load()[1]
+                    if request and current['scope']:
+                        self.runtime.experience.request_failed(Scope(**current['scope']),request,row['turn_id'])
             if confirmed and valid:
                 body = json.loads(row["payload"])
                 text = body["params"].get("message", "")
@@ -182,6 +190,27 @@ class DeliveryService:
                                     source_event_ids=json.loads(row["sources"]),
                                     payload={"confirmed": True, "receipt": receipt,
                                              "delivery_id": delivery_id})
+                # A permission question becomes eligible only after every part
+                # of its frozen expression has an actual platform receipt.
+                if hasattr(self.runtime,'experience') and self.repo._one(
+                        "SELECT 1 FROM sqlite_master WHERE name='expressions'"):
+                    expression=self.repo._one('SELECT plan FROM expressions WHERE id=?',(row['turn_id'],))
+                    remaining=self.repo._one("SELECT 1 FROM deliveries WHERE turn_id=? AND status!='confirmed'",(row['turn_id'],))
+                    if expression and not remaining:
+                        plan=json.loads(expression['plan'])
+                        request=plan.get('experience_request_ref')
+                        if request:
+                            # Stored plans carry the fully bound event scope;
+                            # the delivery fallback Scope can lack audience id.
+                            current=self.runtime.experience._load()[1]
+                            if current['scope'] and current['scope']['conversation_id']==scope.conversation_id:
+                                bound=Scope(**current['scope'])
+                                self.runtime.experience.request_delivered(bound,request,row['turn_id'])
+                        invitation=plan.get('experience_initiation_ref')
+                        if invitation:
+                            current=self.runtime.experience._load()[1]
+                            if current['scope'] and current['scope']['conversation_id']==scope.conversation_id:
+                                self.runtime.experience.private.invitation_delivered(Scope(**current['scope']),invitation)
             return confirmed
 
     def recover(self):

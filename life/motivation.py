@@ -53,7 +53,8 @@ class Motivation:
             items.append(dict(ref=row['id'],revision=row['revision'],dimension=row['dimension'],pressure=row['pressure'],
                 status=row['status'],reason=row['reason'],intent_ref=row['intent_ref'],next_due=row['next_due'],
                 action_options=ACTIONS[row['dimension']],execution=progress))
-        return dict(candidates=items[:8],read_kind='motivations',meaning='motivation_is_not_execution_or_satisfaction')
+        return dict(candidates=items[:8],read_kind='motivations',meaning='motivation_is_not_execution_or_satisfaction',
+            initiation_candidate=self.life.experience.private.candidate(scope))
 
     def status(self,scope):
         counts={r['status']:r['n'] for r in self.repo._all('SELECT status,COUNT(*) n FROM motivation_decisions WHERE scope_id=? AND forget_epoch=? GROUP BY status',
@@ -94,6 +95,9 @@ class Motivation:
         if not self.owner(scope):return []
         now=self.life.clock() if now is None else now
         state=self.life.drive_view(scope,now)
+        initiation=self.life.experience.private.candidate(scope,now)
+        if initiation:
+            state['libido']=dict(state['libido'],pressure=initiation['pressure'])
         epoch=self.repo.forget_epoch(scope.scope_id)
         with self.repo.tx():
             for dim,options in ACTIONS.items():

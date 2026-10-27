@@ -1,0 +1,146 @@
+{
+  "date": "2026-10-28",
+  "timezone": "Asia/Shanghai",
+  "status": "implemented_locally",
+  "deployed": false,
+  "experience_protocol": 2,
+  "experience_schema": 2,
+  "invariants": [
+    "shared_peak_requires_confirmed_question_and_current_explicit_partner_answer",
+    "silence_never_grants_permission",
+    "stop_overrides_response_and_pending_dispatch",
+    "private_completion_cannot_bypass_shared_permission"
+  ],
+  "checks": [
+    {
+      "name": "independent_math_appendix",
+      "passed": 36,
+      "command": "python docs/acceptance/intimacy_math_check.py"
+    },
+    {
+      "name": "python_full_regression",
+      "passed": 749,
+      "command": ".venv/Scripts/python.exe -m unittest discover -s tests -q",
+      "note": "Full pass includes persistent-sensitivity implementation; the final cap-clamping and lowered-cap case were then verified by the latest 69 core tests."
+    },
+    {
+      "name": "latest_python_core_regression",
+      "passed": 69,
+      "command": ".venv/Scripts/python.exe -m unittest tests.test_intimacy_v2 tests.test_experience tests.test_experience_host -q"
+    },
+    {
+      "name": "python_integration_selection",
+      "passed": 116,
+      "note": "Includes context contracts, runtime delivery, recovery, motivations, and DSH bridge."
+    },
+    {
+      "name": "sdk_vitest",
+      "passed": 75,
+      "node": "24.19.0",
+      "command": "pnpm exec vitest run packages/sdk/server/tests/qq-life-sessions.spec.ts packages/sdk/server/tests/server.spec.ts packages/sdk/server/tests/qq-life-context.spec.ts"
+    },
+    {
+      "name": "build:artifacts",
+      "passed_gates": 7
+    },
+    {
+      "name": "build:check",
+      "passed_gates": 2
+    },
+    {
+      "name": "verify-upgrade-guides",
+      "status": "passed"
+    },
+    {
+      "name": "verify-translation-pairing",
+      "status": "passed"
+    },
+    {
+      "name": "verify-md-links",
+      "checked_files": 2016,
+      "status": "passed"
+    }
+  ],
+  "review_limits": [
+    "Ambiguous/complex affirmative wording remains unpermitted; only full direct affirmative responses are accepted.",
+    "Historical revisions cannot rewrite permission history or create requests from historical inputs.",
+    "Tests use isolated databases and fake QQ transports; production activation is not performed."
+  ],
+  "files": [
+    "config.example.toml",
+    "life/delivery.py",
+    "life/experience.py",
+    "life/experience_math.py",
+    "life/experience_private.py",
+    "life/expression.py",
+    "life/motivation.py",
+    "life/retention.py",
+    "life/role_agent.py",
+    "life/runtime.py",
+    "life/services/dsh_bridge.py",
+    "life/tool_contracts.py",
+    "tests/test_experience.py",
+    "tests/test_experience_host.py",
+    "tests/test_intimacy_v2.py",
+    "docs/intimacy-state-model-design.md",
+    "docs/acceptance/intimacy_math_check.py",
+    "docs/acceptance/intimacy-math-report.json",
+    "vendor/dsh-bridge-work/packages/sdk/server/src/qq-life-sessions.ts",
+    "vendor/dsh-bridge-work/packages/sdk/server/src/server.ts",
+    "vendor/dsh-bridge-work/packages/sdk/server/tests/qq-life-sessions.spec.ts",
+    "vendor/dsh-bridge-work/packages/sdk/server/tests/fixtures/qq-life-contracts.json",
+    "vendor/dsh-bridge-work/docs/upgrade-guide/v0.2.1-rc.2/qq-life-permission/guide.md",
+    "vendor/dsh-bridge-work/docs/upgrade-guide/v0.2.1-rc.2/qq-life-permission/guide.zh.md",
+    "vendor/dsh-bridge-work/docs/upgrade-guide/v0.2.1-rc.2/qq-life-permission/guide.i18n.yaml"
+  ],
+  "sha256": {
+    "config.example.toml": "7a12f6b89d4518768a49a886bda0fa5be7a0c28ced42c69948b134c39da5281b",
+    "life/delivery.py": "f647d8277c0b40102f652d068762267247c08bb3863a2d74da47f84cb1175e78",
+    "life/experience.py": "7ebc1132e962f53678365e8086c1c555a2c76e79d07dcfa25f5d6451f753f785",
+    "life/experience_math.py": "2c5097b288039715ea1be8752b0526423da3ce660fa8518fa9943cd0f981729a",
+    "life/experience_private.py": "170c5903ed55d4c8184beeef5c7c10b6ac32782934fcbaf7ec2e92e022f70ac2",
+    "life/expression.py": "d1f10de1706f629de75d93c1136abfc293b8410acc0c9944dd2eac43bcf89691",
+    "life/motivation.py": "9c002eeb5816cc731af5f56e51543be2006dd8691a7077a517ff5d091bfa38a7",
+    "life/retention.py": "e2e73e9fd91842ea8dccc3cb06cba7b12d385a19ad21b3c11cf3423bd2597743",
+    "life/role_agent.py": "5a11d3edb16953be30d4d34d88c551028bc85540281c53453dba30c0eb72387a",
+    "life/runtime.py": "7bbd0c6d5f6ddf2f7920efb725a8ac570863ecb5d5476ad5c2339e106ebc9005",
+    "life/services/dsh_bridge.py": "b20a4e205203ef0d5c8a80643ce28f024a52dc7e240b426001fcc8f521d5828e",
+    "life/tool_contracts.py": "bc7b283659a9771545d2605d734106c71f88f462303f219ad95966bc80ee00ba",
+    "tests/test_experience.py": "32df92299f1458a4b8222d79bcdc0d2f1d4b859db9ed1ef67def3096d6980540",
+    "tests/test_experience_host.py": "bdf3c5121b847381ee65e8f9bdccb3e6d77f57ef45f64a5de557c4d142c03242",
+    "tests/test_intimacy_v2.py": "0158aeaeafdcc600ad95116da3c57f3002d7a2702c577673d1511972f1f77a0b",
+    "docs/intimacy-state-model-design.md": "df460c4fa3481124cea59ad551b4843ce3860b4305199ad5c13af7a400f0589f",
+    "docs/acceptance/intimacy_math_check.py": "894fbce476b6390a9acc7cdc109bc2ccbab226f090f56ae0f8bb7c6715fc224b",
+    "docs/acceptance/intimacy-math-report.json": "9ffb662b3c8ef6db94f4db2e191d811093665686b3c75d74eb2bef02d5725d6c",
+    "vendor/dsh-bridge-work/packages/sdk/server/src/qq-life-sessions.ts": "9672619534c9c097bcbcc62e1fb6160e452c2a3265cd2837b0edd03e9dfae635",
+    "vendor/dsh-bridge-work/packages/sdk/server/src/server.ts": "d4a2ca908fc48dfd34405211012541e3b95a6bbc9a4889cda64fcc1c5744d668",
+    "vendor/dsh-bridge-work/packages/sdk/server/tests/qq-life-sessions.spec.ts": "877a8461f5737363a8d1f6df9ad8446f6d4473e888dd7b42295ab26474ca8e16",
+    "vendor/dsh-bridge-work/packages/sdk/server/tests/fixtures/qq-life-contracts.json": "144fbc22599d49e92acec5b63e9fee6934fa8b04f3e3a2c65da85b57e207302b",
+    "vendor/dsh-bridge-work/docs/upgrade-guide/v0.2.1-rc.2/qq-life-permission/guide.md": "82e5c3f45a01fee5cfa7fb73aa01c6d1c481f5a1f46aa8fb4bf8188ac679647d",
+    "vendor/dsh-bridge-work/docs/upgrade-guide/v0.2.1-rc.2/qq-life-permission/guide.zh.md": "1a98e6d2664625016eddae66d80dee3c04c9624fe9e860c761d5b1172baafa31",
+    "vendor/dsh-bridge-work/docs/upgrade-guide/v0.2.1-rc.2/qq-life-permission/guide.i18n.yaml": "13ca472d0c3215965cd7de04ed646c016711cef374e3fd561eb7b8d70977a822"
+  },
+  "permanent_gains": {
+    "scope": "same_binding_until_explicit_reset_or_forget",
+    "decay": false,
+    "libido_rate": {
+      "step": 0.05,
+      "gain_cap": 1.0,
+      "effective_multiplier_cap": 2.0
+    },
+    "sensitivity": {
+      "step": 0.02,
+      "permanent_bonus_cap": 0.5,
+      "effective_total_cap": 1.5
+    },
+    "persists_through": [
+      "episode_end",
+      "settlement",
+      "stop",
+      "restart"
+    ],
+    "only_awarded_for": "completed_private_run_once",
+    "lowered_caps_apply_immediately": true,
+    "legacy_snapshot_default_sensitivity_bonus": 0.0
+  }
+}

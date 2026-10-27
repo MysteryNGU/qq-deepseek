@@ -29,7 +29,7 @@ class ExperienceTests(unittest.TestCase):
         return self.life.experience.read(self.scope)
 
     def proposal(self, action, **kwargs):
-        return dict(experience_protocol=1, experience_domain='adult_intimate', action=action,
+        return dict(experience_protocol=2, experience_domain='adult_intimate', action=action,
             base_revision=self.state()['state_revision'], sources=[self.event.id], subject_actor_id='1', **kwargs)
 
     def submit(self, action, **kwargs):
@@ -44,7 +44,8 @@ class ExperienceTests(unittest.TestCase):
             effects={'arousal':delta} if delta else {}, reason='此条语言的具体语义', **kwargs)
 
     def start(self, intensity=1.):
-        return self.submit('start', profile_confirmed=True,
+        self.source('一直按已确认方案持续，直到我说停')
+        return self.submit('start', profile_confirmed=True,authorization_mode='until_cancel',
             input_profile=dict(method='已确认方案', intensity=intensity, valence=.6, rhythm='continuous'))
 
     def test_impulse_without_run_positive_negative_unchanged_and_coverage(self):
@@ -121,11 +122,17 @@ class ExperienceTests(unittest.TestCase):
         p = self.proposal('appraise_input', direction='increase', effects={'arousal':.05}, confidence=1, reason='到达阈值')
         r = self.life.experience.submit(self.scope, p, 'threshold')
         self.assertEqual(len(r['transition_refs']), 1)
-        self.assertEqual(self.state()['peak_count'], 1)
-        self.assertEqual(self.state()['phase'], 'peak')
+        self.assertEqual(self.state()['peak_count'], 0)
+        self.assertEqual(self.state()['phase'], 'awaiting_permission')
         self.assertEqual(self.life.experience.submit(self.scope,p,'threshold')['transition_refs'], r['transition_refs'])
         self.assertEqual(len(self.state()['transitions']), 1)
         self.assertEqual(self.state()['transitions'][0]['logical_at'], self.at)
+        request=self.state()['permission_request']['request_id']
+        self.life.experience.bind_request_expression(self.scope,request,'question')
+        self.life.experience.request_delivered(self.scope,request,'question')
+        self.source('可以')
+        self.submit('permission.respond',request_id=request,decision='allow',evidence_ref=self.event.id)
+        self.assertEqual(self.state()['peak_count'],1)
         self.source('恢复期再提交')
         self.impulse(.25, confidence=1)
         self.assertEqual(self.state()['peak_count'], 1)
@@ -138,8 +145,8 @@ class ExperienceTests(unittest.TestCase):
         s = self.state()
         self.assertTrue(s['run']['desired_active'])
         self.assertEqual(s['run']['execution_state'], 'running')
-        self.assertGreater(s['peak_count'], 0)
-        self.assertGreater(s['adaptation'], .9)
+        self.assertEqual(s['peak_count'], 0)
+        self.assertGreater(s['adaptation'], 0)
         self.assertGreater(s['scene_load'], 0)
         self.assertEqual(daily, self.life.repo.load_state(self.life.state_key('drive', self.scope)))
         self.assertLess(self.life.repo._one('SELECT COUNT(*) AS n FROM experience_journal')['n'], 10)
@@ -196,37 +203,43 @@ class ExperienceTests(unittest.TestCase):
         self.assertEqual(transition['effect_origin'],'event_impulse')
         self.assertIsNone(transition['run_id'])
 
-    def test_zero_state_and_keep_ratio_one_do_not_repeat_peak_per_impulse(self):
+    def test_invalid_keep_ratio_falls_back_and_pending_never_auto_peaks(self):
         from life.experience import ExperienceSimulation
         self.life.experience=ExperienceSimulation(self.life,dict(peak_keep_ratio=1))
         self.enter();self.impulse(.25,confidence=1)
         self.source('第二条');self.impulse(.25,confidence=1)
         self.source('跨越');r=self.impulse(.25,confidence=1)
         self.assertEqual(len(r['transition_refs']),1)
-        self.assertEqual(self.state()['peak_count'],1)
+        self.assertEqual(self.state()['peak_count'],0)
+        self.assertEqual(self.life.experience.config.peak_keep_ratio,.4)
         self.source('降低归零');self.impulse(-.25,confidence=1)
         self.source('继续降低');self.impulse(-.25,confidence=1)
         self.source('归零');self.impulse(-.25,confidence=1)
-        self.assertEqual(self.state()['arousal'],0)
-        self.source('退出亲密场景')
+        self.assertEqual(self.state()['arousal'],.35)
+        self.source('停止')
         self.at+=180
         self.life.experience.advance()
-        self.assertEqual(self.state()['phase'],'settled')
+        self.assertEqual(self.state()['phase'],'idle')
         self.assertEqual(self.state()['scene_peak_count'],0)
-        self.assertEqual(self.state()['peak_count'],1)
+        self.assertEqual(self.state()['peak_count'],0)
 
-    def test_stop_input_keeps_scene_event_impulse_then_exit_blocks_old_result(self):
+    def test_stop_resets_scene_and_requires_new_explicit_opening(self):
         self.enter(); self.start()
         self.at += 100
         self.source('关闭持续输入')
         s = self.state()
         self.assertFalse(s['run']['desired_active'])
-        self.assertEqual(s['experience_context'], 'active')
+        self.assertEqual(s['experience_context'], 'closed')
+        self.assertEqual(s['arousal'],0)
         self.source('关闭持续输入后新的单次语言')
+        with self.assertRaises(SessionFailure):self.impulse(.1,confidence=1)
+        self.source('新的明确成年亲密开启')
+        self.enter()
+        self.source('新的单次语言')
         self.impulse(.1, confidence=1)
         late = self.proposal('appraise_input', direction='increase', effects={'arousal':.1}, reason='迟到的旧结果')
         self.source('退出亲密场景')
-        self.assertEqual(self.state()['experience_context'], 'closed')
+        self.assertEqual(self.state()['experience_context'], 'settling')
         with self.assertRaises(SessionFailure):
             self.life.experience.submit(self.scope, late, 'late')
         late['base_revision'] = self.state()['state_revision']
@@ -312,21 +325,19 @@ class ExperienceTests(unittest.TestCase):
         self.assertAlmostEqual(self.state()['arousal'], .05, places=10)
         self.assertEqual(self.life.experience.submit(self.scope,p,'revision'),dict(fixed,duplicate=True))
 
-    def test_revisions_revoke_peak_keep_original_callback_receipt_and_support_second_revision(self):
+    def test_revision_cannot_erase_permission_control_history(self):
         self.enter();a=self.impulse(.25,confidence=1)
         self.source('第二条');self.impulse(.25,confidence=1)
         self.source('跨越');original=self.proposal('appraise_input',direction='increase',effects={'arousal':.1},confidence=1,reason='原解释')
         peak=self.life.experience.submit(self.scope,original,'original-peak')
         p=dict(original,base_revision=self.state()['state_revision'],direction='unchanged',effects={},reason='修正为无影响',supersedes_call_key='original-peak')
-        fixed=self.life.experience.submit(self.scope,p,'revision-one')
+        with self.assertRaises(SessionFailure) as failure:
+            self.life.experience.submit(self.scope,p,'revision-one')
+        self.assertEqual(failure.exception.code,'revision_boundary')
         self.assertEqual(self.state()['peak_count'],0)
-        self.assertFalse(self.state()['transitions'])
+        self.assertEqual(self.state()['phase'],'awaiting_permission')
         self.assertEqual(self.life.experience.submit(self.scope,original,'original-peak'),dict(peak,duplicate=True))
-        p.update(base_revision=self.state()['state_revision'],direction='increase',effects={'arousal':.08},reason='第二次有依据修正',supersedes_call_key='revision-one')
-        twice=self.life.experience.submit(self.scope,p,'revision-two')
-        self.assertEqual(self.state()['peak_count'],1)
-        self.assertTrue(all(t['ack_state']=='revision_only' for t in self.state()['transitions']))
-        self.assertFalse(twice['external_actions_replayed'])
+        self.assertEqual(len(self.state()['transitions']),1)
 
     def test_hourly_review_and_repeated_source_cannot_add_fast_effect_again(self):
         self.enter();r=self.impulse(.2,confidence=1)
@@ -367,17 +378,17 @@ class ExperienceTests(unittest.TestCase):
         self.life.experience.system_resume()
         self.assertFalse(self.state()['run']['desired_active'])
 
-    def test_legacy_cutover_preserves_value_without_inventing_peak(self):
+    def test_legacy_cutover_does_not_import_episode_values_or_consent(self):
         from life.drives import initial_state
         legacy=initial_state(self.scope.scope_id,self.life.drive_config(),at=self.at)
         legacy.drives['libido'].stimulation=.7
         legacy.drives['libido'].scene_climaxes=4
         self.life.repo.save_state(self.life.state_key('drive',self.scope),legacy.to_dict())
         self.enter()
-        self.assertAlmostEqual(self.state()['arousal'],.7)
+        self.assertAlmostEqual(self.state()['arousal'],0)
         self.at+=10;self.life.experience.advance()
         self.assertEqual(self.state()['peak_count'],0)
-        self.assertEqual(self.state()['legacy_origin']['legacy_scene_climaxes'],4)
+        self.assertNotIn('legacy_origin',self.state())
 
     def test_restart_keeps_stop_and_does_not_simulate_offline(self):
         self.enter(); self.start()

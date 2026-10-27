@@ -450,7 +450,7 @@ export class HarnessSdkJsonRpcServer {
     if (params?.capability_protocol !== undefined) this.roleCapabilityProtocol = params.capability_protocol === 1
     if (params?.media_adapter_protocol !== undefined) this.roleMediaAdapterProtocol = params.media_adapter_protocol === 1
     if (params?.consult_protocol !== undefined) this.roleConsultProtocol = params.consult_protocol === 1
-    if (params?.experience_protocol !== undefined) this.roleExperienceProtocol = params.experience_protocol === 1
+    if (params?.experience_protocol !== undefined) this.roleExperienceProtocol = params.experience_protocol === 2
     if (params?.compact_tool_protocol !== undefined) this.roleCompactProtocol = params.compact_tool_protocol === 1 && this.roleCapabilityProtocol
     if (params?.continuity_protocol === 1) {
       if (typeof params.continuity_enabled !== 'boolean') throw new TypeError('continuity_enabled must be boolean')
@@ -467,7 +467,7 @@ export class HarnessSdkJsonRpcServer {
       capability_protocol: this.roleCapabilityProtocol ? 1 : null,
       media_adapter_protocol: this.roleMediaAdapterProtocol ? 1 : null,
       consult_protocol: this.roleConsultProtocol ? 1 : null,
-      experience_protocol: this.roleExperienceProtocol ? 1 : null,
+      experience_protocol: this.roleExperienceProtocol ? 2 : null,
       compact_tool_protocol: this.roleCompactProtocol ? 1 : null,
       context_efficiency_protocol: this.roleCompactProtocol ? 1 : null,
       continuity_protocol: 1,

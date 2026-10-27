@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-rc.2/qq-life-permission/guide.md
+/:
+  en: 67adb8d3cba788a3
+  zh: 161e54072f6fc292
+/qq-bot-experience-permission-protocol-2:
+  en: 15b3e39826da7484
+  zh: 9810b3a5d2b2e2a5
+/qq-bot-experience-permission-protocol-2/change:
+  en: dc0ccd32e370079b
+  zh: f8c575bde94214f9
+/qq-bot-experience-permission-protocol-2/migration:
+  en: 38d95ce04f506a9a
+  zh: 30f727a1b82c0e1f

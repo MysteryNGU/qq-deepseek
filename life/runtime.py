@@ -34,7 +34,7 @@ from .text import stable_id
 SUPPORTED_MEMORY_SCHEMA = 2
 
 SUPPORTED_RELATIONSHIP_SCHEMA = 2
-SUPPORTED_EXPERIENCE_SCHEMA = 1
+SUPPORTED_EXPERIENCE_SCHEMA = 2
 
 
 @dataclass
@@ -491,6 +491,8 @@ class LifeRuntime:
             for item in valid:
                 ev = item.normalized()
                 root = str(ev.root_id or (ev.sources[0] if ev.sources else ev.id))
+                if ev.dimension=='libido' and hasattr(self,'experience'):
+                    self.experience.private.guard_evidence(scope,root,ev.kind)
                 cycle = int(ev.cycle_id or 0)
                 if not self.repo.record_drive_settlement(
                         scope_id=scope.scope_id, root_id=root, dimension=ev.dimension,
@@ -500,6 +502,8 @@ class LifeRuntime:
                         source_ids=list(ev.sources), payload={"evidence_id": ev.id}):
                     continue
                 state, settlement = apply_one_evidence(state, ev, config, now=at)
+                if hasattr(self,'experience'):
+                    self.experience.private.apply_evidence(scope,ev,at)
                 self.repo._exec(
                     "UPDATE drive_settlements SET before_value=?,after_value=?,payload=? "
                     "WHERE scope_id=? AND root_id=? AND dimension=? AND effect_kind=? "
@@ -554,6 +558,10 @@ class LifeRuntime:
                                                expected_version=state.version)
                        if state.version else self.repo.save_state(self._drive_aggregate(scope), payload))
             advanced.version = int(version or 0)
+            if hasattr(self,'experience'):
+                self.repo._exec('INSERT OR IGNORE INTO drive_contact_attempts VALUES(?,?,?,?,?)',
+                    (stable_id('contact',scope.scope_id,dimension,contact_id or str(advanced.version)),
+                     scope.agent_id,scope.scope_id,dimension,float(self.clock() if at is None else at)))
             return advanced
 
     def may_propose_contact(self, scope: Scope, dimension: str,
