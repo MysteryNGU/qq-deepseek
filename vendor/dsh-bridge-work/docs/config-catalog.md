@@ -2744,7 +2744,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-sdk-jsonrpc-server`
 
-- `inject`: `agents` · `tools` · `workingDirectory` · `sessions`
+- `inject`: `agents` · `tools` · `workingDirectory` · `sessions` · `llm` · `tokenMeter`
 - `refs`: `Readable` (`node:stream`) · `Writable` (`node:stream`)
 - `source`: [`packages/sdk/server/src/index.ts:24`](../packages/sdk/server/src/index.ts)
 
