@@ -79,6 +79,8 @@ Each step sends the session's derived history — with the latest non-empty `sys
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
+After logging the complete request envelope and admitted inputs, the awaited `agent/request-ready` waterfall allows policies to commit durable surface projections and validate current source versions. Only then does the loop derive and freeze messages. A projection starts a logged request series; failure or cancellation prevents provider execution. Listeners call `next()` and do not edit detached messages.
+
 <details>
 <summary>Implementation internals — click to expand</summary>
 

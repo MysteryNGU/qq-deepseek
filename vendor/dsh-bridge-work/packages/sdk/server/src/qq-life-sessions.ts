@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { createDeveloperMessage, freezeMessage, type ContentBlock, type MessageId, type UserMessage } from '@deepseek-ai/dsh-llm'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, assertObjectJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-token-meter'
@@ -18,9 +18,11 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { requestHash } from './qq-life-operations.ts'
 import { QqLifeResources } from './qq-life-resources.ts'
 import { QqLifeConsult, QQ_CONSULT_ADAPTER_VERSION } from './qq-life-consult.ts'
+import { QqLifeContext, QQ_CONTEXT_ADAPTER_VERSION } from './qq-life-context.ts'
 
 /** Fingerprint captured from the loaded adapter module, not reread after edits. */
 export const QQ_ROLE_ADAPTER_VERSION = createHash('sha256').update(readFileSync(new URL(import.meta.url)))
+  .update(QQ_CONTEXT_ADAPTER_VERSION)
   .update(QQ_CONSULT_ADAPTER_VERSION).digest('hex')
 
 declare module '@deepseek-ai/dsh-tools' {
@@ -36,6 +38,10 @@ declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     /** Bot-supplied input; only user_report originates in a human message. */
     'qq-life': { kind: 'qq-life'; inputId: string; origin: string }
+    /** Persisted tool presentation state, revalidated against the scoped registry on resume.
+     * @persistenceAttribution
+     */
+    'qq-life-tools': { kind: 'qq-life-tools'; scope: string; loaded: { name: string; hash: string }[] }
   }
 }
 
@@ -60,7 +66,9 @@ function text(value: unknown): string {
 
 /** Expected wire failure with a stable recovery category. */
 export class QqLifeSessionError extends Error {
-  /** @param code - recovery category. @param detail - diagnostic. */
+  /**
+   * @param code - recovery category.
+   * @param detail - diagnostic. */
   constructor(readonly code: string, detail: string) { super(detail) }
 }
 
@@ -84,6 +92,9 @@ export class QqLifeSessions {
   private readonly stableContext = new Map<string, string>()
   private resources: QqLifeResources | undefined
   private consult: QqLifeConsult | undefined
+  private contextPolicy: QqLifeContext | undefined
+  private readonly toolPresentation = new Map<Agent, { scope: string; version: string; loaded: Map<string, string>; disposers: (() => void)[] }>()
+  private readonly requestPositions = new WeakMap<Agent, { turn: number; step: number }>()
   private readonly contextAgents = new Set<Agent>()
   private readonly opening = new Map<string, number>()
   private readonly disposers: (() => void)[] = []
@@ -91,14 +102,18 @@ export class QqLifeSessions {
   private enabled = false
 
   /**
-   * @param ctx - running profile. @param transport - host callback transport.
-   * @param home - dedicated bot home. @param agentFor - session creation/resume owner.
+   *
+   * @param ctx - running profile.
+   * @param transport - host callback transport.
+   *
+   * @param home - dedicated bot home.
+   * @param agentFor - session creation/resume owner.
    */
   constructor(private readonly ctx: Context, private readonly transport: JsonRpcTransportPeer,
     private readonly home: () => string, private readonly agentFor: (id: string) => Promise<Agent>,
     private readonly prepareContent?: (blocks: SessionPromptParams['contentBlocks']) => Promise<ContentBlock[]>,
     private readonly initialContinuityEnabled = false,
-    private readonly extensionProtocols: { capability?: boolean; media?: boolean; consult?: boolean; experience?: boolean } = {}) {}
+    private readonly extensionProtocols: { capability?: boolean; media?: boolean; consult?: boolean; experience?: boolean; compact?: boolean } = {}) {}
 
   private load(): void {
     if (this.loaded) return
@@ -189,6 +204,32 @@ export class QqLifeSessions {
     this.resources = new QqLifeResources(this.ctx, this.home, agent => this.owner(agent),
       (agent, kind, record) => this.callback(agent, 'qq_life/life/read', { kind, record }))
     this.disposers.push(this.resources.observeCalls())
+    this.contextPolicy = new QqLifeContext(this.ctx, agent => this.owner(agent) !== undefined,
+      (agent, body) => this.callback(agent, 'qq_life/life/read', body), (agent,mode) => {
+        const state=this.toolPresentation.get(agent)
+        if (mode==='task' || !state || state.loaded.size===0) return
+        this.persistToolPresentation(agent,state.scope,new Map())
+        state.loaded.clear()
+      })
+    this.disposers.push(this.ctx.on('agent/request-ready', async (payload, next) => {
+      await next()
+      if (!this.owner(payload.agent) || !this.extensionProtocols.compact || this.readModes.get(payload.agent) === 'internal') return
+      payload.signal.throwIfAborted()
+      const shown = payload.agent.session.requestHeader()?.tools ?? []
+      const current = this.ctx.tools.schemas(payload.agent)
+      for (const tool of shown) {
+        if (JSON.stringify(current.find(row => row.name === tool.name)) !== JSON.stringify(tool)) {
+          throw new QqLifeSessionError('stale_context', 'Tool registry changed during request preparation')
+        }
+      }
+      await this.contextPolicy!.prepare(payload)
+      const finalSchemas=this.ctx.tools.schemas(payload.agent)
+      for (const tool of shown) {
+        if (JSON.stringify(finalSchemas.find(row => row.name===tool.name))!==JSON.stringify(tool)) {
+          throw new QqLifeSessionError('stale_context','Tool registry changed before request freeze')
+        }
+      }
+    }))
     if (this.extensionProtocols.consult) this.consult = new QqLifeConsult(this.ctx,
       (agent, body) => this.callback(agent, 'qq_life/life/commit', body))
     this.disposers.push(this.ctx.on('agent/created', async ({ agent }) => {
@@ -209,6 +250,8 @@ export class QqLifeSessions {
       this.contextAgents.delete(agent)
       this.context.delete(String(agent.session.id))
       this.stableContext.delete(String(agent.session.id))
+      for (const dispose of this.toolPresentation.get(agent)?.disposers ?? []) dispose()
+      this.toolPresentation.delete(agent)
     }))
     this.disposers.push(this.ctx.on('tools/execute', async (exec, next) => {
       if (!exec.agent || !this.owner(exec.agent)) return next()
@@ -238,15 +281,31 @@ export class QqLifeSessions {
         if (reply.ok === false) throw new QqLifeSessionError(String(reply.code), String(reply.message))
         this.configureReadMode(agent, reply)
         await this.configureContinuity(agent, reply.continuity_protocol === 1 && reply.continuity_enabled === true)
+        await this.configureContracts(agent, reply)
         const text = String(reply.stable_text ?? '')
         this.stableContext.set(String(agent.session.id), text)
         const section = assembly.sections.find(value => value.name === 'qq-role-rules')
         if (section) section.text = text
       }
-      return next()
+      const result = await next()
+      if (agent && this.owner(agent) && this.extensionProtocols.compact && this.readModes.get(agent) !== 'internal') {
+        const state = this.toolPresentation.get(agent)
+        if (!state) throw new QqLifeSessionError('protocol_mismatch', 'Host tool contracts were not supplied')
+        const base = new Set(['life_read','life_say','life_rest','life_remember','life_intent','life_appraise'])
+        if (this.owner(agent)?.child) {
+          base.clear();base.add('life_read')
+        }
+        const schemas = this.ctx.tools.schemas(agent)
+        for (const [name, hash] of state.loaded) {
+          if (this.toolIdentity(agent, name).schema_hash !== hash) state.loaded.delete(name)
+        }
+        result.tools = schemas.filter(tool => base.has(tool.name) || state.loaded.has(tool.name))
+      }
+      return result
     }))
     this.disposers.push(this.ctx.on('agent/request', async (payload, next) => {
       if (this.owner(payload.agent)) {
+        this.requestPositions.set(payload.agent,{ turn: payload.turn,step: payload.step })
         this.installContext(payload.agent)
         const reply = await this.callback(payload.agent, 'qq_life/life/read', {
           kind: 'context', turn: payload.turn, step: payload.step,
@@ -259,7 +318,9 @@ export class QqLifeSessions {
         this.retireRuntimeContexts(payload.agent, payload.turn, payload.step)
         this.context.set(String(payload.agent.session.id), String(reply.text ?? ''))
         this.stableContext.set(String(payload.agent.session.id), String(reply.stable_text ?? ''))
-        this.resources!.configure(payload.agent, reply.resource_policy, { turn: payload.turn, step: payload.step })
+        this.resources!.configure(payload.agent, reply.resource_policy, { turn: payload.turn, step: payload.step },
+          reply.context_plan && typeof reply.context_plan === 'object' && 'mode' in reply.context_plan ? reply.context_plan.mode : undefined)
+        if (this.extensionProtocols.compact && this.readModes.get(payload.agent) !== 'internal') this.contextPolicy!.configure(payload.agent, reply)
         await this.configureContinuity(payload.agent, reply.continuity_protocol === 1 && reply.continuity_enabled === true)
       }
       return next()
@@ -293,7 +354,7 @@ export class QqLifeSessions {
       ['life.appraise', 'Evaluate actual semantic meaning; no keyword scoring. {sources:event_ids[],interpretation,meaning_kind,subject_actor_id?,affect_impulse:{joy,concern,frustration,hurt,anticipation},certainty,recovery_half_life_seconds?:{emotion:seconds},persistence_reason?,drive_evidence?,context_refs?,based_on_state_version?}. Relationship changes require relation_protocol:2, actual QQ subject_actor_id, based_on_relationship_version from life.read(kind:relationship,actor_id), relation_impacts:[{metric:familiarity|trust|comfort|bond,direction:increase|decrease|unchanged,magnitude:slight|meaningful|major,confidence:0..1}]. Read results and current context include four metrics, meanings, basis, visible evidence, policy and relationship_version. Owner metrics stay in [0.7,1], other people in [0,0.9]. bond is lasting personal attachment, not pleasure or sexual drive. No absolute scores, delta, relation_evidence or relationship_evidence; old fields return protocol_mismatch. Optional relation_context_changes use the relationship_note operations from life.remember in the same atomic appraisal. One actual stimulus settles once; duplicate returns its receipt. stimulus_overlap requires an explicit revision: supersedes_appraisal_id and revision+1. On stale_context reread the versions before deciding. Self imagination may use self_text but cannot prove another person acted.'],
       ['life.change_self', 'Actually save and activate: target:persona with content/base_hash updates the independent private persona source; target:persona_public with content/base_hash updates only the independent public persona source. Select the source with life_read(kind:self,persona_audience:private|public) and use that file’s persona_hash; public conversations cannot read the private source. Neither source is generated from the other; do not submit legacy public/private section markers; target:skill with name/content; target:dynamics with patch:{drives:{dimension:{parameter:value}},affect:{half_life:{emotion:seconds}}}; target:code with patch:{file,old,new} or patch:{changes:[{file,old,new}|{file,action:create,content}],migrations?:[{id,sql:[]}]}, plus independent probes:[{module,function,arguments,expected,critical}]. Multi-file/new-module/core changes use immutable candidates; migrations only add tables, columns or indexes. Read the publication receipt: rejected or applied:false is not an active upgrade. target:dsh with edits:[{path,old,new}],reason,verification_goal queues checked native DSH source/build/worker activation after the current turn rests; read self_changes for the actual outcome and then verify the original goal. target:worker with verification_goal queues a restart after native plugin_manager installation when its receipt requires restart; target:plugin action:remove with bundle and verification_goal removes via the stopped-profile CLI and reopens the worker. Voice target:voice supports action:register with voice:{id,engine:edge-tts,engine_voice,languages?,parameters?}, or a configured background voice:{id,name?,engine,provider_id?,reference_asset_id,revision?,parameters?} and sample_text?. Local registration queues real background synthesis and returns job_id; choose a default only after its verified result. action:default takes voice_id,global?:bool; private local references cannot become a global public default. Edge retains its preset compatibility; background voices use scoped references, adapter-owned parameters and frozen revisions. The saved default keeps its selected voice revision until explicitly changed. Runtime code activation is distinct from saved code.'],
       ['life.say', 'Send a natural expression to the current conversation. {text,handled_input_ids,activity_changes?,appraisal?}, or parts:[{kind:text,text,mode?:auto|single|artifact},{kind:image,asset_id},{kind:audio,asset_id},{kind:voice,text,voice_id,parameters?}]. Pure images/voice are allowed; you choose the medium. New call IDs do not create a new reply slot. Resolve unknown delivery first; new_message:true explicitly starts another message after the previous one is confirmed. Sending normally continues the current activity: you may read, act or send another distinct message without a new wake or user reply. Decide when to stop with life_rest or end_turn:true on your last expression. A successful reply reports turn_complete; only true ends the activity. purpose:notice is an optional heads-up and also continues. No compulsory pre-action report or fixed message count. When promising to wait for an answer, include wait_for_reply:{intent_ref,base_revision,actor_id?}; the hold is saved before dispatch. It lasts until you understand a new answer and resume that intention; this question ends the current turn. Submit alone after other tool results have settled.'],
-      ['life.rest', 'Keep your thoughts private and finish this turn. Include handled_input_ids if relevant. reflection_outcome:unchanged|new_thought|action|unspecified and next_attention:{mode:adaptive|after|event|none,after_seconds?,intent_ref?,reason?}. Adaptive is the ordinary idle opportunity, initially 15 minutes and gradually longer when unchanged; a thought need not be productive. after is an explicit time, including short task checks; event needs an existing intent_ref and never treats silence as consent. none stops this idle plan, not incoming messages. wake_after_seconds is a legacy after adapter and must not be combined with next_attention. Sending a message does not schedule sleep. Only rest, end_turn:true or a reply-wait question ends the current activity; existing explicit plans survive that end.'],
+      ['life.rest', 'Keep your thoughts private and finish this turn. Include handled_input_ids if relevant. reflection_outcome:unchanged|new_thought|action|unspecified and next_attention:{mode:adaptive|after|event|none,after_seconds?,intent_ref?,reason?}. Adaptive uses the configured random idle interval; a thought need not be productive. after is an explicit time, including short task checks; event needs an existing intent_ref and never treats silence as consent. none stops this idle plan, not incoming messages. wake_after_seconds is a legacy after adapter and must not be combined with next_attention. Sending a message does not schedule sleep. Only rest, end_turn:true or a reply-wait question ends the current activity; existing explicit plans survive that end.'],
     ]) {
       const create = (extension = '', replacementDescription?: string) => defineTool({
         name: name!.replace('.', '_'), description: replacementDescription ?? description! + extension,
@@ -305,8 +366,10 @@ export class QqLifeSessions {
           if (!exec.agent) throw new Error('life tools require a bound Agent')
           const reply = name === 'life.consult' && this.consult ? await this.consult.execute(exec.agent, args.proposal, exec) : await this.callback(exec.agent, name === 'life.read' ? 'qq_life/life/read' : 'qq_life/life/commit', {
             kind: name, call_id: String(exec.callId), proposal: args.proposal,
+            tool_identity: this.toolIdentity(exec.agent,name!.replace('.','_')),
           })
           if (reply.ok === false) throw new QqLifeSessionError(String(reply.code), JSON.stringify(reply))
+          if (name === 'life.read' && reply.tool_load !== undefined) this.stageTool(exec.agent, reply.tool_load)
           if (name === 'life.rest' || name === 'life.say' && reply.turn_complete === true
             || this.readModes.get(exec.agent) === 'internal' && reply.turn_complete === true) exec.concludeTurn()
           return JSON.parse(JSON.stringify(reply))
@@ -317,9 +380,76 @@ export class QqLifeSessions {
     }
   }
 
+  private async configureContracts(agent: Agent, reply: Record<string, unknown>): Promise<void> {
+    if (!this.extensionProtocols.compact || this.readModes.get(agent) === 'internal') return
+    const catalog = record(reply.tool_contracts), version = text(catalog.version), scope = `${text(reply.presentation_scope)}:${agent.session.id}`
+    const old = this.toolPresentation.get(agent)
+    if (old?.scope === scope && old.version === version) return
+    if (!Array.isArray(catalog.items)) throw new QqLifeSessionError('protocol_mismatch', 'Incomplete host tool catalog')
+    const definitions = catalog.items.flatMap(value => {
+      const item = record(value), name = text(item.name), parameters = item.parameters
+      assertObjectJsonSchema(parameters)
+      const original = this.continuityTools.get(name.replace('_','.'))?.('')
+      if (!original && (name === 'life_simulation' && !this.extensionProtocols.experience || name === 'life_consult' && !this.extensionProtocols.consult)) return []
+      if (!original) throw new QqLifeSessionError('protocol_mismatch', `Unknown host tool ${name}`)
+      return [{ ...original, name, description: text(item.description), parameters: { ...parameters },
+        execute: async (args: unknown, exec: Parameters<typeof original.execute>[1]) => {
+          const errors = validateJsonSchemaValue(parameters, args)
+          if (errors.length) throw new QqLifeSessionError('invalid_input', errors.join('; '))
+          return original.execute(args, exec)
+        } }]
+    })
+    const loaded = old?.scope === scope ? new Map(old.loaded) : new Map<string, string>()
+    if (!old) {
+      const events = await this.events(agent)
+      const saved = events.findLast(event => event.type === 'developer/message' && event.data.message.source.kind === 'qq-life-tools')
+      if (saved?.type === 'developer/message' && saved.data.message.source.kind === 'qq-life-tools'
+        && saved.data.message.source.scope === scope) {
+        for (const item of saved.data.message.source.loaded) loaded.set(item.name, item.hash)
+      }
+    }
+    // All schemas are validated before any replacement becomes visible.
+    for (const dispose of old?.disposers ?? []) dispose()
+    const disposers: (() => void)[] = []
+    try {
+      for (const definition of definitions) disposers.push(agent.ctx.tools.register(definition))
+    } catch (error) {
+      for (const dispose of disposers) dispose()
+      this.toolPresentation.delete(agent)
+      throw error
+    }
+    this.toolPresentation.set(agent, { scope, version, loaded, disposers })
+  }
+
+  private stageTool(agent: Agent, raw: unknown): void {
+    const load = record(raw), state = this.toolPresentation.get(agent)
+    const name = text(load.name), hash = text(load.schema_hash)
+    if (!state || load.status !== 'ready' || `${String(load.presentation_scope)}:${agent.session.id}` !== state.scope
+      || !this.ctx.tools.schemas(agent).some(tool => tool.name === name)
+      || this.toolIdentity(agent, name).schema_hash !== hash) {
+      throw new QqLifeSessionError('stale_context', 'Tool load failed current scope/hash validation')
+    }
+    if (state.loaded.get(name) === hash) return
+    const loaded = new Map(state.loaded); loaded.set(name,hash)
+    this.persistToolPresentation(agent,state.scope,loaded)
+    state.loaded.set(name,hash)
+  }
+
+  private persistToolPresentation(agent: Agent, scope: string, loaded: Map<string,string>): void {
+    const position = this.requestPositions.get(agent)
+    if (!position) throw new QqLifeSessionError('stale_context','Tool load has no current request position')
+    agent.session.append('developer/message', { ...position,
+      message: createDeveloperMessage({ content: [], source: { kind: 'qq-life-tools', scope,
+        loaded: [...loaded].map(([name, hash]) => ({ name, hash })) } }),
+    }, { surfaceOp: 'append' })
+  }
+
   /**
    * Capture the exact delegating call while the child is being created.
-   * @param parentSessionId - actual Session parent. @param childSessionId - created child.
+   *
+   * @param parentSessionId - actual Session parent.
+   * @param childSessionId - created child.
+   *
    * @returns the causal call id, or undefined for non-tool creation.
    */
   captureChildCall(parentSessionId: string, childSessionId: string): string | undefined {
@@ -329,7 +459,9 @@ export class QqLifeSessions {
     return call.callId
   }
 
-  /** @param childSessionId - actual child. @returns whether this bot recorded its creating or resuming call. */
+  /** Check whether this adapter recorded the child's causal call.
+   * @param childSessionId - actual child.
+   * @returns whether this bot recorded its creating or resuming call. */
   ownsChildCall(childSessionId: string): boolean { return this.childCalls.has(childSessionId) }
 
   private targetsForCalls(root: string, value: unknown): { targets: Set<string>; descendants: Set<string> } {
@@ -351,6 +483,10 @@ export class QqLifeSessions {
 
   private async configureContinuity(agent: Agent, enabled: boolean): Promise<void> {
     if (this.readModes.get(agent) === 'internal') return
+    if (this.extensionProtocols.compact) {
+      if (this.extensionProtocols.capability) this.installMethods(agent)
+      return
+    }
     const registrations = this.continuityRegistrations.get(agent)
     if (registrations?.enabled !== enabled) {
       for (const dispose of registrations?.disposers ?? []) dispose()
@@ -494,7 +630,7 @@ export class QqLifeSessions {
     for (const seq of session.surface.nodes) {
       // oxlint-disable-next-line typescript/no-deprecated -- Read only retained nodes, not the complete session log.
       const event = session.eventAt(seq)
-      if (event?.type === 'user/message' && String(event.data.source.kind) === 'runtime-context') snapshots.push(event)
+      if (event?.type === 'user/message' && (String(event.data.source.kind) === 'runtime-context' || event.data.source.kind==='qq-life-projection')) snapshots.push(event)
     }
     if (snapshots.length === 0) return
     const meter = this.ctx.get('tokenMeter')
@@ -599,8 +735,11 @@ export class QqLifeSessions {
 
   /**
    * Handle bot session methods. Expected failures return structured categories.
+   *
    * @param method - registered qq_life/session method.
+   *
    * @param params - wire JSON.
+   *
    * @returns receipt or explicit recovery failure; never a fabricated success.
    */
   async handle(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -644,7 +783,9 @@ export class QqLifeSessions {
         const methods = skills === undefined ? [] : (await skills.list({ scope: agent }))
           .filter(skill => skill.invocation.modelInvocable)
           .map(skill => ({ name: skill.name, description: skill.description, provider: skill.provider, hash: null }))
-        const tools = this.ctx.tools.schemas(agent).map(tool => ({ ...tool, identity: this.toolIdentity(agent, tool.name) }))
+        const tools = this.ctx.tools.schemas(agent).map(tool => ({ ...tool, identity: this.toolIdentity(agent, tool.name),
+          ...this.extensionProtocols.compact && this.continuityTools.has(tool.name.replace('_','.'))
+            ? { documentation: this.continuityTools.get(tool.name.replace('_','.'))!(this.extensionDescription(tool.name.replace('_','.'))).description } : {} }))
         return { ok: true, tools, methods, version: createHash('sha256').update(JSON.stringify({ tools, methods })).digest('hex') }
       }
       if (method === 'usage') return this.resources!.usage(id, Number(params.after_seq ?? -1))
@@ -699,6 +840,8 @@ export class QqLifeSessions {
 
   /** Remove all contributions after owned Agents have settled. */
   dispose(): void {
+    for (const state of this.toolPresentation.values()) for (const dispose of state.disposers) dispose()
+    this.toolPresentation.clear()
     for (const registrations of this.internalRegistrations.values()) for (const dispose of registrations) dispose()
     this.internalRegistrations.clear()
     for (const registrations of this.continuityRegistrations.values()) for (const dispose of registrations.disposers) dispose()

@@ -91,6 +91,7 @@ export class HarnessSdkJsonRpcServer {
   private roleMediaAdapterProtocol = false
   private roleConsultProtocol = false
   private roleExperienceProtocol = false
+  private roleCompactProtocol = false
   private cwd = process.cwd()
   private provider = 'deepseek-official'
   private model = 'deepseek-official'
@@ -450,6 +451,7 @@ export class HarnessSdkJsonRpcServer {
     if (params?.media_adapter_protocol !== undefined) this.roleMediaAdapterProtocol = params.media_adapter_protocol === 1
     if (params?.consult_protocol !== undefined) this.roleConsultProtocol = params.consult_protocol === 1
     if (params?.experience_protocol !== undefined) this.roleExperienceProtocol = params.experience_protocol === 1
+    if (params?.compact_tool_protocol !== undefined) this.roleCompactProtocol = params.compact_tool_protocol === 1 && this.roleCapabilityProtocol
     if (params?.continuity_protocol === 1) {
       if (typeof params.continuity_enabled !== 'boolean') throw new TypeError('continuity_enabled must be boolean')
       this.roleContinuityEnabled = params.continuity_enabled
@@ -466,6 +468,8 @@ export class HarnessSdkJsonRpcServer {
       media_adapter_protocol: this.roleMediaAdapterProtocol ? 1 : null,
       consult_protocol: this.roleConsultProtocol ? 1 : null,
       experience_protocol: this.roleExperienceProtocol ? 1 : null,
+      compact_tool_protocol: this.roleCompactProtocol ? 1 : null,
+      context_efficiency_protocol: this.roleCompactProtocol ? 1 : null,
       continuity_protocol: 1,
       continuity_enabled: this.roleContinuityEnabled,
       profile: identity.name,
@@ -672,7 +676,7 @@ export class HarnessSdkJsonRpcServer {
         this.assertLiveAgent(rec, id)
         return rec.handle.agent
       }, blocks => durablePromptContent(this.ctx, blocks), this.roleContinuityEnabled,
-      { capability: this.roleCapabilityProtocol, media: this.roleMediaAdapterProtocol, consult: this.roleConsultProtocol, experience: this.roleExperienceProtocol })
+      { capability: this.roleCapabilityProtocol, media: this.roleMediaAdapterProtocol, consult: this.roleConsultProtocol, experience: this.roleExperienceProtocol, compact: this.roleCompactProtocol })
       return this.roleSessions.handle(method.slice('qq_life/session/'.length), params ?? {})
     }
     switch (method) {

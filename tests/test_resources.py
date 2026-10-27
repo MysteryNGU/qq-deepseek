@@ -343,6 +343,39 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SessionFailure):
             self.role.rest(self.scope,dict(next_attention=dict(mode='adaptive'),wake_after_seconds=45),self.root)
 
+    def test_compact_role_keeps_full_procedures_readable_with_versioned_pagination(self):
+        original=self.role.stable_context(self.scope,{})
+        self.role.capability_protocol=1
+        self.role.compact_tool_protocol=1
+        compact=self.role.stable_context(self.scope,{})
+        self.assertLess(len(compact),len(original)*.65)
+        self.assertIn('role_protocol',compact)
+        self.assertIn('end_turn:true',compact)
+        page=self.role.read(self.scope,dict(kind='role_protocol',query='任务',limit=1),self.root)
+        self.assertEqual(len(page['items']),1)
+        self.assertEqual(page['coverage'],'partial')
+        next_page=self.role.read(self.scope,dict(kind='role_protocol',query='任务',limit=1,cursor=page['next_cursor']),self.root)
+        self.assertNotEqual(page['items'],next_page['items'])
+        with self.assertRaises(SessionFailure):
+            self.role.read(self.scope,dict(kind='role_protocol',query='发送',cursor=page['next_cursor']),self.root)
+        from life.role_agent import ROLE_METHOD
+        all_items=[];cursor=None
+        while True:
+            got=self.role.read(self.scope,dict(kind='role_protocol',cursor=cursor),self.root)
+            all_items.extend(item['text'] for item in got['items'])
+            cursor=got['next_cursor']
+            if cursor is None:break
+        self.assertEqual(all_items,[line for line in ROLE_METHOD.splitlines() if line.strip()])
+
+    def test_compact_role_requires_both_protocols_and_rejects_invalid_guide_reads(self):
+        original=self.role.stable_context(self.scope,{})
+        self.role.compact_tool_protocol=1
+        self.assertEqual(original,self.role.stable_context(self.scope,{}))
+        for fields in (dict(limit=True),dict(limit=0),dict(query=4),dict(cursor={'offset':0})):
+            with self.assertRaises(SessionFailure):
+                self.role.read(self.scope,dict(kind='role_protocol',**fields),self.root)
+        with self.assertRaises(ValueError):ResourcePolicy.parse(dict(compaction_threshold_percent=100))
+
     def test_unchanged_finish_is_idempotent_and_new_thought_resets_backoff(self):
         self.input()
         first = self.role.rest(self.scope,dict(reflection_outcome='unchanged'),self.root)

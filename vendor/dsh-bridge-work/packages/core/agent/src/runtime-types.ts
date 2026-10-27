@@ -372,6 +372,16 @@ declare module '@deepseek-ai/cordis' {
     */
     'agent/request'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }, next: () => Promise<LlmCallConfig>): Promise<LlmCallConfig>
     /**
+     * Validate the complete logged request before deriving its frozen messages.
+     * Listeners may commit durable surface projections; no listener may edit a
+     * detached request. Failure prevents provider execution. Cancellation and
+     * changes during asynchronous preparation must be checked before returning.
+     * @param payload - owner, current position and cancellation signal.
+     * @param next - delegate to remaining preparation policies.
+     * @mode waterfall
+     */
+    'agent/request-ready'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }, next: () => Promise<void>): Promise<void>
+    /**
      * Handle one failed model-request attempt before the loop retries or closes
      * its step. A listener returns `{ kind: 'retry' }` without calling `next()`
      * when it owns recovery, or calls `next()` to delegate. The default

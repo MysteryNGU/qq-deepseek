@@ -1,0 +1,5547 @@
+{
+  "version": "61ed4a0404813eab90786ebbedd8d16b24777820f1378b28e5f9939acabcfc7f",
+  "items": [
+    {
+      "name": "life_read",
+      "description": "读取当前状态、来源、历史及能力目录；精确 ref + schema_hash + load:true 加载工具。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "self",
+                  "relationship",
+                  "relationship_semantics",
+                  "intents",
+                  "reminders",
+                  "appraisals",
+                  "self_changes",
+                  "skill",
+                  "usage",
+                  "observation",
+                  "message",
+                  "voices",
+                  "media",
+                  "media_jobs",
+                  "media_collection",
+                  "motivations",
+                  "person_profile",
+                  "role_protocol",
+                  "simulation",
+                  "experience_review",
+                  "recall",
+                  "life_source",
+                  "memory_index",
+                  "continuity",
+                  "capabilities",
+                  "media_capabilities",
+                  "memory_batch"
+                ]
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "tools",
+                  "methods",
+                  "media"
+                ]
+              },
+              "query": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              },
+              "cursor": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "limit": {
+                "type": "integer"
+              },
+              "actor_id": {
+                "type": "string"
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "version": {
+                "type": "string"
+              },
+              "field": {
+                "type": "string",
+                "enum": [
+                  "schema"
+                ]
+              },
+              "load": {
+                "type": "boolean"
+              },
+              "schema_hash": {
+                "type": "string"
+              },
+              "provider_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "event_id": {
+                "type": "string"
+              },
+              "result_ref": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "max_tokens": {
+                "type": "integer"
+              },
+              "start_line": {
+                "type": "integer"
+              },
+              "offset_chars": {
+                "type": "integer"
+              },
+              "before_lines": {
+                "type": "integer"
+              },
+              "after_lines": {
+                "type": "integer"
+              },
+              "limit_matches": {
+                "type": "integer"
+              },
+              "include_full": {
+                "type": "boolean"
+              },
+              "related": {
+                "type": "boolean"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "logical_message_id": {
+                "type": "string"
+              },
+              "persona_audience": {
+                "type": "string",
+                "enum": [
+                  "private",
+                  "public"
+                ]
+              },
+              "asset_id": {
+                "type": "string"
+              },
+              "perception": {
+                "type": "string",
+                "enum": [
+                  "transcript",
+                  "frame_set"
+                ]
+              },
+              "timestamps": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "action": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "media_kind": {
+                "type": "string"
+              },
+              "discover": {
+                "type": "boolean"
+              },
+              "language": {
+                "type": "string"
+              },
+              "view": {
+                "type": "string"
+              },
+              "since": {
+                "type": "number"
+              },
+              "until": {
+                "type": "number"
+              },
+              "intent_ref": {
+                "type": "string"
+              },
+              "session_id": {
+                "type": "string"
+              },
+              "root_session_id": {
+                "type": "string"
+              },
+              "turn": {
+                "type": "integer"
+              },
+              "after_transition_seq": {
+                "type": "integer"
+              },
+              "global": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_read",
+      "schema_hash": "54d1effa1787d2b06a85aa246d93bec24e21a1cd7c0d89c5e7e50ecaa578695f",
+      "version": 1
+    },
+    {
+      "name": "life_say",
+      "description": "向当前对话发送自然表达；最后一条显式 end_turn:true。未知发送先对账。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "profile_reviews": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "actor_id": {
+                      "type": "string"
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "actor_id",
+                    "sources",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "text": {
+                "type": "string"
+              },
+              "parts": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "text"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "auto",
+                            "single",
+                            "artifact"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "text"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "image",
+                            "audio"
+                          ]
+                        },
+                        "asset_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "asset_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "voice"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "voice_id": {
+                          "type": "string"
+                        },
+                        "parameters": {
+                          "type": "object",
+                          "properties": {},
+                          "required": [],
+                          "additionalProperties": true
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "text"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "single",
+                  "artifact"
+                ]
+              },
+              "purpose": {
+                "type": "string",
+                "enum": [
+                  "final",
+                  "notice"
+                ]
+              },
+              "end_turn": {
+                "type": "boolean"
+              },
+              "new_message": {
+                "type": "boolean"
+              },
+              "wait_for_reply": {
+                "type": "object",
+                "properties": {
+                  "intent_ref": {
+                    "type": "string"
+                  },
+                  "base_revision": {
+                    "type": "integer"
+                  },
+                  "actor_id": {
+                    "type": "string"
+                  },
+                  "question": {
+                    "type": "string"
+                  },
+                  "checkpoint": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "intent_ref",
+                  "base_revision"
+                ],
+                "additionalProperties": false
+              },
+              "experience_run_ref": {
+                "type": "string"
+              },
+              "experience_control_revision": {
+                "type": "integer"
+              },
+              "continuity_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_say",
+      "schema_hash": "7fad67069812a1b543cae7e54aeb369edc1614d4ab8251ed702ce1fb2965f581",
+      "version": 1
+    },
+    {
+      "name": "life_rest",
+      "description": "保存私人想法并结束当前轮；沿用已有随机空闲间隔。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "profile_reviews": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "actor_id": {
+                      "type": "string"
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "actor_id",
+                    "sources",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "thought": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "keep_thought": {
+                "type": "boolean"
+              },
+              "thought_cues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "continuity_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "reflection_outcome": {
+                "type": "string",
+                "enum": [
+                  "unchanged",
+                  "new_thought",
+                  "action",
+                  "unspecified"
+                ]
+              },
+              "wake_after_seconds": {
+                "type": "number"
+              },
+              "next_attention": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "adaptive",
+                      "after",
+                      "event",
+                      "none"
+                    ]
+                  },
+                  "after_seconds": {
+                    "type": "number"
+                  },
+                  "intent_ref": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_rest",
+      "schema_hash": "dea6f17dc0ce5d32089b16f94e263c64842f5202cf9b0454aa74259750c3d024",
+      "version": 1
+    },
+    {
+      "name": "life_appraise",
+      "description": "评价真实语义及独立情绪、需要、人物关系，复用现有来源校验。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "meaning_kind": {
+                "type": "string"
+              },
+              "self_text": {
+                "type": "string"
+              },
+              "subject_actor_id": {
+                "type": "string"
+              },
+              "affect_impulse": {
+                "type": "object",
+                "properties": {
+                  "joy": {
+                    "type": "number"
+                  },
+                  "concern": {
+                    "type": "number"
+                  },
+                  "frustration": {
+                    "type": "number"
+                  },
+                  "hurt": {
+                    "type": "number"
+                  },
+                  "anticipation": {
+                    "type": "number"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "certainty": {
+                "type": "number"
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "novelty": {
+                "type": "number"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "supersedes_appraisal_id": {
+                "type": "string"
+              },
+              "recovery_half_life_seconds": {
+                "type": "object",
+                "properties": {
+                  "joy": {
+                    "type": "number"
+                  },
+                  "concern": {
+                    "type": "number"
+                  },
+                  "frustration": {
+                    "type": "number"
+                  },
+                  "hurt": {
+                    "type": "number"
+                  },
+                  "anticipation": {
+                    "type": "number"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "persistence_reason": {
+                "type": "string"
+              },
+              "context_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "based_on_state_version": {
+                "type": "integer"
+              },
+              "relation_protocol": {
+                "type": "integer",
+                "const": 2
+              },
+              "based_on_relationship_version": {
+                "type": "integer"
+              },
+              "relation_impacts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "metric": {
+                      "type": "string",
+                      "enum": [
+                        "familiarity",
+                        "trust",
+                        "comfort",
+                        "bond"
+                      ]
+                    },
+                    "direction": {
+                      "type": "string",
+                      "enum": [
+                        "increase",
+                        "decrease",
+                        "unchanged"
+                      ]
+                    },
+                    "magnitude": {
+                      "type": "string",
+                      "enum": [
+                        "slight",
+                        "meaningful",
+                        "major"
+                      ]
+                    },
+                    "confidence": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "metric",
+                    "direction",
+                    "magnitude",
+                    "confidence"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "relation_context_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "type": "string",
+                      "enum": [
+                        "create",
+                        "replace",
+                        "resolve",
+                        "revoke"
+                      ]
+                    },
+                    "actor_id": {
+                      "type": "string"
+                    },
+                    "relation_kind": {
+                      "type": "string",
+                      "enum": [
+                        "preference",
+                        "agreement",
+                        "repair",
+                        "expectation",
+                        "role_description"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "enum": [
+                        "explicit_statement",
+                        "interpretation"
+                      ]
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "confidence": {
+                      "type": "number"
+                    },
+                    "salience": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "normal",
+                        "high"
+                      ]
+                    },
+                    "base_note_ref": {
+                      "type": "string"
+                    },
+                    "lifetime_days": {
+                      "type": "number"
+                    },
+                    "applicability": {
+                      "type": "string"
+                    },
+                    "intent_ref": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "operation",
+                    "actor_id"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "drive_evidence": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "dimension": {
+                      "type": "string"
+                    },
+                    "need": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "effect_kind": {
+                      "type": "string"
+                    },
+                    "delta": {
+                      "type": "number"
+                    },
+                    "confidence": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "evidence_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "interaction_ref": {
+                      "type": "string"
+                    },
+                    "resolution_ref": {
+                      "type": "string"
+                    },
+                    "satisfaction_ref": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": true
+                }
+              },
+              "resolves_cause_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "quoted_or_hypothetical": {
+                "type": "boolean"
+              },
+              "negated": {
+                "type": "boolean"
+              },
+              "user_need": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "affected_need_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_appraise",
+      "schema_hash": "1dc5440f03c08276b48b8851d2c8c262f42d420b63f9f745e99e2f74c5548a01",
+      "version": 1
+    },
+    {
+      "name": "life_intent",
+      "description": "保存或更新当前打算；等待与停止须按当前版本执行。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "save",
+                  "resolve",
+                  "wait",
+                  "pause",
+                  "cancel",
+                  "resume",
+                  "done",
+                  "merge",
+                  "transfer"
+                ]
+              },
+              "ref": {
+                "type": "string"
+              },
+              "base_revision": {
+                "type": "integer"
+              },
+              "target_ref": {
+                "type": "string"
+              },
+              "target_base_revision": {
+                "type": "integer"
+              },
+              "goal": {
+                "type": "string"
+              },
+              "checkpoint": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "method_refs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "next_step": {
+                        "type": "string"
+                      },
+                      "remaining": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "evidence_refs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "operation_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "asset_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": true
+                  }
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "once",
+                  "ongoing"
+                ]
+              },
+              "origin": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "self"
+                ]
+              },
+              "topic_key": {
+                "type": "string"
+              },
+              "parent_ref": {
+                "type": "string"
+              },
+              "end_direction": {
+                "type": "boolean"
+              },
+              "bind": {
+                "type": "boolean"
+              },
+              "interest": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": true
+              },
+              "question": {
+                "type": "string"
+              },
+              "actor_id": {
+                "type": "string"
+              },
+              "wake_after_seconds": {
+                "type": "number"
+              },
+              "wake_reason": {
+                "type": "string"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_intent",
+      "schema_hash": "7cf8bf9bf0fd710685abc37845afd16e286c18480853f938212c483b661f18e7",
+      "version": 1
+    },
+    {
+      "name": "life_remember",
+      "description": "按真实来源保存到现有记忆、人物画像和叮嘱服务。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "experience",
+                  "preference",
+                  "reminder",
+                  "inference",
+                  "imagination",
+                  "roleplay",
+                  "relationship_note",
+                  "person_profile",
+                  "person_profile_review",
+                  "media_collection",
+                  "organized_memory"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "action": {
+                "type": "string"
+              },
+              "cues": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "always_load": {
+                "type": "boolean"
+              },
+              "topic_key": {
+                "type": "string"
+              },
+              "supersedes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "applicability": {
+                "type": "string"
+              },
+              "intent_ref": {
+                "type": "string"
+              },
+              "reference_asset_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "skill_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "memory_id": {
+                "type": "string"
+              },
+              "lifetime_days": {
+                "type": "number"
+              },
+              "correction": {
+                "type": "boolean"
+              },
+              "change": {
+                "type": "boolean"
+              },
+              "continuity": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "thought",
+                      "reflection"
+                    ]
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "create",
+                      "replace",
+                      "archive"
+                    ]
+                  },
+                  "base_ref": {
+                    "type": "string"
+                  },
+                  "base_version": {
+                    "type": "integer"
+                  },
+                  "batch_ref": {
+                    "type": "string"
+                  },
+                  "reviewed_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "summarized",
+                      "no_new_insight"
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              "operation": {
+                "type": "string"
+              },
+              "actor_id": {
+                "type": "string"
+              },
+              "field": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "salience": {
+                "type": "string"
+              },
+              "base_revision": {
+                "type": "integer"
+              },
+              "base_note_ref": {
+                "type": "string"
+              },
+              "relation_kind": {
+                "type": "string"
+              },
+              "coverage_digest": {
+                "type": "string"
+              },
+              "claims": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "observed",
+                        "reported",
+                        "interpreted",
+                        "hypothetical"
+                      ]
+                    },
+                    "evidence_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "kind",
+                    "evidence_refs"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "omitted_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unresolved_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "ordinary_fragments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": true
+                }
+              },
+              "reviewed_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "profile_version": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "expires": {
+                "type": "number"
+              },
+              "asset_id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_remember",
+      "schema_hash": "2a683df4d38b30768f3b7527658a3b4fea91f97d008e9dacda375cff6178314a",
+      "version": 1
+    },
+    {
+      "name": "life_media",
+      "description": "异步生成媒体；生成、检查和送达分别确认。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "submit",
+                  "status",
+                  "cancel"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "image",
+                  "speech"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "reference_asset_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "provider_id": {
+                "type": "string"
+              },
+              "provider_options": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": true
+              },
+              "intent_ref": {
+                "type": "string"
+              },
+              "voice_id": {
+                "type": "string"
+              },
+              "voice_revision": {
+                "type": "string"
+              },
+              "delivery": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": true
+              },
+              "segments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "pause_after_ms": {
+                      "type": "number"
+                    },
+                    "delivery": {
+                      "type": "object",
+                      "properties": {},
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_media",
+      "schema_hash": "50f5ebbb4a12fd9b2230f45ee3175709426676eaf6218833fc70a02f65e1beca",
+      "version": 1
+    },
+    {
+      "name": "life_consult",
+      "description": "异步咨询 Codex；未知结果须核对原 request_id。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "status",
+                  "read",
+                  "cancel",
+                  "close"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "topic_id": {
+                "type": "string"
+              },
+              "request_id": {
+                "type": "string"
+              },
+              "intent_ref": {
+                "type": "string"
+              },
+              "cursor": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "limit_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_consult",
+      "schema_hash": "888b754fba56181d8c0f195e95c185c6ff67d05543165b52ba07227f066a9c12",
+      "version": 1
+    },
+    {
+      "name": "life_change_self",
+      "description": "按原发布流程修改人格、方法、代码或插件，核对生效回执。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "target": {
+                "type": "string",
+                "enum": [
+                  "persona",
+                  "persona_public",
+                  "skill",
+                  "dynamics",
+                  "code",
+                  "dsh",
+                  "worker",
+                  "plugin",
+                  "voice"
+                ]
+              },
+              "content": {
+                "type": "string"
+              },
+              "base_hash": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "create": {
+                "type": "boolean"
+              },
+              "metadata": {
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string",
+                    "enum": [
+                      "private",
+                      "public"
+                    ]
+                  },
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "capability_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "public_content": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "patch": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  },
+                  "old": {
+                    "type": "string"
+                  },
+                  "new": {
+                    "type": "string"
+                  },
+                  "changes": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string"
+                            },
+                            "old": {
+                              "type": "string"
+                            },
+                            "new": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "file",
+                            "old",
+                            "new"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string"
+                            },
+                            "action": {
+                              "type": "string",
+                              "const": "create"
+                            },
+                            "content": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "file",
+                            "action",
+                            "content"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "migrations": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "sql": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "sql"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drives": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": true
+                  },
+                  "affect": {
+                    "type": "object",
+                    "properties": {
+                      "half_life": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": true
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "probes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "module": {
+                      "type": "string"
+                    },
+                    "function": {
+                      "type": "string"
+                    },
+                    "arguments": {
+                      "type": "object",
+                      "properties": {},
+                      "required": [],
+                      "additionalProperties": true
+                    },
+                    "expected": {
+                      "description": "Expected lossless JSON value of the independent probe."
+                    },
+                    "critical": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "module",
+                    "function",
+                    "arguments",
+                    "expected"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "edits": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "old": {
+                      "type": "string"
+                    },
+                    "new": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "old",
+                    "new"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "reason": {
+                "type": "string"
+              },
+              "verification_goal": {
+                "type": "string"
+              },
+              "component": {
+                "type": "string",
+                "enum": [
+                  "dsh",
+                  "media"
+                ]
+              },
+              "action": {
+                "type": "string"
+              },
+              "bundle": {
+                "type": "string"
+              },
+              "voice": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": true
+              },
+              "voice_id": {
+                "type": "string"
+              },
+              "sample_text": {
+                "type": "string"
+              },
+              "global": {
+                "type": "boolean"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_change_self",
+      "schema_hash": "245aa2391277ce7689151788f25aebc712696fc07647d864761e9673f8ad2f96",
+      "version": 1
+    },
+    {
+      "name": "life_simulation",
+      "description": "仅当前明确成年亲密情境的专项体验，先读状态与完整 role_protocol。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_event_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "handled_input_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "appraisal": {
+                "type": "object",
+                "properties": {
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "meaning_kind": {
+                    "type": "string"
+                  },
+                  "self_text": {
+                    "type": "string"
+                  },
+                  "subject_actor_id": {
+                    "type": "string"
+                  },
+                  "affect_impulse": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "certainty": {
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "novelty": {
+                    "type": "number"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "supersedes_appraisal_id": {
+                    "type": "string"
+                  },
+                  "recovery_half_life_seconds": {
+                    "type": "object",
+                    "properties": {
+                      "joy": {
+                        "type": "number"
+                      },
+                      "concern": {
+                        "type": "number"
+                      },
+                      "frustration": {
+                        "type": "number"
+                      },
+                      "hurt": {
+                        "type": "number"
+                      },
+                      "anticipation": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "persistence_reason": {
+                    "type": "string"
+                  },
+                  "context_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "based_on_state_version": {
+                    "type": "integer"
+                  },
+                  "relation_protocol": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "based_on_relationship_version": {
+                    "type": "integer"
+                  },
+                  "relation_impacts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "metric": {
+                          "type": "string",
+                          "enum": [
+                            "familiarity",
+                            "trust",
+                            "comfort",
+                            "bond"
+                          ]
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "increase",
+                            "decrease",
+                            "unchanged"
+                          ]
+                        },
+                        "magnitude": {
+                          "type": "string",
+                          "enum": [
+                            "slight",
+                            "meaningful",
+                            "major"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "direction",
+                        "magnitude",
+                        "confidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "relation_context_changes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "create",
+                            "replace",
+                            "resolve",
+                            "revoke"
+                          ]
+                        },
+                        "actor_id": {
+                          "type": "string"
+                        },
+                        "relation_kind": {
+                          "type": "string",
+                          "enum": [
+                            "preference",
+                            "agreement",
+                            "repair",
+                            "expectation",
+                            "role_description"
+                          ]
+                        },
+                        "origin": {
+                          "type": "string",
+                          "enum": [
+                            "explicit_statement",
+                            "interpretation"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "salience": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "base_note_ref": {
+                          "type": "string"
+                        },
+                        "lifetime_days": {
+                          "type": "number"
+                        },
+                        "applicability": {
+                          "type": "string"
+                        },
+                        "intent_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "actor_id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "drive_evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dimension": {
+                          "type": "string"
+                        },
+                        "need": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "effect_kind": {
+                          "type": "string"
+                        },
+                        "delta": {
+                          "type": "number"
+                        },
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "evidence_refs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "interaction_ref": {
+                          "type": "string"
+                        },
+                        "resolution_ref": {
+                          "type": "string"
+                        },
+                        "satisfaction_ref": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": true
+                    }
+                  },
+                  "resolves_cause_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "quoted_or_hypothetical": {
+                    "type": "boolean"
+                  },
+                  "negated": {
+                    "type": "boolean"
+                  },
+                  "user_need": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "affected_need_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "activity_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "intent_ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "continue",
+                        "revise",
+                        "pause",
+                        "cancel",
+                        "unrelated"
+                      ]
+                    },
+                    "patch": {
+                      "type": "object",
+                      "properties": {
+                        "goal": {
+                          "type": "string"
+                        },
+                        "checkpoint": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "method_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "next_step": {
+                                  "type": "string"
+                                },
+                                "remaining": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "operation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "asset_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        "topic_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "intent_ref",
+                    "base_revision",
+                    "decision"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "experience_protocol": {
+                "type": "integer"
+              },
+              "experience_domain": {
+                "type": "string",
+                "enum": [
+                  "adult_intimate"
+                ]
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "enter",
+                  "appraise_input",
+                  "start",
+                  "adjust",
+                  "pause",
+                  "resume",
+                  "stop",
+                  "exit",
+                  "ack"
+                ]
+              },
+              "base_revision": {
+                "type": "integer"
+              },
+              "subject_actor_id": {
+                "type": "string"
+              },
+              "adult_participants": {
+                "type": "boolean"
+              },
+              "context_confirmed": {
+                "type": "boolean"
+              },
+              "willingness": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "increase",
+                  "decrease",
+                  "unchanged"
+                ]
+              },
+              "effects": {
+                "type": "object",
+                "properties": {
+                  "arousal": {
+                    "type": "number"
+                  },
+                  "valence": {
+                    "type": "number"
+                  },
+                  "engagement": {
+                    "type": "number"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "profile_confirmed": {
+                "type": "boolean"
+              },
+              "input_profile": {
+                "type": "object",
+                "properties": {
+                  "method": {
+                    "type": "string"
+                  },
+                  "intensity": {
+                    "type": "number"
+                  },
+                  "valence": {
+                    "type": "number"
+                  },
+                  "rhythm": {
+                    "type": "string",
+                    "enum": [
+                      "continuous",
+                      "intermittent"
+                    ]
+                  },
+                  "on_seconds": {
+                    "type": "number"
+                  },
+                  "off_seconds": {
+                    "type": "number"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "run_ref": {
+                "type": "string"
+              },
+              "transition_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "supersedes_call_key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "experience_domain",
+              "base_revision"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "proposal"
+        ],
+        "additionalProperties": false
+      },
+      "schema_ref": "tool:dsh:life_simulation",
+      "schema_hash": "72bffa3eb60c769230acf94314e4418d95bbb5cbf05300ef147c0cb9c39924d3",
+      "version": 1
+    }
+  ]
+}

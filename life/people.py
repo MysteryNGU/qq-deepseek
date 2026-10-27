@@ -161,10 +161,39 @@ class People:
             seen.add(key)
             result.append(dict(ref=row['id'],actor_id=row['actor_id'],field=row['field'],topic=row['topic'],
                 text=row['text'],origin=row['origin'],revision=row['revision'],expires=row['expires'],
-                evidence_refs=list(json.loads(row['sources'])),authority='person_material_not_persona'))
+                evidence_refs=list(json.loads(row['sources'])),evidence_versions=json.loads(row['sources']),
+                authority='person_material_not_persona'))
             if len(result)>=offset+limit:
                 break
         return result[offset:offset+limit]
+
+    def project(self,scope,actors,root,query,budget):
+        """Select existing visible entries with one shared optional allowance.
+
+        Boundaries remain required even when they exceed the soft allowance.
+        Source visibility and expiry are rechecked on every read; this projection
+        neither generates text nor writes person facts.
+        """
+        from .resource_policy import estimate_tokens
+        from .text import terms as tokenize
+        terms=set(tokenize(query))
+        rows={str(actor):self.visible(scope,str(actor),root,limit=10000) for actor in dict.fromkeys(actors)}
+        selected={actor:[] for actor in rows}
+        candidates=[]
+        for order,(actor,items) in enumerate(rows.items()):
+            for item in items:
+                priority=0 if item['field']=='boundary' else 1 if item['field']=='address' else 2
+                relevance=len(terms & set(tokenize(item['topic']+' '+item['text'])))
+                candidates.append((priority,-relevance,order,item))
+        for priority,_,_,item in sorted(candidates,key=lambda row:row[:3]):
+            draft={actor:list(items) for actor,items in selected.items()}
+            draft[item['actor_id']].append(item)
+            if priority==0 or estimate_tokens(draft)<=budget:
+                selected=draft
+        details=dict(read_kind='person_profile',actor_ids=list(rows),page_size=12,
+            more_available={actor:len(items)>len(selected[actor]) for actor,items in rows.items()},
+            version=digest(rows),mandatory_overflow=estimate_tokens(selected)>budget)
+        return selected,details
 
     def save(self,scope,p,root,call_key):
         actor=str(p.get('actor_id',''))

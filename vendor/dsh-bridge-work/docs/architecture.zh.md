@@ -96,6 +96,7 @@ turn/start
      reconcile system/message using the prepared call capability
      append entered messages as user/message; reconcile retained runtime context
      log request/header and request/context as needed
+     agent/request-ready -> durable projection and source checks
      derive and freeze model history from the log
      stream the bound prepared call -> llm/stream -> agent/assistant-stream start
        agent/assistant-stream chunk*

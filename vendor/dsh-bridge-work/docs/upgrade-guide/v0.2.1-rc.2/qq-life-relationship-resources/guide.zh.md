@@ -11,6 +11,8 @@ description: Bot 宿主须使用关系协议 2 和有界观察读取。
 
 Bot 专用 SDK 会话在 `qq_life/hello` 声明 `relation_protocol: 2` 和 `resource_protocol: 1`。旧关系增量提案返回 `protocol_mismatch`。`include_full: true` 开始有界观察分页。普通 SDK 会话不受影响。
 
+主动协商 `compact_tool_protocol:1` 的宿主还会收到 `context_efficiency_protocol:1`。`static_context` 返回 `tool_contracts` 与 `presentation_scope`，`context` 返回 `context_plan` 及完整资源策略，并用当前来源戳响应 `context_validate`。精确目录加载需要 `schema_hash`；简短加载回执不授予执行权限。启用协商前须重建配套运行时。未协商的现有客户端保留原工具呈现。
+
 ## 迁移
 
 1. 更新 Bot 的反向生活回调，为上下文请求提供受众适用的 `stable_text`、动态 `text` 和已验证的 `resource_policy`；在提示词组装前应答 `static_context`。

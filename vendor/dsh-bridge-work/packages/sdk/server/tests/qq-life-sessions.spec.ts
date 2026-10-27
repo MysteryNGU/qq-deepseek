@@ -29,8 +29,17 @@ import Jobs from '@deepseek-ai/dsh-jobs-local'
 import Subprocess from '@deepseek-ai/dsh-subprocess-local'
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
 import { writeFile, readFile, mkdir } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 
-async function fixture(beforeAdmission?: () => Promise<void>, script?: ConstructorParameters<typeof MockAdapter>[0], continuity = false, extensions = false, assembled = false, consult = false, experience = false) {
+const hostContracts = JSON.parse(readFileSync(new URL('./fixtures/qq-life-contracts.json', import.meta.url),'utf8'))
+const contextPolicy = { text_preview_target_tokens: 3000,text_result_max_tokens: 4000,text_result_max_utf8_bytes: 24000,
+  chat_input_target_tokens: 32000,task_input_target_tokens: 48000,pressure_ratio: 0.8,recent_history_target_tokens: 8000,
+  handoff_target_tokens: 4000,provider_margin_tokens: 1024,reference_image_batches: 2 }
+const contextPlan = { stamp: 'facts-v1',presentation_scope: 'scope-v1',mode: 'chat',protected_input_ids: ['input-1'],
+  pinned_asset_ids: [],protect_task_images: false }
+
+async function fixture(beforeAdmission?: () => Promise<void>, script?: ConstructorParameters<typeof MockAdapter>[0], continuity = false, extensions = false, assembled = false, consult = false, experience = false, compact = false) {
   const root = await mkdtemp(join(tmpdir(), 'qq-role-session-'))
   const ctx = new Context()
   if (assembled) {
@@ -60,9 +69,14 @@ async function fixture(beforeAdmission?: () => Promise<void>, script?: Construct
   }
   const adapter = new MockAdapter(script ?? [toolCallResponse('say-1', 'life_say', { proposal: { text: 'hello', end_turn: true, handled_input_ids: ['input-1'] } })])
   ctx.llm.registerAdapter(['mock'], adapter)
-  const request = vi.fn(async (method: string, params: object): Promise<Record<string, unknown>> =>
-    method === 'qq_life/life/read' ? { ok: true, text: 'You are the test role.', continuity_protocol: 1, continuity_enabled: continuity }
-      : { ok: true, params, ...'kind' in params && params.kind === 'life.say' ? { turn_complete: true } : {} })
+  const request = vi.fn(async (method: string, params: object): Promise<Record<string, unknown>> => {
+    if (compact && 'kind' in params && params.kind === 'static_context') return { ok: true,stable_text: 'Current test persona.',
+      tool_contracts: hostContracts,presentation_scope: 'scope-v1' }
+    if (compact && 'kind' in params && params.kind === 'context') return { ok: true,stable_text: 'Current test persona.',text: 'Current facts.',
+      resource_policy: contextPolicy,context_plan: contextPlan }
+    return method === 'qq_life/life/read' ? { ok: true, text: 'You are the test role.', continuity_protocol: 1, continuity_enabled: continuity }
+      : { ok: true, params, ...'kind' in params && params.kind === 'life.say' ? { turn_complete: true } : {} }
+  })
   const sessions = new QqLifeSessions(ctx, { request, notify() {} }, () => root, async id => {
     const existing = ctx.agents.get(SessionId(id))
     if (existing) return existing
@@ -70,7 +84,7 @@ async function fixture(beforeAdmission?: () => Promise<void>, script?: Construct
   }, async blocks => {
     await beforeAdmission?.()
     return blocks.flatMap(block => block.type === 'text' ? [block] : [])
-  }, continuity, { capability: extensions, media: extensions, consult, experience })
+  }, continuity, { capability: extensions, media: extensions, consult, experience,compact })
   return { ctx, root, adapter, sessions, request, async close() {
     await ctx.fiber.dispose(); sessions.dispose(); await rm(root, { recursive: true, force: true })
   } }
@@ -78,6 +92,165 @@ async function fixture(beforeAdmission?: () => Promise<void>, script?: Construct
 
 const input = { session_id: 'main', generation: 1, input_id: 'input-1',
   source: 'user_report', content: 'hello', source_event_ids: ['input-1'], mode: 'steer' }
+
+describe('complete bot request preparation', () => {
+  it('sends structured base tools and ends a final say without an extra rest request', async () => {
+    const f = await fixture(undefined,undefined,false,true,true,false,false,true)
+    try {
+      await f.sessions.handle('input',input)
+      const agent=f.ctx.agents.get(SessionId('main'))!
+      await agent.whenIdle()
+      expect(f.adapter.requests).toHaveLength(1)
+      const tools=f.adapter.requests[0]!.tools!
+      expect(tools.map(tool => tool.name)).toEqual(['life_read','life_remember','life_intent','life_appraise','life_say','life_rest'])
+      const say=tools.find(tool => tool.name==='life_say')!
+      expect(say.parameters).toMatchObject({ properties: { proposal: { type: 'object',additionalProperties: false,
+        properties: { end_turn: { type: 'boolean' } } } } })
+      expect(agent.session.requestHeader()!.tools).toEqual(tools)
+      const usage=f.sessions.handle('usage',{ session_id: 'main',generation: 1,after_seq: -1 })
+      expect(JSON.stringify(await usage)).toContain('dsh-token-meter-route-priced')
+      expect(JSON.stringify(await usage)).toContain('mandatory_overflow')
+    } finally { await f.close() }
+  })
+
+  it('loads an exact current schema once and persists its presentation separately from permission', async () => {
+    let f: Awaited<ReturnType<typeof fixture>>
+    f=await fixture(undefined,[options => {
+      const agent=f.ctx.agents.get(SessionId('main'))!
+      const schema=f.ctx.tools.schemas(agent).find(tool => tool.name==='life_media')!
+      const schema_hash=createHash('sha256').update(JSON.stringify(schema)).digest('hex')
+      expect(options.tools?.some(tool => tool.name==='life_media')).toBe(false)
+      return toolCallResponse('load','life_read',{ proposal: { kind: 'capabilities',ref: 'tool:dsh:life_media',schema_hash,load: true } })
+    },options => {
+      expect(options.tools?.some(tool => tool.name==='life_media')).toBe(true)
+      expect(JSON.stringify(options.messages)).not.toContain('"parameters"')
+      return toolCallResponse('rest','life_rest',{ proposal: {} })
+    }],false,true,true,false,false,true)
+    const fallback=f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method,params) => {
+      if ('kind' in params && params.kind==='life.read') {
+        const tool=f.ctx.tools.schemas(f.ctx.agents.get(SessionId('main'))!).find(tool => tool.name==='life_media')!
+        return { ok: true,summary: 'Loaded media fields.',tool_load: { name: 'life_media',status: 'ready',
+          presentation_scope: 'scope-v1',schema_hash: createHash('sha256').update(JSON.stringify(tool)).digest('hex') } }
+      }
+      return fallback(method,params)
+    })
+    try {
+      await f.sessions.handle('input',input)
+      const agent=f.ctx.agents.get(SessionId('main'))!
+      await agent.whenIdle()
+      expect(f.adapter.requests).toHaveLength(2)
+      expect(agent.session.snapshotEvents().filter(event => event.type==='developer/message'
+        && event.data.message.source.kind==='qq-life-tools')).toHaveLength(1)
+      expect(f.request.mock.calls.filter(([,params]) => 'kind' in params && params.kind==='before_tool')).toHaveLength(2)
+    } finally { await f.close() }
+  })
+
+  it('never activates failed or stale load receipts and rejects malformed fields before the host commit', async () => {
+    const f=await fixture(undefined,[
+      toolCallResponse('bad-load','life_read',{ proposal: { kind: 'capabilities',ref: 'tool:dsh:life_media',schema_hash: 'stale',load: true } }),
+      toolCallResponse('bad-shape','life_say',{ proposal: { text: 'do not send',end_turn: 'true' } }),
+      options => {
+        expect(options.tools?.some(tool => tool.name==='life_media')).toBe(false)
+        return toolCallResponse('rest','life_rest',{ proposal: {} })
+      },
+    ],false,true,true,false,false,true)
+    const fallback=f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method,params) => {
+      if ('kind' in params && params.kind==='life.read') return { ok: true,tool_load: { name: 'life_media',status: 'ready',presentation_scope: 'scope-v1',schema_hash: 'stale' } }
+      return fallback(method,params)
+    })
+    try {
+      await f.sessions.handle('input',input)
+      const agent=f.ctx.agents.get(SessionId('main'))!
+      await agent.whenIdle()
+      expect(f.adapter.requests).toHaveLength(3)
+      expect(f.request.mock.calls.some(([,params]) => 'kind' in params && params.kind==='life.say')).toBe(false)
+      expect(agent.session.snapshotEvents().filter(event => event.type==='developer/message'
+        && event.data.message.source.kind==='qq-life-tools')).toHaveLength(0)
+    } finally { await f.close() }
+  })
+
+  it('restores only current loaded definitions after adapter restart and drops changed versions', async () => {
+    for (const changed of [false,true]) {
+      let f: Awaited<ReturnType<typeof fixture>>
+      f=await fixture(undefined,[() => {
+        const schema=f.ctx.tools.schemas(f.ctx.agents.get(SessionId('main'))!).find(tool => tool.name==='life_media')!
+        return toolCallResponse('load','life_read',{ proposal: { kind: 'capabilities',ref: 'tool:dsh:life_media',load: true,
+          schema_hash: createHash('sha256').update(JSON.stringify(schema)).digest('hex') } })
+      },toolCallResponse('rest','life_rest',{ proposal: {} }),options => {
+        expect(options.tools?.some(tool => tool.name==='life_media')).toBe(!changed)
+        return toolCallResponse('rest-after-restart','life_rest',{ proposal: {} })
+      }],false,true,true,false,false,true)
+      const fallback=f.request.getMockImplementation()!
+      let restarted=false
+      f.request.mockImplementation(async (method,params) => {
+        if ('kind' in params && params.kind==='life.read') {
+          const schema=f.ctx.tools.schemas(f.ctx.agents.get(SessionId('main'))!).find(tool => tool.name==='life_media')!
+          return { ok: true,tool_load: { name: 'life_media',status: 'ready',presentation_scope: 'scope-v1',
+            schema_hash: createHash('sha256').update(JSON.stringify(schema)).digest('hex') } }
+        }
+        const result=await fallback(method,params)
+        if (changed && restarted && 'kind' in params && params.kind==='static_context') {
+          const tool_contracts=structuredClone(hostContracts)
+          tool_contracts.version='registry-v2'
+          tool_contracts.items.find((item: { name: string }) => item.name==='life_media').description+=' v2'
+          return { ...result,tool_contracts }
+        }
+        return result
+      })
+      let resumed: QqLifeSessions | undefined
+      try {
+        await f.sessions.handle('input',input)
+        const agent=f.ctx.agents.get(SessionId('main'))!
+        await agent.whenIdle()
+        f.sessions.dispose();restarted=true
+        resumed=new QqLifeSessions(f.ctx,{ request: f.request,notify() {} },()=>f.root,async () => agent,
+          undefined,false,{ capability: true,compact: true })
+        await resumed.handle('input',{ ...input,input_id: 'after-restart' })
+        await agent.whenIdle()
+        expect(f.adapter.requests).toHaveLength(3)
+      } finally { resumed?.dispose();await f.close() }
+    }
+  })
+
+  it('permits mandatory soft overflow and records that unknown physical capacity remains unknown', async () => {
+    const f=await fixture(undefined,undefined,false,true,true,false,false,true)
+    const fallback=f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method,params) => {
+      const reply=await fallback(method,params)
+      if ('kind' in params && params.kind==='context') return { ...reply,
+        resource_policy: { ...contextPolicy,chat_input_target_tokens: 8 } }
+      return reply
+    })
+    try {
+      await f.sessions.handle('input',input)
+      await f.ctx.agents.get(SessionId('main'))!.whenIdle()
+      expect(f.adapter.requests).toHaveLength(1)
+      const result=await f.sessions.handle('usage',{ session_id: 'main',generation: 1,after_seq: -1 })
+      expect(JSON.stringify(result)).toContain('"mandatory_overflow":true')
+      expect(JSON.stringify(result)).toContain('"physical_input_capacity":null')
+    } finally { await f.close() }
+  })
+
+  it('blocks provider execution when source versions or the physical capacity reject preparation', async () => {
+    for (const failure of ['changed','capacity']) {
+      const f=await fixture(undefined,undefined,false,true,true,false,false,true)
+      const fallback=f.request.getMockImplementation()!
+      if (failure==='capacity') vi.spyOn(f.adapter,'resolveModel').mockResolvedValue({ provider: 'mock',id: 'mock',name: 'mock',
+        context: { contextWindow: 16 } })
+      f.request.mockImplementation(async (method,params) => {
+        if (failure==='changed' && 'kind' in params && params.kind==='context_validate') return { ok: false,code: 'stale_context' }
+        return fallback(method,params)
+      })
+      try {
+        await f.sessions.handle('input',input)
+        await f.ctx.agents.get(SessionId('main'))!.whenIdle()
+        expect(f.adapter.requests).toHaveLength(0)
+      } finally { await f.close() }
+    }
+  })
+})
 
 describe('identified role Agent inputs', () => {
   it('forwards the negotiated experience tool and logs its receipt before the next request', async () => {

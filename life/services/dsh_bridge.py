@@ -287,6 +287,8 @@ class DshBridge:
         指向 Bot 维护的垫片才起得来。
         """
         patch = prof / "cordis.patch.yml"
+        from ..resource_policy import ResourcePolicy
+        resources = ResourcePolicy.parse(getattr(self.cfg, 'resource_policy', None))
         rows = [
             "# 由 qq-life 桥维护：Bot 工具、主角色接口与长截图接收；其它沿用 DSH 默认。",
             "- id: tool-plugin-manager",
@@ -304,10 +306,11 @@ class DshBridge:
             '    maxTokens: 16384',
             '- id: compaction-basic',
             '  config:',
-            '    thresholdRatio: 0.16',
-            '    retainTokens: 32768',
-            '    headroomTokens: 16384',
-            '    maxTokens: 8192',
+            '    auto: '+('false' if (self.dsh_root/'packages/sdk/server/src/qq-life-context.ts').is_file() else 'true'),
+            f'    thresholdRatio: {resources.compaction_threshold_percent / 100:g}',
+            f'    retainTokens: {resources.compaction_retain_tokens}',
+            f'    headroomTokens: {resources.compaction_headroom_tokens}',
+            f'    maxTokens: {resources.handoff_target_tokens}',
         ]
         if pnpm_command:
             rows.extend([
@@ -890,7 +893,7 @@ class DshBridge:
 
     def _hello_parameters(self):
         return dict(experience_protocol=1,continuity_protocol=1,continuity_enabled=bool(getattr(self.cfg,'continuity_enabled',False)),
-                    capability_protocol=1,media_adapter_protocol=1,
+                    capability_protocol=1,media_adapter_protocol=1,compact_tool_protocol=1,
                     consult_protocol=1 if getattr(self.cfg,'consult_config','') else None)
 
     def current_agent_catalog(self,session_id,generation):

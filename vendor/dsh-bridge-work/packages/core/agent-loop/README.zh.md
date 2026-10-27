@@ -79,6 +79,8 @@ const handle = await ctx.agents.create({
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
+完整请求封套与已接收输入落盘后，循环等待 `agent/request-ready` 瀑布链，由策略提交持久的历史投影并检查当前来源版本，再派生和冻结消息。投影变化会记录新的请求序列；失败或取消会阻止提供方执行。监听器调用 `next()`，不改写脱离日志的消息。
+
 <details>
 <summary>实现细节——点击展开</summary>
 

@@ -21,7 +21,9 @@ type Callback = (agent: Agent, body: Record<string, unknown>) => Promise<Record<
 
 /** Expected admission or host-protocol failure; no model request is started by this error. */
 export class QqLifeConsultError extends Error {
-  /** @param code - recovery category. @param message - operation-specific diagnostic. */
+  /**
+   * @param code - recovery category.
+   * @param message - operation-specific diagnostic. */
   constructor(readonly code: 'invalid_spec' | 'unavailable' | 'binding_failed', message: string) {
     super(message)
     this.name = 'QqLifeConsultError'
@@ -47,12 +49,18 @@ function spec(value: Record<string, unknown>): {
 export class QqLifeConsult {
   private readonly executions = new Map<string, { job: JobId; process: SubprocessHandle; owner: Agent }>()
 
-  /** @param ctx - mounted runtime. @param callback - scoped host callback with trusted Agent identity. */
+  /**
+   * @param ctx - mounted runtime.
+   * @param callback - scoped host callback with trusted Agent identity. */
   constructor(private readonly ctx: Context, private readonly callback: Callback) {}
 
   /**
    * Submit or control one consultation. Host rejects unsupported audiences and duplicate launches.
-   * @param agent - actual invoking Agent. @param proposal - model JSON. @param exec - creating tool invocation.
+   *
+   * @param agent - actual invoking Agent.
+   * @param proposal - model JSON.
+   * @param exec - creating tool invocation.
+   *
    * @returns short admission/control receipt; the answer is never awaited by the tool.
    */
   async execute(agent: Agent, proposal: unknown, exec: ToolExecution): Promise<Record<string, unknown>> {

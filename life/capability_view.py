@@ -230,7 +230,11 @@ class CapabilityView:
         if self.role.capability_protocol!=1:
             raise SessionFailure('protocol_mismatch','当前 worker 未协商 capability_protocol:1')
         category=p.get('category','media' if p.get('kind')=='media_capabilities' else None)
-        allowed={'kind','category','query','ref','cursor','limit','provider_id','field','offset','version','handled_input_ids','activity_changes','appraisal'}
+        allowed={'kind','category','query','ref','cursor','limit','provider_id','field','offset','version','handled_input_ids','activity_changes','appraisal','load','schema_hash'}
+        if 'load' in p and type(p['load']) is not bool:
+            raise SessionFailure('invalid_input','load 必须是布尔值')
+        if p.get('load') and (not p.get('ref') or p.get('field') or p.get('cursor') or not p.get('schema_hash')):
+            raise SessionFailure('invalid_input','加载需要精确 ref 和 schema_hash，不与分页混用')
         if set(p)-allowed or (p.get('ref') is not None and (not isinstance(p['ref'],str) or not p['ref'])):
             raise SessionFailure('invalid_input','目录含未知参数或无效 ref')
         if p.get('provider_id') is not None and (not isinstance(p['provider_id'],str) or not p['provider_id']):
@@ -269,9 +273,9 @@ class CapabilityView:
                 permitted=permitted and (name=='life_read' if name.startswith('life_') else not policy['principal_adoption'])
             if not permitted:
                 continue
-            schema_hash=digest(tool)
+            schema_hash=(tool.get('identity') or {}).get('schema_hash') or digest(tool)
             entries.append(dict(ref='tool:dsh:'+name,kind='tools',name=name,summary=tool.get('description','')[:160],
-                invocation=dict(tool=name),version=schema_hash,schema_ref='tool:dsh:'+name,schema=tool,
+                invocation=dict(tool=name),version=schema_hash,schema_hash=schema_hash,schema_ref='tool:dsh:'+name,schema=tool,
                 limits=dict(permission='rechecked_on_call',effect=policy['effect'],account=policy['account'],resource=policy['resource']),
                 availability=dict(registered=True,readiness='unknown',reason='未进行实际就绪探测'),
                 evidence_refs=[r['id'] for r in self.repo._all("SELECT id FROM role_operations WHERE scope_id=? AND tool=? "
@@ -296,6 +300,14 @@ class CapabilityView:
             item=next((i for i in entries if i['ref']==ref and (not category or i['kind']==category)),None)
             if not item:
                 raise SessionFailure('unavailable','当前目录没有此引用；查询范围仅限已安装能力',version=version)
+            if p.get('load'):
+                if self.role.compact_tool_protocol!=1 or item['kind']!='tools':
+                    raise SessionFailure('protocol_mismatch','当前协议只支持加载工具 schema')
+                if p['schema_hash']!=item['schema_hash'] or self.stamp(root,scope,call)!=stamp:
+                    raise SessionFailure('stale_context','工具定义已变化，请重读目录')
+                return dict(version=version,tool_load=dict(name=item['name'],schema_hash=item['schema_hash'],
+                    presentation_scope=self.role.presentation_scope(root,scope),status='ready'),
+                    summary=item['summary'])
             result=dict(version=version,item=item)
             if over(result):
                 result=dict(version=version,item={k:v for k,v in item.items() if k!='schema'},truncated=True,

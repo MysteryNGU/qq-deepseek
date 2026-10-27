@@ -1020,6 +1020,29 @@ Types: [LlmFailure](llm-streaming.md) · [ResolvedRetryPolicy](llm-streaming.md)
 
 Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
+<a id="agentrequest-ready--waterfall"></a>
+
+#### `agent/request-ready` — waterfall
+
+Validate the complete logged request before deriving its frozen messages. Listeners may commit durable surface projections; no listener may edit a detached request. Failure prevents provider execution. Cancellation and changes during asynchronous preparation must be checked before returning.
+
+```ts cordis-catalog
+/**
+ * Validate the complete logged request before deriving its frozen messages.
+ * Listeners may commit durable surface projections; no listener may edit a
+ * detached request. Failure prevents provider execution. Cancellation and
+ * changes during asynchronous preparation must be checked before returning.
+ * @param payload - owner, current position and cancellation signal.
+ * @param next - delegate to remaining preparation policies.
+ * @mode waterfall
+ */
+'agent/request-ready'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }, next: () => Promise<void>): Promise<void>
+```
+
+Types: [Scoped](scope.md)
+
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
+
 <a id="agentstatus--emit"></a>
 
 #### `agent/status` — emit

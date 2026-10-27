@@ -25,6 +25,18 @@ class ResourcePolicy:
     continuity_context_target_tokens: int = 800
     autonomous_no_progress_limit: int = 3
     motivation_cooldown_seconds: int = 900
+    chat_input_target_tokens: int = 32000
+    task_input_target_tokens: int = 48000
+    pressure_ratio: float = 0.80
+    recent_history_target_tokens: int = 8000
+    handoff_target_tokens: int = 4000
+    profiles_target_tokens: int = 800
+    provider_margin_tokens: int = 1024
+    reference_image_batches: int = 2
+    compaction_threshold_percent: int = 80
+    compaction_retain_tokens: int = 16384
+    compaction_headroom_tokens: int = 8192
+    compaction_summary_tokens: int = 4096
 
     @classmethod
     def parse(cls,raw=None):
@@ -32,12 +44,16 @@ class ResourcePolicy:
         if not isinstance(raw,dict) or set(raw)-{f.name for f in fields(cls)}:
             raise ValueError('unknown_resource_policy')
         result = cls(**raw)
-        if any(type(v) is not int or v<=0 for v in asdict(result).values()):
+        if any(type(v) is not int or v<=0 for k,v in asdict(result).items() if k!='pressure_ratio'):
             raise ValueError('resource_policy_requires_positive_integers')
+        if type(result.pressure_ratio) not in {int,float} or not 0 < result.pressure_ratio < 1:
+            raise ValueError('pressure_ratio_requires_0_to_1')
         if (result.idle_max_seconds<result.idle_base_seconds or result.idle_random_max_seconds<result.idle_min_seconds or result.text_result_max_tokens<result.text_preview_target_tokens
                 or result.text_result_max_tokens<128 or result.text_result_max_utf8_bytes<512
                 or result.continuity_context_target_tokens>result.memory_context_target_tokens):
             raise ValueError('invalid_resource_policy_bounds')
+        if result.compaction_threshold_percent >= 100:
+            raise ValueError('compaction_threshold_percent_requires_1_to_99')
         return result
 
     @property

@@ -4094,6 +4094,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'payload', description: '.signal - the turn abort signal. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
   },
   {
+    name: 'agent/request-ready',
+    mode: 'waterfall',
+    signature: '\'agent/request-ready\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }, next: () => Promise<void>): Promise<void>',
+    summary: 'Validate the complete logged request before deriving its frozen messages.',
+    description: 'Validate the complete logged request before deriving its frozen messages. Listeners may commit durable surface projections; no listener may edit a detached request. Failure prevents provider execution. Cancellation and changes during asynchronous preparation must be checked before returning.',
+    parameters: [{ name: 'payload', description: 'owner, current position and cancellation signal.' }, { name: 'next', description: 'delegate to remaining preparation policies.' }],
+  },
+  {
     name: 'agent/status',
     mode: 'emit',
     signature: '\'agent/status\'(this: Scoped<Agent>, payload: { agent: Agent; status: AgentStatus }): void',

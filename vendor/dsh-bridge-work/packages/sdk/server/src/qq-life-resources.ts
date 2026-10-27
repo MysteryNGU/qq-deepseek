@@ -21,6 +21,7 @@ const estimate = (text: string): number => Math.ceil(Buffer.byteLength(text, 'ut
 /** Owns only the bot sessions identified by the SDK adapter's runtime lineage. */
 export class QqLifeResources {
   private readonly policies = new Map<string, Policy>()
+  private readonly requestBudgets = new Map<string, { target: number; margin: number }>()
   private readonly positions = new Map<string, { turn: number; step: number }>()
   private readonly inputs = new Map<string, { turn: number; refs: string[] }>()
   private readonly attempts = new Map<string, number>()
@@ -30,7 +31,11 @@ export class QqLifeResources {
   private accountingWarning = false
   private journalWritable = true
 
-  /** @param ctx - running profile. @param home - bot private home. @param owner - authoritative runtime ownership.
+  /**
+   * @param ctx - running profile.
+   * @param home - bot private home.
+   * @param owner - authoritative runtime ownership.
+   *
    * @param budget - host admission/settlement callback; omitted only for accounting-only standalone consumers.
    * Rejected admission never reaches the adapter. Failed settlement retains the host's durable reservation.
    */
@@ -93,15 +98,23 @@ export class QqLifeResources {
   }
 
   /** Apply the host-validated policy and actual request position before model execution.
-   * @param agent - bound role or descendant. @param raw - host configuration. @param position - loop-owned request position.
+   *
+   * @param agent - bound role or descendant.
+   * @param raw - host configuration.
+   * @param position - loop-owned request position.
+   * @param mode - task selects its target; absence or other modes select chat.
    */
-  configure(agent: Agent, raw: unknown, position: { turn: number; step: number }): void {
+  configure(agent: Agent, raw: unknown, position: { turn: number; step: number }, mode?: unknown): void {
     const owned = this.owner(agent)
     if (!owned) return
     this.positions.set(String(agent.session.id), position)
     if (raw === undefined) return
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('invalid resource policy')
     const data = raw as Record<string, unknown>
+    const target = mode === 'task' ? data.task_input_target_tokens : data.chat_input_target_tokens
+    if (typeof target === 'number' && typeof data.provider_margin_tokens === 'number') {
+      this.requestBudgets.set(String(agent.session.id),{ target,margin: data.provider_margin_tokens })
+    }
     for (const key of ['text_preview_target_tokens', 'text_result_max_tokens', 'text_result_max_utf8_bytes']) {
       if (typeof data[key] !== 'number' || !Number.isSafeInteger(data[key]) || data[key] <= 0) throw new Error(`invalid resource policy: ${key}`)
     }
@@ -112,7 +125,10 @@ export class QqLifeResources {
   }
 
   /** Capture actual admitted inputs, never later pending messages.
-   * @param agent - owned role. @param turn - current turn. @param refs - loop-admitted input identities.
+   *
+   * @param agent - owned role.
+   * @param turn - current turn.
+   * @param refs - loop-admitted input identities.
    */
   admitted(agent: Agent, turn: number, refs: string[]): void {
     const id = String(agent.session.id), old = this.inputs.get(id)
@@ -120,6 +136,7 @@ export class QqLifeResources {
   }
 
   /** Register one observer per actual SDK-owned stream call, including summary retries.
+   *
    * @returns disposer for the stream observer.
    */
   observeCalls(): () => void {
@@ -129,14 +146,27 @@ export class QqLifeResources {
       const owned = agent === undefined ? undefined : resources.owner(agent)
       if (!owned || !agent) { yield* next(); return }
       resources.loadAccounting()
+      const fullMeasurement=resources.ctx.get('tokenMeter')?.measure(agent.session)
       const call: Call = { call_key: `sdk:${randomUUID()}`, session_id: String(agent.session.id), root_session_id: owned.root,
         revision: 1, provider: options.provider, model: options.model, started_at: Date.now() / 1000,
         status: 'started', purpose: options.purpose ?? 'ordinary', ...resources.positions.get(String(agent.session.id)),
-        context_estimate: estimate(JSON.stringify(options.messages)) }
+        context_estimate: estimate(JSON.stringify(options.messages)),
+        request_estimate: { tokens: fullMeasurement?.totalTokens ?? null,
+          method: 'dsh-token-meter-route-priced',coverage: ['system','tools','history','runtime-context','attachments'],
+          provider_wrapper: 'adapter-dependent-estimate',physical_capacity: agent.session.requestContext()?.contextWindow ?? null } }
       const key = `${call.session_id}:${String(call.turn)}:${String(call.step)}:${String(call.purpose)}`
       call.attempt = (resources.attempts.get(key) ?? 0) + 1
       resources.attempts.set(key, Number(call.attempt))
       call.input_refs = resources.inputs.get(call.session_id)?.refs ?? resources.inputs.get(owned.root)?.refs ?? []
+      const budget = resources.requestBudgets.get(call.session_id)
+      if (budget) {
+        const window = agent.session.requestContext()?.contextWindow
+        const capacity = window === undefined ? null : Math.max(0,window-(options.maxTokens ?? 0)-budget.margin)
+        const target = Math.min(budget.target,capacity ?? Infinity)
+        const measured = fullMeasurement?.totalTokens
+        call.request_budget = { target_tokens: target,physical_input_capacity: capacity,
+          reserved_output_tokens: options.maxTokens ?? 0,mandatory_overflow: measured === undefined ? null : measured > target }
+      }
       // The owning host persists a reservation before any provider work. No
       // callback means accounting-only (standalone presentation consumers).
       if (resources.budget) {
@@ -170,7 +200,10 @@ export class QqLifeResources {
   }
 
   /** Return a bounded page of durable call settlements owned by one bot root.
-   * @param root - current bound root. @param after - last global journal cursor.
+   *
+   * @param root - current bound root.
+   * @param after - last global journal cursor.
+   *
    * @returns records and a cursor; unfinished calls remain visible as unknown usage.
    */
   usage(root: string, after: number): Record<string, unknown> {
@@ -182,7 +215,12 @@ export class QqLifeResources {
   }
 
   /** Bound only model-visible text. PTC canonical values and multimodal results retain their original semantics.
-   * @param exec - actual execution. @param content - accepted display text. @param isError - original error status. @param facts - structured execution facts.
+   *
+   * @param exec - actual execution.
+   * @param content - accepted display text.
+   * @param isError - original error status.
+   * @param facts - structured execution facts.
+   *
    * @returns preview content, or original content when recovery storage fails.
    */
   async present(exec: ToolExecution, content: ContentBlock[], isError: boolean, facts: Record<string, unknown> = {}): Promise<ContentBlock[]> {
@@ -231,7 +269,11 @@ export class QqLifeResources {
   }
 
   /** Present accepted text after canonical program values have been retained.
-   * @param exec - execution. @param result - original canonical outcome. @param decision - downstream policy decision.
+   *
+   * @param exec - execution.
+   * @param result - original canonical outcome.
+   * @param decision - downstream policy decision.
+   *
    * @returns the unchanged program value decision or a text-only display replacement.
    */
   async post(exec: ToolExecution, result: Readonly<ToolExecutionResult>, decision: PostToolDecision): Promise<PostToolDecision> {
@@ -253,7 +295,10 @@ export class QqLifeResources {
   }
 
   /** Read only a previously recorded local spill owned by this exact bot root.
-   * @param root - bound owner. @param ref - opaque preview reference.
+   *
+   * @param root - bound owner.
+   * @param ref - opaque preview reference.
+   *
    * @returns full text to the host reader; missing/expired storage is explicit.
    */
   original(root: string, ref: string): Record<string, unknown> {

@@ -76,6 +76,10 @@ Stdout 只承载 JSON-RPC 帧，客户端可以逐字节解析；诊断信息应
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
+协商 `compact_tool_protocol:1` 的 QQ life 会话使用 Python 主源的结构化 proposal schema 与六个基础工具；以 `ref`、`schema_hash` 和 `load:true` 精确读取能力目录后，才装入完整的当前定义。加载状态以仅作归属标记的 developer 消息保存，恢复后重新校验，并继续通过原宿主执行检查。完整版本化说明仍可精确读取和分页展开。未协商时沿用原有完整工具呈现。
+
+Bot 请求装配在最终 header、动态事实与当前输入落盘后使用共享 token meter，执行普通聊天/任务的绝对软目标、版本化读取成对去重、持久图片退出，以及最多一次既有 DSH 交接。关键输入可超过软目标；已知物理容量不足时明确报错。未知容量与依赖适配器的估算保持明确标注。最近两批图片与有来源的 pin 保留；活动任务保守保留其图片引用。内部记忆会话沿用既有流程。
+
 <details>
 <summary>实现细节——点击展开</summary>
 

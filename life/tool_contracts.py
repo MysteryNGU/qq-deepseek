@@ -1,0 +1,176 @@
+"""Versioned life-tool field definitions shared with the negotiated DSH adapter.
+
+Schemas use DSH's enforced JSON Schema subset. Business checks (source access,
+task revisions, waiting, delivery and spending) still run after field validation.
+Open provider-owned option maps are intentional; their provider validates them.
+"""
+from functools import lru_cache
+from jsonschema import Draft7Validator
+
+from .agent_session import SessionFailure,digest
+
+
+def string(*values):
+    return dict(type='string',**(dict(enum=list(values)) if values else {}))
+
+
+def obj(properties=None,required=(),*,open=False):
+    return dict(type='object',properties=properties or {},required=list(required),additionalProperties=open)
+
+
+def array(items):
+    return dict(type='array',items=items)
+
+
+S=string(); N=dict(type='number'); I=dict(type='integer'); B=dict(type='boolean')
+STRINGS=array(S)
+OPTIONS=obj(open=True)
+CURSOR=dict(oneOf=[S,I,OPTIONS,dict(type='null')])
+CHECKPOINT=dict(oneOf=[S,obj(dict(method_refs=STRINGS,next_step=S,remaining=STRINGS,evidence_refs=STRINGS,
+    operation_ids=STRINGS,asset_ids=STRINGS),open=True)])
+WAIT=obj(dict(intent_ref=S,base_revision=I,actor_id=S,question=S,checkpoint=S),('intent_ref','base_revision'))
+ACTIVITY=obj(dict(intent_ref=S,base_revision=I,decision=string('continue','revise','pause','cancel','unrelated'),
+    patch=obj(dict(goal=S,checkpoint=CHECKPOINT,topic_key=S))),('intent_ref','base_revision','decision'))
+CONTINUITY=obj(dict(type=string('thought','reflection'),action=string('create','replace','archive'),
+    base_ref=S,base_version=I,batch_ref=S,reviewed_ids=STRINGS,outcome=string('summarized','no_new_insight')),('type',))
+CODE_EDIT=dict(oneOf=[obj(dict(file=S,old=S,new=S),('file','old','new')),
+    obj(dict(file=S,action=dict(type='string',const='create'),content=S),('file','action','content'))])
+PATCH=obj(dict(file=S,old=S,new=S,changes=array(CODE_EDIT),
+    migrations=array(obj(dict(id=S,sql=STRINGS),('id','sql'))),drives=OPTIONS,
+    affect=obj(dict(half_life=OPTIONS))))
+PROBE=obj(dict(module=S,function=S,arguments=OPTIONS,expected=dict(description='Expected lossless JSON value of the independent probe.'),
+    critical=B),('module','function','arguments','expected'))
+RELATION_NOTE=obj(dict(operation=string('create','replace','resolve','revoke'),actor_id=S,
+    relation_kind=string('preference','agreement','repair','expectation','role_description'),
+    origin=string('explicit_statement','interpretation'),text=S,sources=STRINGS,confidence=N,
+    salience=string('low','normal','high'),base_note_ref=S,lifetime_days=N,applicability=S,intent_ref=S),
+    ('operation','actor_id'))
+APPRAISAL=obj(dict(sources=STRINGS,source_event_ids=STRINGS,interpretation=S,meaning_kind=S,self_text=S,
+    subject_actor_id=S,affect_impulse=obj({k:N for k in ('joy','concern','frustration','hurt','anticipation')}),
+    certainty=N,confidence=N,novelty=N,revision=I,supersedes_appraisal_id=S,
+    recovery_half_life_seconds=obj({k:N for k in ('joy','concern','frustration','hurt','anticipation')}),
+    persistence_reason=S,context_refs=STRINGS,based_on_state_version=I,relation_protocol=dict(type='integer',const=2),
+    based_on_relationship_version=I,relation_impacts=array(obj(dict(
+        metric=string('familiarity','trust','comfort','bond'),direction=string('increase','decrease','unchanged'),
+        magnitude=string('slight','meaningful','major'),confidence=N),('metric','direction','magnitude','confidence'))),
+    relation_context_changes=array(RELATION_NOTE),drive_evidence=array(obj(dict(dimension=S,need=S,kind=S,
+        effect_kind=S,delta=N,confidence=N,reason=S,sources=STRINGS,evidence_refs=STRINGS,
+        interaction_ref=S,resolution_ref=S,satisfaction_ref=S),open=True)),
+    resolves_cause_ids=STRINGS,quoted_or_hypothetical=B,negated=B,user_need=S,target=S,affected_need_ids=STRINGS))
+PROFILE_REVIEWS=array(obj(dict(actor_id=S,sources=STRINGS,reason=S),('actor_id','sources','reason')))
+COMMON=dict(sources=STRINGS,source_event_ids=STRINGS,handled_input_ids=STRINGS,
+    appraisal=APPRAISAL,activity_changes=array(ACTIVITY))
+
+
+@lru_cache(maxsize=1)
+def contracts():
+    read_fields=dict(kind=string('self','relationship','relationship_semantics','intents','reminders','appraisals',
+        'self_changes','skill','usage','observation','message','voices','media','media_jobs','media_collection',
+        'motivations','person_profile','role_protocol','simulation','experience_review','recall','life_source',
+        'memory_index','continuity','capabilities','media_capabilities','memory_batch'),
+        category=string('tools','methods','media'),query=S,ref=S,cursor=CURSOR,limit=I,actor_id=S,offset=I,
+        version=S,field=string('schema'),load=B,schema_hash=S,provider_id=S,name=S,event_id=S,result_ref=S,
+        mode=S,status=S,max_tokens=I,start_line=I,offset_chars=I,before_lines=I,after_lines=I,limit_matches=I,
+        include_full=B,related=B,message_id=S,logical_message_id=S,persona_audience=string('private','public'),
+        asset_id=S,perception=string('transcript','frame_set'),timestamps=array(N),action=S,path=S,media_kind=S,
+        discover=B,language=S,view=S,since=N,until=N,intent_ref=S,session_id=S,root_session_id=S,turn=I,
+        after_transition_seq=I,**{'global':B})
+    part=dict(oneOf=[obj(dict(kind=dict(type='string',const='text'),text=S,mode=string('auto','single','artifact')),
+        ('kind','text')),obj(dict(kind=string('image','audio'),asset_id=S),('kind','asset_id')),
+        obj(dict(kind=dict(type='string',const='voice'),text=S,voice_id=S,parameters=OPTIONS),('kind','text'))])
+    schemas={
+        'life_read':obj(dict(COMMON,**read_fields),('kind',)),
+        'life_say':obj(dict(COMMON,profile_reviews=PROFILE_REVIEWS,text=S,parts=array(part),mode=string('auto','single','artifact'),
+            purpose=string('final','notice'),end_turn=B,new_message=B,wait_for_reply=WAIT,
+            experience_run_ref=S,experience_control_revision=I,continuity_refs=STRINGS)),
+        'life_rest':obj(dict(COMMON,profile_reviews=PROFILE_REVIEWS,thought=S,reason=S,keep_thought=B,thought_cues=STRINGS,
+            continuity_refs=STRINGS,reflection_outcome=string('unchanged','new_thought','action','unspecified'),
+            wake_after_seconds=N,next_attention=obj(dict(mode=string('adaptive','after','event','none'),
+                after_seconds=N,intent_ref=S,reason=S),('mode',)))),
+        'life_appraise':APPRAISAL,
+        'life_intent':obj(dict(COMMON,action=string('save','resolve','wait','pause','cancel','resume','done','merge','transfer'),
+            ref=S,base_revision=I,target_ref=S,target_base_revision=I,goal=S,checkpoint=CHECKPOINT,
+            kind=string('once','ongoing'),origin=string('user','self'),topic_key=S,parent_ref=S,
+            end_direction=B,bind=B,interest=OPTIONS,question=S,actor_id=S,wake_after_seconds=N,wake_reason=S)),
+        'life_remember':obj(dict(COMMON,kind=string('experience','preference','reminder','inference','imagination',
+            'roleplay','relationship_note','person_profile','person_profile_review','media_collection','organized_memory'),
+            text=S,action=S,cues=STRINGS,always_load=B,topic_key=S,supersedes=STRINGS,applicability=S,intent_ref=S,
+            reference_asset_ids=STRINGS,skill_refs=STRINGS,memory_id=S,lifetime_days=N,correction=B,change=B,
+            continuity=CONTINUITY,operation=S,actor_id=S,field=S,origin=S,confidence=N,salience=S,
+            base_revision=I,base_note_ref=S,relation_kind=S,coverage_digest=S,claims=array(obj(dict(text=S,
+                kind=string('observed','reported','interpreted','hypothetical'),evidence_refs=STRINGS),('text','kind','evidence_refs'))),
+            omitted_refs=STRINGS,unresolved_refs=STRINGS,ordinary_fragments=array(OPTIONS),
+            reviewed_input_ids=STRINGS,profile_version=S,reason=S,expires=N,asset_id=S,label=S,tags=STRINGS)),
+        'life_media':obj(dict(COMMON,action=string('submit','status','cancel'),kind=string('image','speech'),
+            job_id=S,prompt=S,text=S,width=I,height=I,seed=I,reference_asset_ids=STRINGS,
+            provider_id=S,provider_options=OPTIONS,intent_ref=S,voice_id=S,voice_revision=S,delivery=OPTIONS,
+            segments=array(obj(dict(text=S,pause_after_ms=N,delivery=OPTIONS),('text',))))),
+        'life_consult':obj(dict(COMMON,action=string('ask','status','read','cancel','close'),message=S,
+            topic_id=S,request_id=S,intent_ref=S,cursor=CURSOR,limit_bytes=I)),
+        'life_change_self':obj(dict(COMMON,target=string('persona','persona_public','skill','dynamics','code','dsh',
+            'worker','plugin','voice'),content=S,base_hash=dict(oneOf=[S,dict(type='null')]),name=S,create=B,
+            metadata=obj(dict(description=S,visibility=string('private','public'),sources=STRINGS,capability_refs=STRINGS,public_content=B)),
+            patch=PATCH,probes=array(PROBE),edits=array(obj(dict(path=S,old=S,new=S),('path','old','new'))),
+            files=array(obj(dict(path=S,content=S),('path','content'))),
+            reason=S,verification_goal=S,component=string('dsh','media'),action=S,bundle=S,
+            voice=OPTIONS,voice_id=S,sample_text=S,**{'global':B})),
+        'life_simulation':obj(dict(COMMON,experience_protocol=I,experience_domain=string('adult_intimate'),
+            action=string('enter','appraise_input','start','adjust','pause','resume','stop','exit','ack'),
+            base_revision=I,subject_actor_id=S,adult_participants=B,context_confirmed=B,willingness=S,
+            direction=string('increase','decrease','unchanged'),effects=obj(dict(arousal=N,valence=N,engagement=N)),
+            confidence=N,reason=S,profile_confirmed=B,input_profile=obj(dict(method=S,intensity=N,valence=N,
+                rhythm=string('continuous','intermittent'),on_seconds=N,off_seconds=N)),run_ref=S,
+            transition_refs=STRINGS,supersedes_call_key=S),('action','experience_domain','base_revision')),
+    }
+    summaries={
+        'life_read':'读取当前状态、来源、历史及能力目录；精确 ref + schema_hash + load:true 加载工具。',
+        'life_say':'向当前对话发送自然表达；最后一条显式 end_turn:true。未知发送先对账。',
+        'life_rest':'保存私人想法并结束当前轮；沿用已有随机空闲间隔。',
+        'life_remember':'按真实来源保存到现有记忆、人物画像和叮嘱服务。',
+        'life_intent':'保存或更新当前打算；等待与停止须按当前版本执行。',
+        'life_appraise':'评价真实语义及独立情绪、需要、人物关系，复用现有来源校验。',
+        'life_media':'异步生成媒体；生成、检查和送达分别确认。',
+        'life_consult':'异步咨询 Codex；未知结果须核对原 request_id。',
+        'life_change_self':'按原发布流程修改人格、方法、代码或插件，核对生效回执。',
+        'life_simulation':'仅当前明确成年亲密情境的专项体验，先读状态与完整 role_protocol。',
+    }
+    return {name:dict(name=name,description=summaries[name],parameters=obj(dict(proposal=schema),('proposal',)),
+        schema_ref='tool:dsh:'+name,schema_hash=digest(dict(name=name,parameters=schema)),version=1)
+        for name,schema in schemas.items()}
+
+
+def catalog():
+    return dict(version=digest(contracts()),items=list(contracts().values()))
+
+
+@lru_cache(maxsize=16)
+def _validator(name):
+    return Draft7Validator(contracts()[name]['parameters'])
+
+
+def validate(name,proposal):
+    return validate_arguments(name,dict(proposal=proposal))
+
+
+def validate_arguments(name,arguments):
+    contract=contracts().get(name)
+    if not contract:return
+    errors=sorted(_validator(name).iter_errors(arguments),key=lambda e:str(e.path))
+    if errors:
+        raise SessionFailure('invalid_input','工具字段无效：'+errors[0].message,field='.'.join(map(str,errors[0].path)))
+    proposal=arguments['proposal']
+    # Cross-field requirements remain explicit where the provider subset cannot
+    # express if/then without duplicating all common fields in every branch.
+    required=[]
+    if name=='life_say' and not proposal.get('text') and not proposal.get('parts'):required=['text 或 parts']
+    if name=='life_read' and proposal.get('load'):
+        required=['ref','schema_hash']
+    if name=='life_intent' and proposal.get('action','save') not in {'save','resolve'}:required=['ref','base_revision']
+    if name=='life_media' and proposal.get('action','submit') in {'status','cancel'}:required=['job_id']
+    if name=='life_change_self':
+        required=['target']
+        if proposal.get('target') in {'persona','persona_public'}:
+            required+=['base_hash']
+            if 'files' not in proposal:required+=['content']
+    missing=[key for key in required if key not in proposal]
+    if missing:raise SessionFailure('invalid_input','缺少工具字段：'+', '.join(missing))

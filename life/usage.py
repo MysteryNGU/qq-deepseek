@@ -62,7 +62,7 @@ class Usage:
                 (sid!=root['session_id'] and binding['parent_session_id']!=root['session_id'])):
             raise SessionFailure('scope_mismatch','用量调用不属于当前角色会话树')
         data = {key:record.get(key) for key in ('call_key','session_id','root_session_id','provider','model','turn','step','attempt',
-            'started_at','finished_at','status','source_event_refs','context_estimate','historical','input_refs')}
+            'started_at','finished_at','status','source_event_refs','context_estimate','request_estimate','request_budget','historical','input_refs')}
         data.update(agent_id=self.role.life.agent_id,scope_id=root['scope_id'],parent_session_id=binding['parent_session_id'],
             intent_ref=binding['intent_ref'],price_version=None,price_estimate=None)
         purpose = record.get('purpose')
@@ -127,7 +127,13 @@ class Usage:
         from .spending import reported_cost,UNIT
         prices=[reported_cost(v) for v in values]
         budget=self.role.spending.snapshot() if owner and hasattr(self.role,'spending') else None
+        measured=[v for v in values if isinstance(v.get('request_estimate'),dict)]
+        latest=max(measured,key=lambda v:v['started_at'] or 0) if measured else None
+        request_context=dict(source='DSH shared token meter; estimates are separate from billed usage',
+            measured_calls=len(measured),mandatory_overflow_calls=sum((v.get('request_budget') or {}).get('mandatory_overflow') is True for v in measured),
+            latest=dict(call_key=latest['call_key'],estimate=latest['request_estimate'],budget=latest.get('request_budget')) if latest else None)
         return dict(scope='bot_global' if p.get('global') else 'current_conversation',since=start,until=end,calls=len(values),
+            request_context=request_context,
             known_totals=totals,field_coverage=field_coverage,unknown_or_partial_calls=missing,projection_gap=projection_gap,
             coverage='partial' if missing or projection_gap else 'reported_for_recorded_calls' if values else 'unknown',
             purposes=purposes,total_mismatches=sum(v['total_mismatch'] for v in values),price_estimate=sum(v or 0 for v in prices)/UNIT if any(v is not None for v in prices) else None,

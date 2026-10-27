@@ -99,9 +99,28 @@ class BridgeTestCase(unittest.TestCase):
         bridge=self.new_bridge();bridge.ensure_profile()
         profile=bridge.profile_dir();patch=profile/'cordis.patch.yml'
         self.assertEqual(json.loads(patch.read_text('utf-8')),[])
+
         patch.write_text((profile/'qq-life-core/cordis.patch.yml').read_text('utf-8'),encoding='utf-8')
         bridge.ensure_profile()
         self.assertEqual(json.loads(patch.read_text('utf-8')),[])
+
+    def test_compaction_uses_configured_budgets_without_replacing_plugin_overrides(self):
+        self.cfg.resource_policy=dict(compaction_threshold_percent=5,compaction_retain_tokens=12000,
+                                      compaction_headroom_tokens=6000,handoff_target_tokens=3000)
+        bridge=self.new_bridge();bridge.ensure_profile()
+        profile=bridge.profile_dir()
+        override='- id: compaction-basic\n  config:\n    thresholdRatio: 0.09\n    retainTokens: 20000\n'
+        (profile/'cordis.patch.yml').write_text(override,encoding='utf-8')
+        bridge.ensure_profile()
+        core=(profile/'qq-life-core/cordis.patch.yml').read_text('utf-8')
+        for text in ('auto: true','thresholdRatio: 0.05','retainTokens: 12000','headroomTokens: 6000','maxTokens: 3000'):
+            self.assertIn(text,core)
+        self.assertEqual((profile/'cordis.patch.yml').read_text('utf-8'),override)
+        self.assertEqual(bridge._hello_parameters()['compact_tool_protocol'],1)
+        source=bridge.dsh_root/'packages/sdk/server/src/qq-life-context.ts'
+        source.parent.mkdir(parents=True,exist_ok=True);source.write_text('// new context protocol',encoding='utf-8')
+        bridge.ensure_profile()
+        self.assertIn('auto: false',(profile/'qq-life-core/cordis.patch.yml').read_text('utf-8'))
 
     def test_profile_recovers_pnpm_core_link_without_changing_installed_copy(self):
         import json
