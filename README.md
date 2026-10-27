@@ -95,6 +95,14 @@ python -m venv .venv
 
 ## Git 与本地资料
 
+迁移到另一台电脑时，双击 `导出个人配置.bat`。默认在 `backups/` 生成含源码、真实配置、人格、记忆、音色素材及 Bot 专用 DSH 状态的迁移 ZIP，并逐文件校验。脚本也可直接运行：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts/export_private_bundle.py
+```
+
+认知服务在线时请先停止 Bot。压缩包未加密，含真实密钥，只在自己的设备间转移，不上传 Git。包内 `迁移说明.txt` 和 `migration/manifest.json` 列出目录映射、排除项和需要调整的路径。SQLite 使用一致性备份；旧发布控制库和维护命令只放入 `recovery-only/`。模型权重、虚拟环境、node_modules、第三方安装包及 QQ 登录缓存不包含，需另行复制/安装或重新登录。迁移后不要让两台机器同时运行同一个 Bot。
+
 Git 保留当前源码、启动工具、空白模板、必要维护脚本、回归测试和仍有效的需求设计。真实 `config.toml`、凭据、人格、`data/`、记忆、聊天、媒体、模型、虚拟环境及本机学习资料不提交。
 
 2026-10-27 已从版本库移出失效的旧入口/调试脚本、旧公开人格模板、一次性探针及旧验收快照；本地原文件仍保留，旧 README 与清理清单保存在 `data/maintenance/git-cleanup-20261027/`。运行模块和仍有引用的设计没有因“看起来旧”而删掉。整理针对当前文件树，不重写 Git 历史。

@@ -60,6 +60,7 @@ audit/
 !/scripts/memory_admin.py
 !/scripts/benchmark_speech_latency.py
 !/scripts/reload_speech_runtime.py
+!/scripts/export_private_bundle.py
 /.acceptance/
 /docs/acceptance/add08-memory-pause.json
 
