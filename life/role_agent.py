@@ -847,7 +847,10 @@ class RoleAgent:
         return digest(dict(scope=self.presentation_scope(binding,scope),events=events,
             source_fence=self.life.catalog.fence(),
             persona=digest(persona),policy=self.resources.version,
-            pending=self.sessions.pending_view(binding['session_id']),intents=self.list_intents(scope),
+            # 传输完成（accepted→consumed→settled）不是新输入：只按身份钉住未处理输入，
+            # 否则请求装配期间自己的投递回执就会让戳失配，整轮被判 stale_context。
+            pending=[(i['input_id'],i['ordinal']) for i in self.sessions.pending_view(binding['session_id'])],
+            intents=self.list_intents(scope),
             profiles=[dict(r) for r in self.repo._all('SELECT id,status,revision,expires,sources,expires>? AS unexpired FROM person_profiles WHERE agent_id=?',
                 (self.life.clock(),scope.agent_id))]))
 
