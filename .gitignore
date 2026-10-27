@@ -44,7 +44,6 @@ napcat-onekey/
 # 人格、记忆及本机学习内容：只保留在部署机器
 /persona*.md
 !/persona.example.md
-!/persona.public.example.md
 /personas/
 人格设定.md
 self.md
@@ -66,3 +65,16 @@ audit/
 
 # 与本项目无关的游戏自动化脚本
 ZenlessZoneZero-Auto/
+
+# Superseded local references: keep on disk, exclude from current repository.
+/tune.py
+/bot_console.py
+/start.bat
+/persona.public.example.md
+/tests/probe_no_climax.py
+/docs/life-implementation-history-through-20261027.md
+/docs/acceptance/add08-source-hashes.json
+/docs/acceptance/followthrough-runtime-20261026.json
+/docs/acceptance/memory-sharing-runtime-20261026.json
+/docs/acceptance/person-continuity-runtime-20261027.json
+/docs/acceptance/unified-persona-autonomy-runtime-20261027.json
