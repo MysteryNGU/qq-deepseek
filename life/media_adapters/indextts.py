@@ -21,6 +21,29 @@ def normalize_delivery(parameters):
     return parameters
 
 
+def _avoid_local_module_shadowing():
+    """Drop the project root from the engine's import path.
+
+    The worker starts inside the project, so our own cmd.py shadows the stdlib
+    module that pdb needs; torch imports torch.distributed -> pdb -> cmd and dies
+    with "module 'cmd' has no attribute 'Cmd'".
+    """
+    root = Path(__file__).resolve().parents[2]
+    kept = []
+    for entry in sys.path:
+        try:
+            resolved = Path(entry or '.').resolve()
+        except OSError:
+            kept.append(entry)
+            continue
+        if resolved != root:
+            kept.append(entry)
+    sys.path[:] = kept
+    shadow = sys.modules.get('cmd')
+    if shadow is not None and not hasattr(shadow, 'Cmd'):
+        del sys.modules['cmd']
+
+
 class Adapter:
     def describe(self,config):
         config.setdefault('worker_threads',4)
@@ -38,7 +61,7 @@ class Adapter:
                 emo_vector=dict(type='array',minItems=8,maxItems=8,items=dict(type='number',minimum=0,maximum=1)),
                 duration_factor=dict(type='number',minimum=.5,maximum=2)),additionalProperties=False),
             public_parameters=dict(segments='1..10',pause_after_ms='0..2000',max_text_chars=config.get('max_text_chars',1000)),
-            cancel_grace_seconds=0)
+            cancel_grace_seconds=0,warm_worker=True)
 
     def normalize_voice(self,parameters,config):
         return normalize_delivery(parameters)
@@ -70,10 +93,12 @@ class Adapter:
             reference_asset_id=voice['reference_asset_id'],reference_sha256=voice['reference_digest'],segments=checked)
 
     def execute(self,spec,context):
-        return execute_speech(dict(spec=spec,backend=context.config),context.folder)
+        _avoid_local_module_shadowing()
+        return execute_speech(dict(spec=spec,backend=context.config),context.folder,
+                              cache=getattr(context,'cache',None))
 
 
-def execute_speech(request, folder):
+def execute_speech(request, folder, cache=None):
     cfg, spec = request['backend'], request['spec']
     sys.path.insert(0, cfg['voice_engine_root'])
     print('stage: importing isolated speech dependencies',flush=True)
@@ -82,14 +107,29 @@ def execute_speech(request, folder):
     import torch
     from indextts.infer_v2_5 import IndexTTS2
     torch.set_num_threads(cfg['worker_threads'])
+    model = Path(cfg['voice_model_dir'])
+    engine = cache.get('engine') if cache is not None else None
+    if engine is None:
+        print('stage: loading IndexTTS-2.5',flush=True)
+        engine = IndexTTS2(cfg_path=str(model/'config.yaml'), model_dir=str(model), device='cuda:0',
+            use_bf16=True, use_cuda_kernel=False, use_deepspeed=False, use_accel=False,
+            use_torch_compile=False, use_qwen_emo=False)
+        if cache is not None:
+            cache['engine'] = engine
+    else:
+        print('stage: reusing loaded IndexTTS-2.5',flush=True)
+    # Initialization consumes RNG state. Seed inference after loading so a warm
+    # request has the same seed semantics as a cold one.
     random.seed(spec['seed'])
     np.random.seed(spec['seed'])
     torch.manual_seed(spec['seed'])
-    model = Path(cfg['voice_model_dir'])
-    print('stage: loading IndexTTS-2.5',flush=True)
-    engine = IndexTTS2(cfg_path=str(model/'config.yaml'), model_dir=str(model), device='cuda:0',
-        use_bf16=True, use_cuda_kernel=False, use_deepspeed=False, use_accel=False,
-        use_torch_compile=False, use_qwen_emo=False)
+    reference=(spec['reference_path'],spec['reference_sha256'])
+    if cache is not None and cache.get('reference')!=reference:
+        for name in ('cache_spk_cond','cache_s2mel_style','cache_s2mel_prompt',
+                     'cache_spk_audio_prompt','cache_emo_cond','cache_emo_audio_prompt','cache_mel'):
+            setattr(engine,name,None)
+        cache['reference']=reference
+    torch.cuda.reset_peak_memory_stats()
     parts = []
     for index, segment in enumerate(spec['segments']):
         if (folder/'cancel.requested').exists():

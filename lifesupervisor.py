@@ -23,13 +23,16 @@ def main():
     parser.add_argument("--config", default=str(root / "config.toml"))
     parser.add_argument("--control")
     args = parser.parse_args()
+    from life.settings_web import ensure_server
+    ensure_server(root)
     config = tomllib.loads(Path(args.config).read_text(encoding="utf-8"))
     database = Path(config.get("life_db", "data/life.db"))
     if not database.is_absolute():
         database = root / database
     control = Path(args.control) if args.control else database.parent / "life-control"
     controller = ReleaseController(root, control, NativeWorker())
-    supervisor = HostSupervisor(controller, args.config)
+    supervisor = HostSupervisor(controller, args.config,
+        startup_timeout=180 if config.get('local_embedding',{}).get('enabled') else 60)
     # A separate supervisor cannot share this kernel-held singleton lock.
     lock_path = controller.control / "supervisor.lock"
     with lock_path.open("a+b") as lock:

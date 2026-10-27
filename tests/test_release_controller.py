@@ -41,6 +41,16 @@ class NativeReleaseTests(unittest.TestCase):
             self.controller.evaluate(identity, self.probes)
         self.assertIn("17", (self.source / "worker.py").read_text())
 
+    def test_candidate_preserves_settings_page_assets(self):
+        assets=self.source/'life/settings_ui'
+        assets.mkdir(parents=True)
+        for name in ('index.html','app.js','style.css'):
+            (assets/name).write_text('asset '+name,encoding='utf-8')
+        identity=self.controller.prepare('with-settings',self.patch)
+        manifest,_,_=self.controller._candidate(identity)
+        for name in ('index.html','app.js','style.css'):
+            self.assertIn('life/settings_ui/'+name,manifest['candidate'])
+
     def test_external_oracle_rejects_candidate_false_claims(self):
         patch = dict(self.patch, new="return 'tests passed'")
         identity = self.controller.prepare("proposal", patch)

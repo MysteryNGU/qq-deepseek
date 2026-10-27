@@ -33,11 +33,21 @@ class TombstoneLedger:
                 before = (len(closure), len(events))
                 closure.update(repo.memory_ids_sharing_events(list(events)))
                 closure.update(repo.memory_ids_derived_from(list(closure)))
+                for memory_id in closure:
+                    memory = repo.get_memory(memory_id)
+                    if memory and memory.scope.agent_id != scope.agent_id:
+                        raise ValueError('cross_agent_deletion_dependency')
+                for event_id in events:
+                    event = repo.get_event(event_id)
+                    if event and event.scope.agent_id != scope.agent_id:
+                        raise ValueError('cross_agent_deletion_dependency')
                 # Invalidate descendants, not the other independent parents of
                 # a shared summary. The explicitly forgotten roots are supplied
                 # by MemoryService before expanding the dependent memories.
-                for row in repo._all("SELECT id,source_event_ids FROM events WHERE redacted_at IS NULL"):
+                for row in repo._all("SELECT id,agent_id,source_event_ids FROM events WHERE redacted_at IS NULL"):
                     if events.intersection(json.loads(row["source_event_ids"])):
+                        if row['agent_id'] != scope.agent_id:
+                            raise ValueError('cross_agent_deletion_dependency')
                         events.add(row["id"])
                 if before == (len(closure), len(events)):
                     break

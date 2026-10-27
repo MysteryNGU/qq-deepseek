@@ -45,6 +45,29 @@ def validate_data_compatibility(source, config=None, *, database=None):
     try:
         if not database.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
             return
+        memory_versions=[int(row[0]) for row in database.execute("SELECT v FROM meta WHERE k LIKE 'memory_schema:%'")]
+        memory_required=max(memory_versions,default=0)
+        if memory_required:
+            module=source/'life/runtime.py'
+            supported_memory=0
+            if module.is_file():
+                for node in ast.parse(module.read_text('utf-8-sig')).body:
+                    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='SUPPORTED_MEMORY_SCHEMA' for t in node.targets):
+                        if isinstance(node.value,ast.Constant) and type(node.value.value) is int:
+                            supported_memory=node.value.value
+            if supported_memory<memory_required:
+                raise RuntimeError('memory_schema_incompatible: use the new engine; retain the live database')
+        experience_required=max((int(row[0]) for row in database.execute("SELECT v FROM meta WHERE k LIKE 'experience_schema:%'")),default=0)
+        if experience_required:
+            supported_experience=0
+            module=source/'life/runtime.py'
+            if module.is_file():
+                for node in ast.parse(module.read_text('utf-8-sig')).body:
+                    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='SUPPORTED_EXPERIENCE_SCHEMA' for t in node.targets):
+                        if isinstance(node.value,ast.Constant) and type(node.value.value) is int:
+                            supported_experience=node.value.value
+            if supported_experience<experience_required:
+                raise RuntimeError('experience_schema_incompatible: use compatible code; retain the live database')
         versions = [int(row[0]) for row in database.execute("SELECT v FROM meta WHERE k LIKE 'relationship_schema:%'")]
         required = max(versions,default=0)
         if not required:

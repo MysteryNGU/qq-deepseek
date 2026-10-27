@@ -118,6 +118,11 @@ CREATE INDEX IF NOT EXISTS ix_memories_scope_status
 CREATE INDEX IF NOT EXISTS ix_memories_fact_key
   ON memories(agent_id, conversation_id, subject_id, predicate, status);
 
+CREATE TABLE IF NOT EXISTS learning_source_barriers (
+  scope_id TEXT NOT NULL, event_id TEXT NOT NULL, reason TEXT NOT NULL, created REAL NOT NULL,
+  PRIMARY KEY(scope_id,event_id)
+);
+
 CREATE TABLE IF NOT EXISTS memory_sources (
   memory_id    TEXT NOT NULL,
   event_id     TEXT NOT NULL,
@@ -128,12 +133,7 @@ CREATE TABLE IF NOT EXISTS memory_sources (
 );
 CREATE INDEX IF NOT EXISTS ix_memory_sources_event ON memory_sources(event_id);
 
-CREATE TABLE IF NOT EXISTS memory_terms (
-  memory_id TEXT NOT NULL,
-  term      TEXT NOT NULL,
-  PRIMARY KEY(memory_id, term)
-);
-CREATE INDEX IF NOT EXISTS ix_memory_terms_term ON memory_terms(term);
+
 
 CREATE TABLE IF NOT EXISTS open_loops (
   id                  TEXT PRIMARY KEY,
@@ -350,14 +350,22 @@ CREATE TABLE IF NOT EXISTS action_attempts (
 
 def init(conn) -> None:
     conn.executescript(SCHEMA)
+    from .life_schema import SCHEMA as life_schema
+    conn.executescript(life_schema)
     from .system_schema import init as init_runtime
     init_runtime(conn)
     from .recollection import SCHEMA as recollection_schema
     conn.executescript(recollection_schema)
     annotation_columns = {r[1] for r in conn.execute('PRAGMA table_info(memory_annotations)')}
-    for name, declaration in [('always_load', 'INTEGER NOT NULL DEFAULT 0'), ('skill_refs', "TEXT NOT NULL DEFAULT '[]'")]:
+    for name, declaration in [('always_load', 'INTEGER NOT NULL DEFAULT 0'), ('skill_refs', "TEXT NOT NULL DEFAULT '[]'"),
+                              ('topic_key', "TEXT NOT NULL DEFAULT ''"),
+                              ('applicability', "TEXT NOT NULL DEFAULT 'legacy'"),
+                              ('context_ref', "TEXT NOT NULL DEFAULT ''"),
+                              ('context_revision', 'INTEGER NOT NULL DEFAULT 0'),
+                              ('reference_assets', "TEXT NOT NULL DEFAULT '[]'")]:
         if name not in annotation_columns:
             conn.execute(f'ALTER TABLE memory_annotations ADD COLUMN {name} {declaration}')
+    conn.execute('CREATE INDEX IF NOT EXISTS ix_annotations_topic ON memory_annotations(scope_id,kind,topic_key,status)')
     from .text import terms as annotation_terms
     for row in conn.execute('SELECT id,text,cues FROM memory_annotations WHERE id NOT IN (SELECT annotation_id FROM annotation_terms)'):
         for term in set(annotation_terms(row[1] + ' ' + row[2])):

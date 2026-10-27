@@ -128,11 +128,11 @@ class DeliveryRecoveryTests(unittest.IsolatedAsyncioTestCase):
         host = object.__new__(RoleHost)
         host.ws = None
         with self.assertRaises(DeliveryNotSent):
-            await host.call('send_private_msg',dict(user_id=1,message='test'))
+            await host._call_raw('send_private_msg',dict(user_id=1,message='test'))
         host._rpc = {}
         host.ws = type('Socket',(),{'send':AsyncMock(side_effect=ConnectionError('write interrupted'))})()
         with self.assertRaises(ConnectionError) as error:
-            await host.call('send_private_msg',dict(user_id=1,message='test'))
+            await host._call_raw('send_private_msg',dict(user_id=1,message='test'))
         self.assertNotIsInstance(error.exception,DeliveryNotSent)
         self.assertEqual(host._rpc,{})
 

@@ -94,6 +94,42 @@ class Repository:
 
     # ---------------------------------------------------------------- 事件
 
+    def project_life(self, kind, identity):
+        """Project after the native write, inside its existing transaction.
+
+        An old/incomplete plugin lineage may not project yet; the original
+        experience must still be retained. A durable marker makes it retryable.
+        """
+        from .life_catalog import LifeCatalog
+        from .life_access import RecallError
+        item = self.get_event(identity) if kind == 'event' else self.get_memory(identity)
+        if not item:
+            return
+        try:
+            resource = LifeCatalog(self, item.scope.agent_id).register(kind, identity)
+            self._exec('DELETE FROM meta WHERE k=?', ('life_pending:'+kind+':'+identity,))
+            if kind == 'event' and item.source_kind=='user_report' and item.actor_id.isdigit() and item.scope.conversation_id.startswith('qq:'):
+                from .memory_index import MemoryIndex
+                MemoryIndex(LifeCatalog(self, item.scope.agent_id), None, None).index_participants(resource)
+        except RecallError:
+            self._exec('INSERT INTO meta VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v',
+                       ('life_pending:'+kind+':'+identity, item.scope.agent_id))
+
+    def life_denied(self, scope, identity):
+        access = getattr(self,'life_access',None)
+        if access is None:
+            return False
+        if access.catalog.agent_id != scope.agent_id:
+            return True
+        return access.denied(access.bind(scope),identity)
+
+    def invalidate_life(self, kind, identities, *, deleted=True):
+        from .life_catalog import LifeCatalog
+        for identity in identities:
+            rows = self._all('SELECT resource_id,agent_id FROM life_resources WHERE kind=? AND native_id=?', (kind, identity))
+            for row in rows:
+                LifeCatalog(self, row['agent_id']).invalidate([row['resource_id']], deleted=deleted)
+
     def _next_seq(self, agent_id: str) -> int:
         key = f"seq:{agent_id}"
         row = self._one("SELECT v FROM meta WHERE k=?", (key,))
@@ -104,6 +140,10 @@ class Repository:
     def ingest_event(self, event: Event) -> tuple[str, bool]:
         """幂等入库：同一外部消息 ID 只产生一条事件。"""
         with self.tx():
+            for source_id in event.source_event_ids:
+                source = self.get_event(source_id)
+                if source and source.scope.agent_id != event.scope.agent_id:
+                    raise ValueError('cross_agent_source')
             if event.external_id:
                 row = self._one(
                     "SELECT id FROM events WHERE agent_id=? AND conversation_id=? AND external_id=?",
@@ -126,6 +166,7 @@ class Repository:
                     int(event.schema_version), event.redacted_at,
                 ),
             )
+            self.project_life('event', event.id)
             return event.id, True
 
     def get_event(self, event_id: str) -> Event | None:
@@ -388,15 +429,8 @@ class Repository:
                     "VALUES(?,?,?,?,?)",
                     (memory.id, src.event_id, src.relation, src.quote_start, src.quote_end),
                 )
-            self._set_terms(memory.id, terms)
+            self.project_life('memory', memory.id)
             return memory.id
-
-    def _set_terms(self, memory_id: str, terms: list[str]) -> None:
-        self._exec("DELETE FROM memory_terms WHERE memory_id=?", (memory_id,))
-        for term in dict.fromkeys(terms):
-            if term:
-                self._exec("INSERT OR IGNORE INTO memory_terms(memory_id,term) VALUES(?,?)",
-                           (memory_id, term))
 
     def update_memory(self, memory_id: str, **fields: Any) -> None:
         allowed = {
@@ -415,6 +449,7 @@ class Repository:
         args.append(memory_id)
         with self.tx():
             self._exec(f"UPDATE memories SET {', '.join(sets)} WHERE id=?", args)
+            self.project_life('memory', memory_id)
 
     def get_memory(self, memory_id: str) -> Memory | None:
         row = self._one("SELECT * FROM memories WHERE id=?", (memory_id,))
@@ -433,25 +468,6 @@ class Repository:
             return []
         marks = ",".join("?" for _ in ids)
         rows = self._all(f"SELECT * FROM memories WHERE id IN ({marks})", ids)
-        return self._attach_sources([self._memory(r) for r in rows])
-
-    def search_memories(self, scope: Scope, terms: list[str],
-                        statuses: Iterable[str], limit: int = 40) -> list[Memory]:
-        terms = [t for t in dict.fromkeys(terms) if t]
-        statuses = list(statuses)
-        if not terms or not statuses:
-            return []
-        tmarks = ",".join("?" for _ in terms)
-        smarks = ",".join("?" for _ in statuses)
-        rows = self._all(
-            f"SELECT m.*, COUNT(*) AS hit FROM memories m "
-            f"JOIN memory_terms t ON t.memory_id=m.id "
-            f"WHERE m.agent_id=? AND m.conversation_id=? AND m.status IN ({smarks}) "
-            f"AND t.term IN ({tmarks}) AND m.forget_epoch<=? "
-            f"GROUP BY m.id ORDER BY hit DESC, m.updated_at DESC LIMIT ?",
-            [scope.agent_id, scope.conversation_id, *statuses, *terms,
-             self.forget_epoch(scope.scope_id), int(limit)],
-        )
         return self._attach_sources([self._memory(r) for r in rows])
 
     def recent_memories(self, scope: Scope, statuses: Iterable[str],
@@ -487,10 +503,12 @@ class Repository:
                 (memory_id, source.event_id, source.relation,
                  source.quote_start, source.quote_end),
             )
+            self.project_life('memory', memory_id)
 
-    def memory_terms(self, memory_id: str) -> list[str]:
-        return [r["term"] for r in self._all(
-            "SELECT term FROM memory_terms WHERE memory_id=?", (memory_id,))]
+    def resource_terms(self, memory_id: str) -> list[str]:
+        return [r['term'] for r in self._all(
+            "SELECT t.term FROM life_terms t JOIN life_resources r USING(resource_id) "
+            "WHERE r.kind='memory' AND r.native_id=? AND t.source_version=r.source_version",(memory_id,))]
 
     def _attach_sources(self, memories: list[Memory]) -> list[Memory]:
         ids = [m.id for m in memories]
@@ -676,11 +694,11 @@ class Repository:
 
     def redact_memory(self, memory_id: str, epoch: int) -> None:
         with self.tx():
+            self.invalidate_life('memory', [memory_id])
             self._exec(
                 "UPDATE memories SET status='redacted', forget_epoch=?, updated_at=? WHERE id=?",
                 (int(epoch), now_ts(), memory_id),
             )
-            self._exec("DELETE FROM memory_terms WHERE memory_id=?", (memory_id,))
 
     # ---------------------------------------------------------------- 决策记录
 
@@ -863,6 +881,7 @@ class Repository:
         with self.tx():
             for event_id in ids:
                 self._exec("DELETE FROM meta WHERE k=?", ("input_intent:" + event_id,))
+            self.invalidate_life('event', ids)
             cur = self._exec(
                 f"UPDATE events SET redacted_at=? WHERE id IN ({marks}) AND redacted_at IS NULL",
                 [now_ts(), *ids],
@@ -990,6 +1009,10 @@ class Repository:
         """重置一段关系：记忆、原话、索引、待办、派生状态一起失效。"""
         sid = scope.scope_id
         with self.tx():
+            self.invalidate_life('event', [r['id'] for r in self._all(
+                'SELECT id FROM events WHERE agent_id=? AND conversation_id=?', scope.private_key)])
+            self.invalidate_life('memory', [r['id'] for r in self._all(
+                'SELECT id FROM memories WHERE agent_id=? AND conversation_id=?', scope.private_key)])
             row = self._one("SELECT epoch FROM forget_epochs WHERE scope_id=?", (sid,))
             epoch = (int(row["epoch"]) if row else 0) + 1
             self._exec("INSERT OR REPLACE INTO forget_epochs(scope_id,epoch) VALUES(?,?)",
@@ -998,10 +1021,6 @@ class Repository:
                 "UPDATE memories SET status='redacted', forget_epoch=?, updated_at=? "
                 "WHERE agent_id=? AND conversation_id=? AND status<>'redacted'",
                 (epoch, now_ts(), scope.agent_id, scope.conversation_id))
-            self._exec(
-                "DELETE FROM memory_terms WHERE memory_id IN ("
-                "SELECT id FROM memories WHERE agent_id=? AND conversation_id=?)",
-                (scope.agent_id, scope.conversation_id))
             e = self._exec(
                 "UPDATE events SET redacted_at=? WHERE agent_id=? AND conversation_id=? "
                 "AND redacted_at IS NULL",
@@ -1015,6 +1034,12 @@ class Repository:
                 "DELETE FROM state_snapshots WHERE aggregate_id IN (?,?,?,?)",
                 (f"affect:{sid}", f"mood:{sid}", f"relationship:{sid}", f"drive:{sid}"))
             self._exec("DELETE FROM drive_settlements WHERE scope_id=?", (sid,))
+            if self._one("SELECT 1 FROM sqlite_master WHERE name='person_profiles' AND type='table'"):
+                self._exec("UPDATE person_profiles SET status='revoked',text='',sources='{}' WHERE scope_id=?",(sid,))
+            if self._one("SELECT 1 FROM sqlite_master WHERE name='person_encounters' AND type='table'"):
+                self._exec('DELETE FROM person_encounters WHERE scope_id=?',(sid,))
+            if self._one("SELECT 1 FROM sqlite_master WHERE name='motivation_decisions' AND type='table'"):
+                self._exec("UPDATE motivation_decisions SET status='withdrawn',reason='scope_reset',intent_ref=NULL WHERE scope_id=?",(sid,))
             cards = self._exec(
                 "DELETE FROM knowledge_cards WHERE agent_id=? AND conversation_id=?",
                 (scope.agent_id, scope.conversation_id))
@@ -1159,8 +1184,9 @@ class Repository:
                 f"UPDATE memories SET status='redacted', forget_epoch=?, updated_at=? "
                 f"WHERE id IN ({marks}) AND status<>'redacted'",
                 [int(epoch), now_ts(), *ids])
-            self._exec(f"DELETE FROM memory_terms WHERE memory_id IN ({marks})", ids)
-            return int(cur.rowcount or 0)
+            count = int(cur.rowcount or 0)
+            self.invalidate_life('memory', ids)
+            return count
 
     def redact_knowledge_cards_for_events(self, event_ids: list[str]) -> int:
         ids = [str(x) for x in dict.fromkeys(event_ids) if x]
@@ -1281,7 +1307,7 @@ class Repository:
                     "VALUES(?,?,?,?,?)",
                     (memory.id, src.event_id, src.relation, src.quote_start, src.quote_end),
                 )
-            self._set_terms(memory.id, terms)
+            self.project_life('memory', memory.id)
             return True
 
     def memory_ids_derived_from(self, memory_ids: list[str]) -> list[str]:

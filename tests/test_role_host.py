@@ -40,12 +40,40 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             user_id=user,message_id=100+user,time=time or int(self.host.accept_after)+1,
             message=[dict(type='text',data=dict(text='hello'))])
 
+    async def test_settings_restart_waits_for_active_turn_and_records_idle_receipt(self):
+        self.host.started_role=True
+        folder=self.host.root/'data/settings';folder.mkdir(parents=True)
+        request=folder/'restart.request.json'
+        request.write_text(json.dumps(dict(id='requested',action='restart_when_idle',created=time.time())))
+        scope=self.host.life.scope('qq:private:1','1');root=self.host.role.sessions.binding(scope)
+        self.host.role.sessions.apply_event(root['session_id'],dict(type='turn/start',seq=0,time=1000,data=dict(turn=1)))
+        with patch('life.role_host.asyncio.sleep',new=AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):await self.host.settings_control()
+        self.assertFalse(self.host.stop.is_set());self.assertTrue(request.exists())
+        self.host.role.sessions.apply_event(root['session_id'],dict(type='turn/end',seq=1,time=1000,data=dict(turn=1)))
+        with patch('life.role_host.asyncio.sleep',new=AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):await self.host.settings_control()
+        self.assertTrue(self.host.stop.is_set());self.assertEqual(self.host.exit_code,42)
+        self.assertFalse(request.exists());self.assertEqual(json.loads((folder/'restart.receipt.json').read_text())['request_id'],'requested')
+
+    async def test_offline_settings_restart_not_blocked_by_previous_process_turn(self):
+        folder=self.host.root/'data/settings';folder.mkdir(parents=True)
+        request=folder/'restart.request.json'
+        request.write_text(json.dumps(dict(id='offline',action='restart_when_idle',created=time.time())))
+        scope=self.host.life.scope('qq:private:1','1');root=self.host.role.sessions.binding(scope)
+        self.host.role.sessions.apply_event(root['session_id'],dict(type='turn/start',seq=0,time=1000,data=dict(turn=1)))
+        self.assertFalse(self.host.started_role)
+        with patch('life.role_host.asyncio.sleep',new=AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):await self.host.settings_control()
+        self.assertTrue(self.host.stop.is_set());self.assertEqual(self.host.exit_code,42)
+
     async def test_live_messages_do_not_depend_on_startup_greeting(self):
         cutoff = self.host.accept_after
         await self.host.receive(self.raw(time=int(cutoff)-2))
         self.ingest.assert_not_called()
         await self.host.receive(self.raw())
         self.ingest.assert_awaited_once()
+
         scope = self.host.life.scope('qq:private:1','1')
         event,_ = self.host.life.ingest(scope,'startup','inference','test boot')
         self.host.boot_event_id = event.id
@@ -55,6 +83,50 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         # Duplicate delivery during startup is still deduplicated.
         await self.host.receive(self.raw())
         self.ingest.assert_awaited_once()
+
+    async def test_group_speakers_registered_even_before_model_processing(self):
+        self.host.cfg.profile_review_enabled=True
+        await self.host.receive(self.raw(user=2,group=True))
+        scope=self.host.life.scope('qq:group:3','')
+        self.assertTrue(self.host.role.people.identity(scope,'2')['recognized'])
+        row=self.host.life.repo._one("SELECT state FROM person_encounters WHERE actor_id='2'")
+        self.assertEqual(row['state'],'pending')
+
+    async def test_failed_startup_greeting_does_not_block_delivery_review(self):
+        self.host.ws=object();self.host.role.running=True
+        self.host.role.review_deliveries=AsyncMock()
+        task=asyncio.create_task(self.host.delivery_recovery())
+        try:
+            await asyncio.sleep(.03)
+            self.host.role.review_deliveries.assert_awaited_once()
+        finally:
+            task.cancel();await asyncio.gather(task,return_exceptions=True)
+
+    async def test_native_failure_cooldown_blocks_new_writes_but_not_status_queries(self):
+        failure=dict(retcode=1200,status='failed',message='native result:1006514 网络连接异常!')
+        self.host._call_raw=AsyncMock(side_effect=[dict(retcode=0,data=dict(online=True,good=True)),failure,dict(retcode=0,data={})])
+        result=await self.host.call('send_private_msg',dict(user_id=1,message='test'))
+        self.assertEqual(result['retcode'],1200)
+        from life.delivery import DeliveryNotSent
+        with self.assertRaises(DeliveryNotSent):await self.host.call('send_private_msg',dict(user_id=1,message='second'))
+        await self.host.call('get_status',{})
+        self.assertEqual([c.args[0] for c in self.host._call_raw.await_args_list],['get_status','send_private_msg','get_status'])
+        self.assertEqual(self.host.qq_network['reason'],'qq_network_unavailable')
+
+    async def test_offline_preflight_proves_send_was_never_dispatched(self):
+        self.host._call_raw=AsyncMock(return_value=dict(retcode=0,data=dict(online=False,good=False)))
+        from life.delivery import DeliveryNotSent
+        with self.assertRaises(DeliveryNotSent):await self.host.call('send_private_msg',dict(user_id=1,message='test'))
+        self.assertEqual(self.host._call_raw.await_count,1)
+        self.assertEqual(self.host._call_raw.call_args.args[0],'get_status')
+
+    async def test_local_embedding_can_start_while_qq_needs_login(self):
+        self.host.role_ready.clear();self.host.ws=None
+        self.host.local_embedding=SimpleNamespace(config=SimpleNamespace(enabled=True),status=lambda:dict(state='unavailable'))
+        async def started():self.host.stop.set()
+        self.host.ensure_local_embedding=AsyncMock(side_effect=started)
+        await self.host.watch_local_embedding()
+        self.host.ensure_local_embedding.assert_awaited_once()
 
     async def test_friends_and_groups_can_reply_before_owner_greeting(self):
         for user,group in ((2,False),(1,True)):
@@ -166,6 +238,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         async def connected_reader(_):
             self.host.stop.set()
         self.host.health = AsyncMock()
+        self.host.settings_control = AsyncMock()
         self.host.startup = AsyncMock()
         self.host.read = connected_reader
         self.host.role.close = AsyncMock()

@@ -236,3 +236,29 @@ class MediaAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.declarations[0]['unrecognized']=True
         with self.assertRaises(ValueError):
             self.make_service()
+
+    def test_runtime_upgrade_requires_explicit_old_digest_and_same_model_and_version(self):
+        reference=self.f.media.register(self.f.scope,self.f.event.id,'voice-reference','audio',wav_bytes(),'audio/wav')
+        self.f.voices.register(dict(id='third-voice',engine='fixture-speech',provider_id='third-speech',
+            reference_asset_id=reference['id'],parameters=dict(tone=440)),self.f.scope)
+        old_digest=self.service.adapters.resolve('speech')['digest']
+        path=self.root/'installed/speech_adapter.py'
+        path.write_text(path.read_text('utf-8')+'\n# runtime-only change\n',encoding='utf-8')
+        self.service=self.make_service()
+        proposal=dict(kind='speech',voice_id='third-voice',text='A synthetic sentence')
+        with self.assertRaises(SessionFailure):
+            self.service.prepare(self.f.scope,proposal)
+        self.declarations[1]['runtime_compatible_digests']=[old_digest]
+        self.service=self.make_service()
+        prepared=self.service.prepare(self.f.scope,proposal)
+        self.assertNotEqual(prepared['_adapter']['digest'],old_digest)
+        record=self.f.voices.local_record('third-voice',1,self.f.scope)
+        self.assertEqual(record['provider_digest'],old_digest)
+        self.declarations[1]['model_version']='another-model'
+        self.service=self.make_service()
+        with self.assertRaises(SessionFailure):
+            self.service.prepare(self.f.scope,proposal)
+        self.declarations[1].update(model_version='synthetic-speech-v1',adapter_version='2')
+        self.service=self.make_service()
+        with self.assertRaises(SessionFailure):
+            self.service.prepare(self.f.scope,proposal)

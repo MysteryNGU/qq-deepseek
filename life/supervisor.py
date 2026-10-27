@@ -103,6 +103,9 @@ class HostSupervisor:
         self.started = 0.0
         self.failures = 0
         self.retry_after = 0.0
+        self._last_health = None
+        self._channel_started = None
+        self.health_failure = ''
 
     def start(self):
         if self.tree is not None:
@@ -110,6 +113,8 @@ class HostSupervisor:
         from supervise import validate_data_compatibility
         validate_data_compatibility(self.controller.source,self.config)
         self.token = uuid.uuid4().hex
+        self._last_health = None
+        self._channel_started = None
         self.health_path.unlink(missing_ok=True)
         env = dict(os.environ, QQ_WORKER_TOKEN=self.token, QQ_WORKER_HEALTH=str(self.health_path))
         self.tree = ProcessTree([sys.executable, "-B", str(self.controller.source / "bot.py"),
@@ -157,14 +162,34 @@ class HostSupervisor:
         if self.tree is None or self.tree.process.poll() is not None:
             return "failed"
         try:
-            health = json.loads(self.health_path.read_text(encoding="utf-8"))
-            if (health.get("token") != self.token or not self.tree.owns_pid(health.get("pid"))
-                    or not -5 <= time.time() - float(health["at"]) <= 20):
-                raise ValueError("stale_health")
+            try:
+                health = json.loads(self.health_path.read_text(encoding="utf-8"))
+            except OSError:
+                # A Windows sharing lock must not kill a healthy paid stream.
+                # Reuse only a previously authenticated sample, under exactly
+                # the same ownership and 20-second freshness checks below.
+                if self._last_health is None:
+                    self.health_failure='heartbeat_read_unavailable'
+                    raise
+                health=self._last_health
+            if health.get('token')!=self.token:
+                self.health_failure='heartbeat_token_mismatch'
+                raise ValueError('invalid_health')
+            if not self.tree.owns_pid(health.get('pid')):
+                self.health_failure='heartbeat_pid_not_owned'
+                raise ValueError('invalid_health')
+            if not -5<=time.time()-float(health['at'])<=20:
+                self.health_failure='heartbeat_expired'
+                raise ValueError('stale_health')
+            self._last_health=health
+            self.health_failure=''
             if health.get('channel_connected') is False:
                 return 'channel_offline'
+            if self._channel_started is None:
+                self._channel_started=time.monotonic()
             if health.get('cognition_ready') is False:
-                return 'starting' if time.monotonic()-self.started<self.startup_timeout else 'failed'
+                self.health_failure='cognition_not_ready'
+                return 'starting' if time.monotonic()-self._channel_started<self.startup_timeout else 'failed'
             # Startup stability does not establish behavior or improvement.
             return "observed" if int(health.get("completed_turns", 0)) >= 3 else "evidence_pending"
         except (OSError, ValueError, KeyError, TypeError):
@@ -185,7 +210,7 @@ class HostSupervisor:
                 code = self.tree.process.poll()
                 ran = time.monotonic() - self.started
                 log.error('Bot 健康检查失败 pid=%s exit_code=%s uptime=%.1fs reason=%s',
-                          self.tree.process.pid,code,ran,'process_exited' if code is not None else 'heartbeat_or_cognition_unhealthy')
+                          self.tree.process.pid,code,ran,'process_exited' if code is not None else self.health_failure or 'heartbeat_or_cognition_unhealthy')
                 self.failures = 0 if code == 42 or ran >= 60 else self.failures + 1
                 self.stop()
                 self.retry_after = time.monotonic() + (60 if self.failures>=3 else min(30, 2 ** min(self.failures, 5)))

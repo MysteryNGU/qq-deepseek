@@ -25,7 +25,7 @@ from .delivery import DeliveryNotSent
 
 log = logging.getLogger(__name__)
 dialogue = logging.getLogger('dialogue')
-ROLE_RUNTIME_VERSION = '2026.10.24.5'
+ROLE_RUNTIME_VERSION = '2026.10.27.15'
 
 
 def runtime_version():
@@ -34,7 +34,9 @@ def runtime_version():
 
 def source_signature(root):
     checksum = hashlib.sha256()
-    for path in sorted([*root.glob('*.py'),*(root/'life').rglob('*.py'),*(root/'life').rglob('*.json')]):
+    for path in sorted([*root.glob('*.py'),*(root/'life').rglob('*.py'),*(root/'life').rglob('*.json'),
+                        *(root/'life/settings_ui').glob('*'),
+                        *root.glob('scripts/codex_consult.py')]):
         if not path.is_symlink() and root in path.resolve().parents:
             checksum.update(path.relative_to(root).as_posix().encode()+b'\0'+path.read_bytes())
     return checksum.hexdigest()
@@ -56,17 +58,24 @@ def setup_logging(root):
 class RoleHost:
     def __init__(self,cfg,root,*,transport=None,bridge=None):
         self.cfg,self.root = cfg,Path(root).resolve()
+        from .settings import fingerprint
+        self.settings_revisions=dict(config=fingerprint(Path(getattr(cfg,'_source_path',self.root/'config.toml'))),dynamics=fingerprint(self.root/'life-dynamics.json'))
+        if cfg.consult_config:self.settings_revisions['consult']=fingerprint(self.root/cfg.consult_config)
+        if cfg.local_media.get('preset_manifest'):self.settings_revisions['voices']=fingerprint(self.root/cfg.local_media['preset_manifest'])
         behavior_path = self.root/'life-dynamics.json'
         behavior = json.loads(behavior_path.read_text('utf-8')) if behavior_path.is_file() else {}
+        from .memory_index import IndexConfig
         self.life = LifeRuntime(self.root/cfg.life_db,cfg.life_agent,
-            LifeConfig(drives=DriveConfig.from_mapping(cfg.life_dynamics),relationship_owner=str(cfg.owner),relations=behavior.get('relations')))
+            LifeConfig(memory_index=IndexConfig(**getattr(cfg,'memory_index',{})),experience=getattr(cfg,'experience',{}),drives=DriveConfig.from_mapping(cfg.life_dynamics),relationship_owner=str(cfg.owner),relations=behavior.get('relations')))
         self.life.runtime_info = dict(version=runtime_version(),source_signature=source_signature(self.root))
-        from .persona import ensure_audience_sections
-        ensure_audience_sections(self.root/cfg.persona,self.root/'personas/public.md')
+        from .persona_files import PersonaFiles
+        PersonaFiles(self.root,cfg).migrate()
         self.life.persona.activate(self.root/cfg.persona)
         self.bridge = bridge or DshBridge(cfg,self.root)
         self.ws = None
         self._rpc = {}
+        saved=self.life.repo._one('SELECT v FROM meta WHERE k=?',('onebot_network:'+self.life.agent_id,))
+        self.qq_network=json.loads(saved['v']) if saved else dict(blocked_until=0,reason=None)
         self._tasks = set()
         self.stop = asyncio.Event()
         self.exit_code = 0
@@ -75,6 +84,9 @@ class RoleHost:
         self.boot_event_id = None
         self.accept_after = time.time()
         self.started_role = False
+        from .local_embedding import LocalEmbeddingProcess
+        self.local_embedding=LocalEmbeddingProcess(self.root,getattr(cfg,'local_embedding',{}),getattr(cfg,'embedding',{}))
+        self._embedding_start_lock=asyncio.Lock()
         self.role_ready = asyncio.Event()
         self.media = MediaService(self.life,self.root/'data'/'media',transport or self.call,
             local_roots=[self.root/'napcat',self.root/'napcat-onekey',*cfg.media_local_roots],
@@ -84,6 +96,8 @@ class RoleHost:
         self.expressions = Expressions(self.life,self.media,self.voices,transport or self.call,
             typing_cps=cfg.typing_chars_per_second,paste_threshold=cfg.paste_threshold)
         self.role = RoleAgent(self.life,self.bridge,cfg,self.root,self.send,self.media,self.voices)
+        self.role.experience_channel_ready=lambda:(self.ws is not None and self.role_ready.is_set()
+            and self.qq_network.get('blocked_until',0)<=time.time())
         from .local_media import LocalMedia
         self.local_media = LocalMedia(self.life,self.media,self.voices,cfg,self.root,notify=self.role.ingest)
         self.role.local_media = self.local_media
@@ -109,6 +123,41 @@ class RoleHost:
         return result
 
     async def call(self,action,params):
+        from .delivery import SEND_ACTIONS
+        from .onebot_receipt import failure_reason
+        if action in SEND_ACTIONS:
+            if self.qq_network.get('blocked_until',0)>time.time():
+                raise DeliveryNotSent('qq_network_recovery_pending_before_send')
+            try:
+                status=await self._call_raw('get_status',{})
+            except Exception:
+                raise DeliveryNotSent('qq_status_unavailable_before_send') from None
+            state=status.get('data') if isinstance(status,dict) else None
+            if (not isinstance(state,dict) or state.get('online') is not True or state.get('good') is False):
+                self._qq_network_failed('qq_account_offline')
+                raise DeliveryNotSent('qq_account_offline_before_send')
+        response=await self._call_raw(action,params)
+        if action in SEND_ACTIONS:
+            failure=failure_reason(response)
+            if failure and failure['reason']=='qq_network_unavailable':
+                self._qq_network_failed(failure['reason'])
+            elif (isinstance(response,dict) and response.get('retcode')==0
+                    and isinstance(response.get('data'),dict) and response['data'].get('message_id') is not None):
+                self.qq_network=dict(blocked_until=0,reason=None,last_confirmed_at=time.time())
+                self._save_qq_network()
+        return response
+
+    def _save_qq_network(self):
+        with self.life.repo.tx():
+            self.life.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',
+                ('onebot_network:'+self.life.agent_id,json.dumps(self.qq_network)))
+
+    def _qq_network_failed(self,reason):
+        self.life.experience.system_pause('channel_unavailable')
+        self.qq_network=dict(blocked_until=time.time()+30,reason=reason,last_failure_at=time.time())
+        self._save_qq_network()
+
+    async def _call_raw(self,action,params):
         ws = self.ws
         if ws is None:
             raise DeliveryNotSent('onebot_disconnected_before_send')
@@ -150,6 +199,7 @@ class RoleHost:
         event,created = accept_onebot(self.life,raw)
         if not created:
             return
+        self.role.people.observe(event)
         dialogue.info('[收到][%s][%s] %s',event.scope.conversation_id,event.actor_id,event.text or '[媒体消息]')
         if not self.role_ready.is_set():
             # Persist the actual input before waiting for DSH initialization.
@@ -190,6 +240,7 @@ class RoleHost:
             return
         self.started_role = True
         try:
+            await self.ensure_local_embedding()
             scope = self.life.scope('qq:private:'+str(self.cfg.owner),str(self.cfg.owner))
             event,_ = self.life.ingest(scope,'startup','inference',
                 '程序刚启动。请以自己的自然语气跟主人打个招呼。只忽略进程启动前的离线消息；启动期间收到的新消息应正常理解和回应。',
@@ -199,13 +250,15 @@ class RoleHost:
             self.life.startup_greeted = False
             if self.local_media.settings.enabled:
                 await asyncio.to_thread(self.local_media.import_presets,scope)
+                if self.cfg.local_media.get('preset_manifest'):
+                    from .settings import fingerprint
+                    self.settings_revisions['voices']=fingerprint(self.root/self.cfg.local_media['preset_manifest'])
             await self.role.start()
             await self.local_media.start()
             self.role_ready.set()
             log.info('主角色已启动 provider=%s model=%s profile=sdk persona=%s',
                      self.bridge.provider,self.bridge.model,self.life.persona.current().digest)
             await self.role.ingest(event)
-            self.role.schedule(scope,None,self.role.resources.idle_base_seconds,'空闲时觉察自己的状态与想法，自行选择接下来做什么，也可以休息。',kind='idle_probe')
         except BaseException:
             self.started_role = False
             raise
@@ -223,10 +276,19 @@ class RoleHost:
                     temporary.write_text(json.dumps(dict(token=os.environ.get('QQ_WORKER_TOKEN',''),pid=os.getpid(),
                         at=time.time(),completed_turns=max(0,completed-self._health_baseline),
                         channel_connected=self.ws is not None,cognition_ready=self.role.running,
-                        extensions=dict(capability_protocol=self.role.capability_protocol,media_adapter_protocol=self.role.media_adapter_protocol),
+                        qq_network=self.qq_network,
+                        spending=self.role.spending.snapshot(),
+                        memory_index=self.life.memory_index.status(diagnostic=True),
+                        local_embedding=self.local_embedding.status(),
+                        memory_organize=self.role.memory_worker.status(),
+                        profile_backfill=self.role.profile_worker.status(),
+                        extensions=dict(capability_protocol=self.role.capability_protocol,media_adapter_protocol=self.role.media_adapter_protocol,
+                            experience_protocol=self.role.experience_protocol,
+                            consult_protocol=self.role.consult_protocol,consult_enabled=self.role.consult.enabled,
+                            runtime_context_policy=getattr(self.bridge,'runtime_context_policy','')),
                         continuity=dict(enabled=self.role.continuity_ready,protocol=self.role.continuity_protocol,
                             dsh_adapter_version=getattr(self.bridge,'loaded_adapter_version','')),
-                        runtime=self.life.runtime_info)),encoding='utf-8')
+                        settings_revisions=self.settings_revisions,runtime=self.life.runtime_info)),encoding='utf-8')
                     temporary.replace(path)
                     next_warning = 0
                 except Exception:
@@ -240,7 +302,9 @@ class RoleHost:
 
     async def run(self):
         self.spawn(self.health(),'worker-health')
+        self.spawn(self.settings_control(),'settings-control')
         self.spawn(self.delivery_recovery(),'delivery-recovery')
+        self.spawn(self.watch_local_embedding(),'local-embedding-watch')
         failures,next_report = 0,0
         try:
             while not self.stop.is_set():
@@ -274,6 +338,7 @@ class RoleHost:
                         task.cancel()
                     await asyncio.gather(*waits,return_exceptions=True)
                     self.ws = None
+                    self.life.experience.system_pause('channel_unavailable')
                     for future in self._rpc.values():
                         if not future.done():
                             future.set_exception(ConnectionError('onebot_disconnected'))
@@ -285,13 +350,54 @@ class RoleHost:
             await asyncio.gather(*list(self._tasks),return_exceptions=True)
             await self.local_media.close()
             await self.role.close()
+            await asyncio.to_thread(self.local_embedding.close)
             self.life.close()
         return self.exit_code
+
+    async def settings_control(self):
+        from .settings import atomic_write
+        folder=self.root/'data/settings';request_path=folder/'restart.request.json'
+        while not self.stop.is_set():
+            try:
+                if request_path.exists():
+                    request=json.loads(request_path.read_text('utf-8'))
+                    if request.get('action')!='restart_when_idle' or time.time()-float(request.get('created',0))>600:
+                        request_path.unlink(missing_ok=True)
+                    else:
+                        busy=self.life.repo._one("SELECT 1 FROM agent_sessions s JOIN agent_events e USING(session_id) WHERE s.status='current' AND json_extract(e.payload,'$.type')='turn/start' AND e.seq=(SELECT MAX(a.seq) FROM agent_events a WHERE a.session_id=s.session_id AND json_extract(a.payload,'$.type') IN ('turn/start','turn/end')) LIMIT 1")
+                        busy=busy or self.life.repo._one("SELECT 1 FROM role_operations WHERE status='dispatched' LIMIT 1") or self.life.repo._one("SELECT 1 FROM work_jobs WHERE kind='local_media' AND status='running' LIMIT 1")
+                        # Persisted turns belong to the previous process until the
+                        # role starts recovering them; they cannot block offline settings.
+                        if not self.started_role or not busy:
+                            atomic_write(folder/'restart.receipt.json',json.dumps(dict(request_id=request['id'],state='restarting',at=time.time())))
+                            request_path.unlink(missing_ok=True);self.exit_code=42;self.stop.set()
+            except (OSError,ValueError,KeyError):log.warning('设置重启请求暂未处理')
+            await asyncio.sleep(1)
+
+    async def watch_local_embedding(self):
+        while self.local_embedding.config.enabled and not self.stop.is_set():
+            if self.local_embedding.status()['state']=='unavailable':
+                start=asyncio.create_task(self.ensure_local_embedding())
+                try:
+                    await asyncio.shield(start)
+                except asyncio.CancelledError:
+                    await start
+                    raise
+                except Exception:
+                    log.warning('本机向量服务暂不可用，保留原始经历及未决调用，稍后恢复')
+            try:
+                await asyncio.wait_for(self.stop.wait(),5)
+            except asyncio.TimeoutError:
+                pass
+
+    async def ensure_local_embedding(self):
+        async with self._embedding_start_lock:
+            await asyncio.to_thread(self.local_embedding.start)
 
     async def delivery_recovery(self):
         while not self.stop.is_set():
             try:
-                if self.ws is not None and self.boot_ready and self.role.running:
+                if self.ws is not None and self.role.running and self.qq_network.get('blocked_until',0)<=time.time():
                     await self.role.review_deliveries()
             except Exception:
                 log.exception('未送达表达复核暂未完成，保留记录并稍后重试')

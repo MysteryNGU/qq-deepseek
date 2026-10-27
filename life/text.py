@@ -28,14 +28,14 @@ def terms(text: str) -> list[str]:
         if w not in seen:
             seen.add(w)
             out.append(w)
-    han = _HAN.findall(s)
-    if len(han) == 1:
-        out.append(han[0])
-    for a, b in zip(han, han[1:]):
-        bigram = a + b
-        if bigram not in seen:
-            seen.add(bigram)
-            out.append(bigram)
+    # Punctuation/whitespace are real word boundaries. Joining all Han
+    # characters manufactured matches such as “甲，乙” -> “甲乙”.
+    for run in re.findall(r'[\u4e00-\u9fff]+', s):
+        pieces = [run] if len(run) == 1 else [a+b for a, b in zip(run, run[1:])]
+        for piece in pieces:
+            if piece not in seen:
+                seen.add(piece)
+                out.append(piece)
     return out
 
 

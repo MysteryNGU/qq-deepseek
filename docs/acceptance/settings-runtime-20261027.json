@@ -1,0 +1,38 @@
+{
+  "at": "2026-10-27T08:46:06.132671+08:00",
+  "runtime": {
+    "version": "2026.10.27.15",
+    "source_signature": "cd8ab7393afda057497e407636e072717029a754acc9c79eba7b81f1103c9cb3"
+  },
+  "source_matches": true,
+  "health_age_seconds": 2.01,
+  "online": true,
+  "qq_connected": false,
+  "cognition_ready": false,
+  "pending_restart": false,
+  "profile_backfill": {
+    "enabled": true,
+    "pending_messages": 10,
+    "batches": {},
+    "separate_from_hourly_organizer": true
+  },
+  "settings_field_count": 53,
+  "web_checks": [
+    "local_login",
+    "invalid_json_blocked_after_navigation",
+    "valid_save",
+    "saved_pending_restart",
+    "restart_receipt",
+    "effective_revision_matches"
+  ],
+  "restart_state": "restarting",
+  "real_qq_validation": "deferred_by_user",
+  "fees_and_organizer_recovery": "cancelled_by_user",
+  "acceptance_scope": "basic_usable_offline",
+  "tests": {
+    "unit_tests": 693,
+    "unit_failures": 0,
+    "drive_checks": 42,
+    "drive_failures": 0
+  }
+}

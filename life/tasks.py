@@ -20,6 +20,8 @@ class TaskService:
                             goal=goal, status='active')
             elif goal is not None:
                 task['goal'] = goal
+            if task.get('status') in {'done','cancelled'} and links.get('status',task['status'])!=task['status']:
+                raise ValueError('terminal_task_requires_explicit_transition')
             task.update(links)
             self.repo._exec('INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)',
                             ('action_task:' + ref, json.dumps(task, ensure_ascii=False)))
@@ -59,11 +61,17 @@ class TaskService:
             task = self.get(ref, scope_id)
             if task is None:
                 raise ValueError('unknown_scoped_task')
+            if task.get('merged_into') and status!='cancelled':
+                raise ValueError('merged_task_cannot_resume')
             if status == 'active' and (task.get('status') in {'cancelled','done'} or
                     (task.get('status')=='paused' and task.get('pause_owner')=='user') or
                     (task.get('status')=='waiting' and task.get('wait_reason')=='user_reply')) and not user_resume:
                 raise ValueError('explicit_resume_required')
             task.update(status=status, transition_cause=cause, updated_at=time.time())
+            if status in {'done','cancelled'}:
+                task['closed_after_ingest_seq'] = self.repo._one(
+                    'SELECT COALESCE(MAX(ingest_seq),0) AS n FROM events WHERE agent_id=? AND conversation_id=?',
+                    (scope_id.split('|',1)[0],task['conversation_id']))['n']
             self.repo._exec('UPDATE meta SET v=? WHERE k=?',
                             (json.dumps(task, ensure_ascii=False), 'action_task:' + ref))
             if task.get('intent_id'):

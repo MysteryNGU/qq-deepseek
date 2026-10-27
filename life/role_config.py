@@ -12,6 +12,13 @@ from .message_layout import DEFAULT_PASTE_THRESHOLD
 class Config:
     name: str = '大肥鱼'
     persona: str = 'persona.md'
+    public_persona: str = 'personas/public.md'
+    unified_persona: bool = False
+    same_person_group_recall: bool = False
+    profile_review_enabled: bool = False
+    activity: dict = field(default_factory=dict)
+    profile_backfill: dict = field(default_factory=dict)
+    media_library: dict = field(default_factory=dict)
     ws_url: str = 'ws://127.0.0.1:3001'
     ws_token: str = ''
     api_key: str = ''
@@ -25,9 +32,17 @@ class Config:
     life_db: str = 'data/life.db'
     life_agent: str = 'default'
     resource_policy: dict = field(default_factory=dict)
+    spending_policy: dict = field(default_factory=dict)
+    memory_index: dict = field(default_factory=dict)
+    embedding: dict = field(default_factory=dict)
+    local_embedding: dict = field(default_factory=dict)
+    memory_organize: dict = field(default_factory=dict)
+    experience: dict = field(default_factory=dict)
     continuity_enabled: bool = False
+    acknowledge_before_work: bool = True
     capability_policies: list[dict] = field(default_factory=list)
     local_media: dict = field(default_factory=dict)
+    consult_config: str = ''
     life_dynamics: dict = field(default_factory=dict)
     dsh_root: str = '../dsh-bridge-work'
     dsh_home: str = '../dsh-qq-home'
@@ -59,6 +74,12 @@ def load_config(path: Path):
     cfg._source_path=str(Path(path).resolve())
     if type(cfg.continuity_enabled) is not bool:
         raise ValueError('continuity_enabled_requires_boolean')
+    if type(cfg.acknowledge_before_work) is not bool:
+        raise ValueError('acknowledge_before_work_requires_boolean')
+    if type(cfg.unified_persona) is not bool:
+        raise ValueError('unified_persona_requires_boolean')
+    if type(cfg.same_person_group_recall) is not bool or type(cfg.profile_review_enabled) is not bool:
+        raise ValueError('person_continuity_requires_boolean')
     from .resource_policy import ResourcePolicy
     if cfg.idle_seconds is not None:
         import logging
@@ -69,6 +90,24 @@ def load_config(path: Path):
         cfg.resource_policy.setdefault('idle_base_seconds',previous_idle)
         logging.getLogger(__name__).warning('旧 idle_seconds 已映射为 resource_policy.idle_base_seconds；请迁移配置')
     cfg.resource_policy = ResourcePolicy.parse(cfg.resource_policy).__dict__.copy()
+    from .activity_driver import ActivityConfig
+    cfg.activity = ActivityConfig.parse(cfg.activity).__dict__.copy()
+    from .profile_backfill import ProfileBackfillConfig
+    cfg.profile_backfill = ProfileBackfillConfig.parse(cfg.profile_backfill).__dict__.copy()
+    from .media_library import MediaLibraryConfig
+    cfg.media_library = MediaLibraryConfig.parse(cfg.media_library).__dict__.copy()
+    from .spending import SpendingPolicy
+    cfg.spending_policy = SpendingPolicy.parse(cfg.spending_policy).__dict__.copy()
+    from .memory_index import IndexConfig
+    from .embedding import EmbeddingConfig
+    cfg.memory_index = IndexConfig(**cfg.memory_index).__dict__.copy()
+    cfg.embedding = EmbeddingConfig.parse(cfg.embedding).__dict__.copy()
+    from .local_embedding import LocalEmbeddingConfig
+    cfg.local_embedding = LocalEmbeddingConfig.parse(cfg.local_embedding).__dict__.copy()
+    from .memory_worker import OrganizeConfig
+    cfg.memory_organize = OrganizeConfig.parse(cfg.memory_organize).__dict__.copy()
+    from .experience import ExperienceConfig
+    cfg.experience = ExperienceConfig.parse(cfg.experience).__dict__.copy()
     from .local_media_config import LocalMediaConfig
     cfg.local_media = LocalMediaConfig.parse(cfg.local_media).__dict__.copy()
     cfg.api_key = os.environ.get('DEEPSEEK_API_KEY',cfg.api_key)

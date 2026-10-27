@@ -112,11 +112,15 @@ class AdapterRegistry:
         if len(ids)!=len(set(ids)):
             raise ValueError('duplicate_media_provider_id')
         for declaration in explicit:
-            if not isinstance(declaration,dict) or set(declaration)-{'provider_id','module','path','adapter_version','model_version','config','environment','enabled'}:
+            if not isinstance(declaration,dict) or set(declaration)-{'provider_id','module','path','adapter_version','model_version','config','environment','enabled','runtime_compatible_digests'}:
                 raise ValueError('invalid_media_provider_declaration')
             if declaration.get('enabled',True) is False:
                 continue
             provider=dict(declaration)
+            compatible=provider.get('runtime_compatible_digests',[])
+            if not isinstance(compatible,list) or any(not isinstance(value,str) or len(value)!=64 or
+                    any(c not in '0123456789abcdef' for c in value) for value in compatible):
+                raise ValueError('invalid_runtime_compatible_digests')
             provider.setdefault('config',{})
             if not isinstance(provider['config'],dict):
                 raise ValueError('media_provider_config_requires_object')

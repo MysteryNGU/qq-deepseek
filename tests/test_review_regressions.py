@@ -318,7 +318,7 @@ class ReviewRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(f.life.delivery.settle(rows[1]['id'],rows[1]['token'],receipt))
         self.assertEqual(f.life.repo._one("SELECT COUNT(*) AS n FROM events WHERE source_kind='self_output'")['n'],2)
 
-    async def test_shared_growth_updates_projection_while_private_section_stays_private(self):
+    async def test_public_growth_updates_only_the_independent_public_source(self):
         f = self.f
         source = '<!-- persona:public -->\ncurious\n<!-- /persona:public -->\n'\
             '<!-- persona:private -->\nOWNER_SECRET\n<!-- /persona:private -->\n'
@@ -332,11 +332,13 @@ class ReviewRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('OWNER_SECRET',context)
         self.assertIn('OWNER_SECRET',(f.root/'persona.md').read_text('utf-8'))
         derived = (f.root/'personas/public.md').read_text('utf-8')
-        self.assertIn('sha256=',derived)
+        self.assertEqual(derived,'New interest: astronomy')
         self.assertNotIn('OWNER_SECRET',derived)
+        self.assertEqual((f.root/'persona.md').read_text('utf-8'),'OWNER_SECRET\n')
+        self.assertNotIn('astronomy',f.role.stable_context(f.scope,{}))
         with self.assertRaises(SessionFailure):
             await SelfChange(f.life,f.cfg,f.root).apply(f.scope,
-                dict(target='persona',content='Accidentally removed audience markers'),'bad-audience-edit')
+                dict(target='persona',content=source),'bad-audience-edit')
 
     async def test_relation_read_distinguishes_defaults_from_actual_experiences(self):
         f = self.f

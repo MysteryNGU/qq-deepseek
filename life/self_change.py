@@ -31,6 +31,10 @@ class SelfChange:
         self.repo.db.executescript(SCHEMA)
         self.lock = asyncio.Lock()
         self.behavior_path = self.root / 'life-dynamics.json'
+        from .persona_files import PersonaFiles
+        self.persona_files = PersonaFiles(self.root,cfg)
+        if self.persona_files.private.is_file():
+            self.persona_files.migrate()
         database = Path(getattr(cfg,'life_db','data/life.db'))
         self.control_dir = (database if database.is_absolute() else self.root/database).parent/'life-control'
 
@@ -116,8 +120,7 @@ class SelfChange:
         target = (self.root / relative).resolve()
         if self.root not in target.parents:
             raise SessionFailure('scope_mismatch','修改路径必须在项目内')
-        persona = (self.root / self.cfg.persona).resolve()
-        if target not in {persona,self.behavior_path} and not (
+        if target not in {self.persona_files.private,self.persona_files.public,self.behavior_path} and not (
                 target.parent == (self.root/'skills').resolve() and target.suffix=='.md'):
             raise SessionFailure('scope_mismatch','此入口只修改当前人格、动力参数和 skill；代码使用 code 目标')
         if target.is_symlink():
@@ -125,7 +128,8 @@ class SelfChange:
         return target
 
     async def apply(self, scope, proposal, change_id, *, require_skill_baseline=False):
-        if scope.participant_id != str(self.cfg.owner):
+        from .persona_files import owner_private
+        if scope.participant_id != str(self.cfg.owner) or not owner_private(scope,self.cfg.owner):
             raise SessionFailure('scope_mismatch','全局自我修改属于主人会话与自主生活')
         if not isinstance(proposal,dict):
             raise SessionFailure('invalid_input','自我修改需要结构化参数')
@@ -162,10 +166,9 @@ class SelfChange:
             if proposal.get('target') in {'dsh','worker','plugin'}:
                 from .dsh_changes import queue_change
                 return queue_change(self,scope,proposal,change_id,checksum)
-            if proposal.get('target')=='persona_public':
-                from .persona import replace_public_persona
-                candidates = [dict(path=self.cfg.persona,content=replace_public_persona(
-                    (self.root/self.cfg.persona).read_text('utf-8'),str(proposal['content'])))]
+            if proposal.get('target')=='persona_public' and not proposal.get('files'):
+                candidates = [dict(path=self.persona_files.public.relative_to(self.root).as_posix(),
+                    content=str(proposal['content']),base_hash=proposal.get('base_hash'))]
             elif proposal.get('target') == 'dynamics':
                 candidates = [dict(path='life-dynamics.json',content=canonical(self.behavior(proposal.get('patch',{}))))]
             elif proposal.get('target') == 'skill':
@@ -200,6 +203,9 @@ class SelfChange:
             manifest = []
             for item in candidates:
                 path = self.path(item['path'])
+                expected_persona = self.persona_files.public if target=='persona_public' else self.persona_files.private
+                if target in {'persona','persona_public'} and path!=expected_persona:
+                    raise SessionFailure('scope_mismatch','人格目标只允许修改对应的独立文件')
                 current = file_hash(path)
                 is_method=path.parent==(self.root/'skills').resolve()
                 if is_method and require_skill_baseline and proposal.get('target')!='skill':
@@ -221,10 +227,12 @@ class SelfChange:
                         raise SessionFailure('invalid_input','方法正文必须是有效的 UTF-8 文本') from error
                 if path == self.behavior_path:
                     self.behavior(candidate=json.loads(content))
-                if path == (self.root/self.cfg.persona).resolve():
+                if path in {self.persona_files.private,self.persona_files.public}:
                     from .persona import compile_persona
-                    if '<!-- persona:private -->' in path.read_text('utf-8') and '<!-- persona:private -->' not in content:
-                        raise SessionFailure('invalid_input','当前人格含私密分区，完整修改须保留分区；普通成长可用 persona_public 修改公共部分')
+                    try:
+                        self.persona_files.validate(content)
+                    except ValueError as error:
+                        raise SessionFailure('invalid_input',str(error)) from error
                     compile_persona(path,source_text=content)
                 manifest.append(dict(path=path.relative_to(self.root).as_posix(),base_hash=current,
                     content=content,target_hash=hashlib.sha256(content.encode()).hexdigest()))
@@ -248,6 +256,14 @@ class SelfChange:
             current = file_hash(path)
             if current not in {item['base_hash'],item['target_hash']}:
                 raise SessionFailure('stale_context','激活期间文件被另一个写入者修改',path=item['path'])
+            if path in {self.persona_files.private,self.persona_files.public}:
+                try:
+                    self.persona_files.validate(item['content'])
+                except ValueError as error:
+                    raise SessionFailure('invalid_input','旧人格候选仍使用混合分区，请读取独立文件后重新提交') from error
+        for item in manifest:
+            path = self.path(item['path'])
+            current = file_hash(path)
             if current != item['target_hash']:
                 path.parent.mkdir(parents=True,exist_ok=True)
                 temporary = path.with_name(path.name+'.activating')
@@ -255,8 +271,6 @@ class SelfChange:
                     output.write(item['content']); output.flush(); os.fsync(output.fileno())
                 os.replace(temporary,path)
         spec = self.life.persona.activate(self.root/self.cfg.persona)
-        from .persona import public_persona
-        public_persona(self.root/self.cfg.persona,self.root/'personas/public.md')
         behavior_hash = self.load_behavior(self.life.scope(scope_id.split('|',1)[1],str(self.cfg.owner)))
         effective = {item['path']:file_hash(self.path(item['path'])) for item in manifest}
         if any(effective[item['path']]!=item['target_hash'] for item in manifest):
@@ -268,6 +282,7 @@ class SelfChange:
                 if item['path'].startswith('skills/'):
                     method_versions.append(methods.reconcile(Path(item['path']).name,item.get('method_metadata'),item['target_hash']))
         receipt = dict(change_id=change['id'],phase='applied',persona_hash=spec.digest,
+            public_persona_hash=file_hash(self.persona_files.public),
             behavior_hash=behavior_hash,effective=effective,behavior_validated=False)
         if method_versions:
             receipt['methods']=[dict(ref='method:bot:'+m['id'],hash=m['body_hash'],version=m['version'],visibility=m['visibility']) for m in method_versions if m]
@@ -284,7 +299,14 @@ class SelfChange:
                 (canonical(dict(phase='outcome_unknown',applied=False,behavior_validated=False,
                     reason='宿主在 DSH 修改期间退出；需核对原修改记录和源码，禁止盲重试。')),))
         for row in self.repo._all("SELECT * FROM self_changes WHERE phase IN ('prepared','activating') ORDER BY created"):
-            self.activate(dict(row))
+            try:
+                self.activate(dict(row))
+            except SessionFailure as error:
+                if error.code not in {'stale_context','invalid_input'}:
+                    raise
+                with self.repo.tx():
+                    self.repo._exec("UPDATE self_changes SET phase='rejected',receipt=?,updated=? WHERE id=?",
+                        (canonical(dict(change_id=row['id'],phase='rejected',applied=False,**error.receipt())),time.time(),row['id']))
         self.load_behavior()
 
     def history(self,scope,limit=20):

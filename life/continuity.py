@@ -7,6 +7,7 @@ import time
 from .agent_session import SessionFailure, canonical, digest
 from .resource_policy import estimate_tokens
 from .text import terms
+from .memory_policy import interpretation_current, inference_expiry, reset_boundary, topic_key as resolve_topic
 
 
 class Continuity:
@@ -26,6 +27,8 @@ class Continuity:
             (ref, *scope.private_key, scope.audience_policy_id))
         if not row:
             raise SessionFailure('source_removed', '来源已移除或不属于本受众；请重新读取当前材料')
+        if self.repo.life_denied(scope,ref):
+            raise SessionFailure('not_available','此来源当前不可使用')
         event = self.repo.get_event(ref)
         seen = set() if seen is None else seen
         if ref in seen:
@@ -98,8 +101,8 @@ class Continuity:
                 raise SessionFailure('invalid_input','该引用不是念想或小结；普通记忆请使用 kind=memory')
         else:
             query_terms = list(dict.fromkeys(terms(query)))[:96]
-            query_filter = (' AND EXISTS(SELECT 1 FROM memory_terms WHERE memory_id=memories.id '
-                'AND term IN ('+','.join('?' for _ in query_terms)+'))') if query_terms else (' AND 0' if query else '')
+            query_filter = (" AND EXISTS(SELECT 1 FROM life_terms t JOIN life_resources r USING(resource_id) WHERE r.kind='memory' AND r.native_id=memories.id "
+                'AND t.source_version=r.source_version AND t.term IN ('+','.join('?' for _ in query_terms)+'))') if query_terms else (' AND 0' if query else '')
             rows = self.repo._all("SELECT id FROM memories WHERE agent_id=? AND conversation_id=? "
                 "AND audience_policy_id=? AND kind='interpretation' AND status IN ('active','disputed') "
                 "AND EXISTS(SELECT 1 FROM json_each(topic_tags) WHERE value IN "
@@ -108,13 +111,17 @@ class Continuity:
             values = []
             for row in rows:
                 try:
-                    values.append(self.memory(scope,row['id']))
+                    note = self.memory(scope,row['id'])
+                    if interpretation_current(self.repo,note,time.time()):
+                        values.append(note)
                 except SessionFailure:
                     continue
         result = [dict(ref=n.id, memory_id=n.id, version=n.version, status=n.status, text=n.summary,
+                     authority='interpretation',valid_until=n.valid_until,
+                     current=interpretation_current(self.repo,n,time.time()),
                      type='reflection' if 'continuity:reflection' in n.topic_tags else 'thought',
                      sources=[s.event_id for s in n.sources]) for n in values
-                if not query or set(terms(query)) & set(self.repo.memory_terms(n.id))]
+                if not query or set(terms(query)) & set(self.repo.resource_terms(n.id))]
         for note in result:
             row = self.repo._one("SELECT v FROM meta WHERE k LIKE 'continuity:expression:%' "
                 "AND json_extract(v,'$.scope_id')=? AND EXISTS(SELECT 1 FROM json_each(v,'$.refs') WHERE value=?) LIMIT 1",
@@ -152,7 +159,6 @@ class Continuity:
             if base.version!=p['base_version'] or base.status not in {'active','disputed'}:
                 raise SessionFailure('stale_context', '念想版本已变化；请重新读取后再归档')
             self.repo.update_memory(base.id,status='archived',version=base.version+1,updated_at=time.time())
-            self.repo._set_terms(base.id,[])
             return self.note_receipt(self.repo.get_memory(base.id),'archived')
         sources, derived = self.evidence(scope,proposal.get('sources',[]))
         signature = digest(dict(type=typ,text=text.strip(),sources=sources,base_ref=base_ref,
@@ -171,19 +177,34 @@ class Continuity:
         origin,_ = self.life.ingest(scope,'reflection' if typ=='reflection' else 'thought','inference',text.strip(),
             external_id='continuity:'+signature,source_event_ids=sources,
             payload=dict(continuity_type=typ,call_ref=call_key))
-        note = self.life.memory.remember(scope,'interpretation',text.strip(),[origin.id,*sources],
-            source_kind='inference',topic_tags=['continuity:'+typ],extra_terms=cues,
-            event_group_id='continuity:'+signature,supersedes_id=base.id if base else '',derived_from=derived)
+        tags = ['continuity:'+typ]
+        intent_ref = proposal.get('intent_ref')
+        if intent_ref:
+            task = self.role.tasks.get(intent_ref,scope.scope_id)
+            if not task or task['status'] != 'active':
+                raise SessionFailure('stale_context','临时念想需要当前仍有效的关联任务')
+            tags += ['intent:'+intent_ref,'intent-revision:'+str(task.get('revision',1))]
+        try:
+            note = self.life.memory.remember(scope,'interpretation',text.strip(),[origin.id,*sources],
+                source_kind='inference',topic_tags=tags,extra_terms=cues,
+                topic_key=(base.predicate or resolve_topic('',base.summary)) if base else proposal.get('topic_key',''),
+                valid_until=inference_expiry(proposal.get('lifetime_days'),now=time.time()),
+                event_group_id='continuity:'+signature,supersedes_id=base.id if base else '',derived_from=derived)
+        except ValueError as error:
+            if not str(error).startswith('interpretations_full:'):
+                raise
+            raise SessionFailure('interpretations_full',
+                '解释容量已满；用 life.read(kind=continuity,view=thoughts) 复核，合并替换重复主题或归档已结束项。休息无需 keep_thought。') from error
         if note.status=='redacted':
             raise SessionFailure('source_removed', '来源已失效，念想未保存；请重新读取材料')
         if base:
             self.repo.update_memory(base.id,status='superseded',version=base.version+1,updated_at=time.time())
-            self.repo._set_terms(base.id,[])
         return self.note_receipt(note,'saved')
 
     @staticmethod
     def note_receipt(note, result):
         return dict(note_ref=note.id,memory_id=note.id,version=note.version,status=note.status,
+                    valid_until=note.valid_until,authority='interpretation',
                     result=result,saved=result=='saved',archived=result=='archived',duplicate=result=='duplicate')
 
     def reflection_batch(self, scope, root, limit=12):
@@ -277,6 +298,9 @@ class Continuity:
                 coverage='partial' if any(json.loads(r['payload']).get('truncated') for r in results) else 'reported',
                 goal_verified=False,delivery='not_requested'))
             metadata = self.role.initiative.get('initiative:operation:'+row['id'])
+            if metadata and metadata.get('execution_state')=='settled':
+                items[-1].update(execution_state='settled',execution_code=metadata['execution_code'],
+                    summary='工具调用已结束；原操作效果仍需核对，不能当作成功或自动重放' if row['status']=='unknown' else '调用已中止')
             if metadata and metadata.get('coverage')=='partial':
                 items[-1]['coverage']='partial'
         jobs = self.repo._all('SELECT * FROM work_jobs WHERE scope_id=? AND id IN ('+
@@ -389,10 +413,36 @@ class Continuity:
             result['truncated'] = True
         return result
 
+    def review_due(self, scope, limit=3):
+        """Oldest unreviewed notes first, independent of retrieval relevance."""
+        candidates = self.notes(scope,limit=64)
+        now = time.time()
+        due = []
+        for note in candidates:
+            row = self.repo._one('SELECT v FROM meta WHERE k=?',('continuity:review:'+note['ref'],))
+            reviewed = json.loads(row['v']) if row else {}
+            at = reviewed.get('at',0) if reviewed.get('version')==note['version'] else 0
+            if now-at>=3600:
+                due.append((at,note))
+        due.sort(key=lambda pair:(pair[0],self.repo.get_memory(pair[1]['ref']).updated_at,pair[1]['ref']))
+        return [n for _,n in due[:limit]]
+
+    def retain_reviewed(self, scope, refs):
+        if not isinstance(refs,list) or len(refs)>5 or any(not isinstance(r,str) for r in refs):
+            raise SessionFailure('invalid_input','continuity_refs 最多 5 条已复核并决定保留的念头引用')
+        for ref in refs:
+            notes = self.notes(scope,ref=ref)
+            note = notes[0]
+            if note['status'] not in {'active','disputed'} or not note['current']:
+                raise SessionFailure('stale_context','该念头已归档或过期，请重读')
+            self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',('continuity:review:'+ref,
+                canonical(dict(version=note['version'],at=time.time()))))
+
     def context(self, scope, binding, required):
         policy = self.role.resources
         total = min(policy.memory_context_target_tokens,max(0,policy.dynamic_context_target_tokens-estimate_tokens(required)))
-        thoughts, activities = self.notes(scope,limit=5),self.activities(scope,5)
+        floor = reset_boundary(self.repo,scope)
+        activities = [a for a in self.activities(scope,5) if max(a['started_at'],a.get('result_at') or 0) >= floor]
         interests = [t for t in self.role.list_intents(scope,5) if t.get('kind')=='ongoing' and t['status']=='active']
         turn = self.role.turn_number(binding['session_id'])
         current = self.repo._all('SELECT e.payload FROM agent_inputs i JOIN events e ON e.id=i.input_id '
@@ -403,17 +453,16 @@ class Continuity:
             cues.append(json.loads(current[0]['payload']).get('text','')[:400])
         if interests:
             cues.append(' '.join([interests[0].get('goal',''),*interests[0].get('interest',{}).get('cues',[])]))
-        self_cues = [thoughts[0]['text']] if thoughts else []
-        if activities:
-            for ref in activities[0]['result_refs'][:1]:
-                self_cues.append(self.visible_event(scope,ref).text[:400])
-        if self_cues:
-            cues.append(' '.join(self_cues)[:600])
         cues = list(dict.fromkeys(c for c in cues if c))[:3]
+        # A thought may be previewed, but must not manufacture its own retrieval relevance.
+        review = self.review_due(scope)
+        thoughts = self.notes(scope,query=' '.join(cues),limit=5) if cues else []
+        thoughts = list({n['ref']:n for n in [*review,*thoughts]}.values())[:5]
         previews = []
         groups = [[dict(kind='interest',ref=i['ref'],text=i.get('checkpoint') or i['goal']) for i in interests],
-                  [dict(kind=n['type'],ref=n['ref'],text=n['text']) for n in thoughts],
-                  [dict(kind='activity',ref=a['ref'],phase=a['phase'],text=a['summary']) for a in activities]]
+                  [dict(kind=n['type'],ref=n['ref'],version=n['version'],text=n['text'],authority='interpretation') for n in thoughts],
+                  [dict(kind='activity',ref=a['ref'],phase=a['phase'],text=a['summary'],
+                        started_at=a['started_at'],result_at=a.get('result_at')) for a in activities]]
         available = [group[index] for index in range(5) for group in groups if len(group)>index]
         for preview in available[:5]:
             item = dict(preview,text=preview['text'][:120])
@@ -427,10 +476,7 @@ class Continuity:
                 break
         used = estimate_tokens(previews) if previews else 0
         excluded = {p['ref'] for p in previews}
-        packet = self.life.memory.retrieve_multi(scope,cues,budget=max(0,total-used),exclude=excluded)
-        lines = packet.text.splitlines()
-        while lines and estimate_tokens('\n'.join(lines))>max(0,total-used):
-            lines.pop()
-        memory = '\n'.join(lines)
+        memory = self.life.life_recall.context(scope,cues,max(0,total-used),exclude=excluded)
         return dict(items=previews,read_kind='continuity',query_count=len(cues),
+                    review_due=[dict(ref=n['ref'],version=n['version']) for n in review],
                     optional_estimated_tokens=used+(estimate_tokens(memory) if memory else 0)),memory

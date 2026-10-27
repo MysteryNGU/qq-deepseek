@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "project": "D:\\projects\\bot-codex",
+  "data_dir": "D:\\projects\\qq-deepseek\\data\\codex-consult",
+  "codex": "C:\\Users\\GEUEK\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+  "python": "D:\\projects\\qq-deepseek\\.venv\\Scripts\\python.exe",
+  "model": "gpt-6.1-sol",
+  "windows_sandbox": "elevated"
+}

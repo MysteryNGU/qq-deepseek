@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import wave
 
 
@@ -19,8 +20,9 @@ def atomic_json(path,value):
 
 
 class RunContext:
-    def __init__(self,folder,config):
+    def __init__(self,folder,config,cache=None):
         self.folder,self.config=folder,config
+        self.cache=cache
         self.children=[]
 
     def check_cancelled(self):
@@ -60,12 +62,23 @@ def output_metadata(path,description):
     return result
 
 
-def main():
+def resident_cuda_memory():
+    torch=sys.modules.get('torch')
+    if torch is None or not torch.cuda.is_initialized():
+        return None
+    allocated=torch.cuda.memory_allocated()
+    reserved=torch.cuda.memory_reserved()
+    return dict(cached_free_mib=(reserved-allocated)/2**20,
+                workspace_peak_mib=max(0,torch.cuda.max_memory_allocated()-allocated)/2**20)
+
+
+def execute_request(path, cache=None):
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
     from life.media_adapters import validate_frozen,frozen_hash
-    path=Path(sys.argv[1]).resolve();folder=path.parent
+    path=Path(path).resolve();folder=path.parent
     request=json.loads(path.read_text(encoding='utf-8'))
     spec=request['spec'];context=None
+    started=time.monotonic()
     try:
         if request.get('frozen_spec_hash'):
             if frozen_hash(request['frozen_spec'])!=request['frozen_spec_hash'] or spec['_adapter']!=request['frozen_spec']['_adapter']:
@@ -81,7 +94,7 @@ def main():
             if frozen_hash(normalized)!=request['frozen_spec_hash']:
                 raise ValueError('resolved_parameters_mismatch')
         adapter=validate_frozen(spec);provider=spec['_adapter']
-        context=RunContext(folder,provider['config']);context.check_cancelled()
+        context=RunContext(folder,provider['config'],cache);context.check_cancelled()
         output=Path(adapter.execute(spec,context)).resolve()
         context.close();context.check_cancelled()
         if output.parent!=folder or output.is_symlink() or not output.is_file():
@@ -91,7 +104,9 @@ def main():
             frozen_spec_hash=request.get('frozen_spec_hash'),job_id=request.get('job_id'),
             provider_digest=provider['digest'],provider_revision=provider['adapter_version'],
             actual_parameters=request.get('frozen_spec',request['spec']),output=output.name,
-            sha256=hashlib.sha256(output.read_bytes()).hexdigest(),media=metadata))
+            sha256=hashlib.sha256(output.read_bytes()).hexdigest(),media=metadata,
+            worker_pid=os.getpid(),execution_seconds=round(time.monotonic()-started,3),
+            resident_cuda=resident_cuda_memory()))
     except BaseException as error:
         atomic_json(folder/'result.json',dict(status='cancelled' if isinstance(error,InterruptedError) else 'failed',
             request_hash=request['request_hash'],frozen_spec_hash=request.get('frozen_spec_hash'),job_id=request.get('job_id'),
@@ -100,6 +115,32 @@ def main():
     finally:
         if context:
             context.close()
+
+
+def main():
+    if len(sys.argv)>1 and sys.argv[1]=='--serve':
+        # Parent owns the process tree and sends only one request at a time.
+        # EOF stops the worker; errors terminate it rather than retaining an
+        # engine whose CUDA state or cancellation outcome could be uncertain.
+        cache={}
+        root=Path(sys.argv[2]).resolve()
+        for line in sys.stdin:
+            path=Path(json.loads(line)['request']).resolve()
+            if path.name!='request.json' or root not in path.parents or path.parent==root:
+                raise ValueError('request_outside_managed_media_root')
+            with (path.parent/'engine.log').open('a',encoding='utf-8',buffering=1) as stream:
+                # Native libraries also write directly to the OS descriptors.
+                saved=[os.dup(fd) for fd in (1,2)]
+                try:
+                    sys.stdout.flush();sys.stderr.flush()
+                    os.dup2(stream.fileno(),1);os.dup2(stream.fileno(),2)
+                    execute_request(path,cache)
+                    sys.stdout.flush();sys.stderr.flush()
+                finally:
+                    for fd,old in zip((1,2),saved):
+                        os.dup2(old,fd);os.close(old)
+    else:
+        execute_request(sys.argv[1])
 
 
 if __name__=='__main__':

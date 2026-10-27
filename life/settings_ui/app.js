@@ -1,0 +1,51 @@
+'use strict';
+const $=s=>document.querySelector(s), groups=['概览','基础与连接','模型与工具','记忆与人物','行为与节奏','表达与语音','预算与限制','高级运行设置','情绪与关系','咨询参数','音色预设'];
+let csrf='',snapshot=null,category='概览',draft={},docDraft={},invalid={},timer;
+const hints={'音色预设':'选择已验证的默认音色，调整名称、情绪向量与语速。保存后生成新版本；参考素材保持原样。','基础与连接':'选择她能接收消息的联系人和群聊。','模型与工具':'设置模型接口、认知运行环境与工具。','记忆与人物':'原话即时记录，整理、检索和人物认知分别控制。','行为与节奏':'调整等待、持续行为与上下文资源。','表达与语音':'调整表达节奏、语音与本地生成服务。','预算与限制':'预算参数保留可配置；历史费用对账与整理恢复不在本次实施范围。','高级运行设置':'运行目录和连接参数。身份与数据库迁移不通过此页执行。','情绪与关系':'独立动力文件中的驱动力、情绪与关系参数。','咨询参数':'管理已配置的本地咨询服务参数。'};
+const nestedLabels={idle_min_seconds:'随机等待最短（秒）',idle_random_max_seconds:'随机等待最长（秒）',motivation_cooldown_seconds:'动机冷却（秒）',speech_idle_seconds:'语音保温（秒）',enabled:'启用',interval_seconds:'检查间隔（秒）',batch_events:'每批经历数量',daily_target_fen:'每日目标（分）',daily_limit_fen:'每日上限（分）',timeout_seconds:'超时（秒）',max_pending_jobs:'排队作业上限',text_preview_target_tokens:'文本预览预算',dynamic_context_target_tokens:'动态上下文预算',memory_context_target_tokens:'记忆上下文预算',max_free_vram_mib:'空闲显存（MiB）'};
+function notice(text,error=false){const el=$('#notice');el.textContent=text;el.className=error?'error':'';el.hidden=false;clearTimeout(timer);timer=setTimeout(()=>el.hidden=true,error?15000:6000)}
+async function api(path,body){const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)};const response=await fetch(path,options);const data=await response.json();if(!response.ok){if(response.status===401){$('#workspace').hidden=true;$('#login').hidden=false}throw new Error(data.message||'请求失败')}return data}
+function element(tag,cls,text){const el=document.createElement(tag);if(cls)el.className=cls;if(text!==undefined)el.textContent=text;return el}
+function dirty(){const count=Object.keys(draft).length+Object.keys(docDraft).length+Object.keys(invalid).length;$('#dirty-count').textContent=count?`有 ${count} 项未保存修改`:'没有未保存修改';$('#save').disabled=!count;return count}
+function change(key,value){const original=snapshot.fields.find(f=>f.key===key).value;if(JSON.stringify(value)===JSON.stringify(original))delete draft[key];else draft[key]=value;dirty()}
+function input(value,type,onchange,disabled=false,secret=false){const el=element('input');el.disabled=disabled;el.type=type==='boolean'?'checkbox':type==='number'?'number':secret?'password':'text';if(type==='boolean')el.checked=value;else el.value=value??'';if(type==='number')el.step='any';el.addEventListener('input',()=>onchange(type==='boolean'?el.checked:type==='number'?(el.value===''?null:Number(el.value)):el.value));return el}
+function jsonEditor(value,onchange,disabled=false,key='',label='完整配置'){
+ const area=element('textarea');area.value=invalid[key]??JSON.stringify(value,null,2);area.disabled=disabled;area.spellcheck=false;area.setAttribute('aria-label',label);
+ if(Object.hasOwn(invalid,key))area.setCustomValidity('请输入有效 JSON');
+ area.addEventListener('input',()=>{try{const parsed=JSON.parse(area.value);delete invalid[key];area.setCustomValidity('');onchange(parsed);dirty()}catch{invalid[key]=area.value;area.setCustomValidity('请输入有效 JSON');dirty();notice('JSON 尚未完整，修正后才能保存。',true)}});return area
+}
+function fieldEditor(field){
+ const wrap=element('div');let value=Object.hasOwn(draft,field.key)?draft[field.key]:field.value;
+ if(field.type!=='json'){const control=input(value,field.type,v=>change(field.key,v),field.read_only,field.secret);control.setAttribute('aria-label',field.label);wrap.append(control);return wrap}
+ const nested=element('div','nested'),controls={};let area;
+ if(value&&typeof value==='object'&&!Array.isArray(value)){
+  for(const [key,v] of Object.entries(value)){
+   if(v===null||typeof v==='object')continue;
+   const row=element('div','row'),label=element('label','',nestedLabels[key]||key);
+   const control=input(v,typeof v==='boolean'?'boolean':typeof v==='number'?'number':'text',next=>{
+    value={...value,[key]:next};change(field.key,value);
+    if(!Object.hasOwn(invalid,field.key))area.value=JSON.stringify(value,null,2);
+   },field.read_only,/(?:^|_)(?:(?<!per_)token|password|secret|api_?key)$/i.test(key));
+   control.setAttribute('aria-label',field.label+' · '+label.textContent);controls[key]=control;row.append(label,control);nested.append(row)
+  }
+  wrap.append(nested)
+ }
+ const details=element('details'),summary=element('summary','json-toggle','展开完整配置');
+ area=jsonEditor(value,v=>{value=v;change(field.key,v);for(const [key,control]of Object.entries(controls)){if(control.type==='checkbox')control.checked=!!v?.[key];else control.value=v?.[key]??''}},field.read_only,field.key,field.label+' · 完整 JSON');
+ details.open=Object.hasOwn(invalid,field.key);details.append(summary,area);wrap.append(details);return wrap
+}
+function statusCards(status){$('#connection').textContent=status.online?'服务在线':'服务离线';$('#connection').className='pill'+(status.online?'':' off');const items=[['QQ 通道',status.qq_connected?'已连接':'未连接','连接状态独立于设置页'],['认知服务',status.cognition_ready?'运行中':'尚未就绪',status.runtime.version||'暂无版本回报'],['配置生效',status.pending_restart?'有待生效配置':'与保存配置一致',status.online?'重启后自动核对版本':'离线时仍可保存设置']];const root=$('#status-cards');root.replaceChildren();for(const [name,value,note]of items){const card=element('div','stat');card.append(element('span','',name),element('strong','',value),element('small','',note));root.append(card)}$('#save-note').textContent=status.pending_restart?'已保存配置与运行实例不同；重启完成后生效。':'保存后显示待生效，重启完成后核对实际配置。'}
+function navigate(next){category=next;$('#search').value='';render()}
+function render(){if(!snapshot)return;$('#heading').textContent=category;$('#description').textContent=hints[category]||'看看她现在的状态，再决定要调整什么。';$('#nav').replaceChildren();for(const name of groups){const button=element('button',name===category?'active':'',name);button.onclick=()=>navigate(name);$('#nav').append(button)}statusCards(snapshot.status);const root=$('#content');root.replaceChildren();const query=$('#search').value.trim().toLowerCase();
+ if(category==='概览'&&!query){const grid=element('div','overview-grid');for(const name of groups.slice(1)){const card=element('section','panel');card.tabIndex=0;card.append(element('h2','',name),element('p','',hints[name]),element('small','','打开设置 →'));card.onclick=()=>navigate(name);card.onkeydown=e=>{if(e.key==='Enter')navigate(name)};grid.append(card)}root.append(grid);return}
+ if(['情绪与关系','咨询参数','音色预设'].includes(category)&&!query){const key=category==='情绪与关系'?'dynamics':category==='音色预设'?'voices':'consult',doc=snapshot.documents[key];if(!doc){root.append(element('p','notice-text','尚未配置这个独立文件。请先设置对应服务的配置位置。'));return}const panel=element('section','panel');panel.append(element('h2','',category),element('p','','完整参数保留在同一来源文件中，保存前由宿主规则校验。'),jsonEditor(docDraft[key]??doc.value,value=>{if(JSON.stringify(value)===JSON.stringify(doc.value))delete docDraft[key];else docDraft[key]=value;dirty()},false,'doc:'+key,category+' · 完整 JSON'));root.append(panel);return}
+ const found=snapshot.fields.filter(f=>query?(f.label+' '+f.key+' '+JSON.stringify(f.value)).toLowerCase().includes(query):f.category===category);const panel=element('section','panel');panel.append(element('h2','',query?'查找结果':category));for(const field of found){const row=element('div','field'),label=element('div');label.append(element('label','',field.label),element('small','',field.key));if(field.read_only)label.append(element('small','readonly','只读 · 保留单一人格与既有数据身份'));if(field.environment_override)label.append(element('div','badge','运行环境覆盖此值；仅改文件不会覆盖环境变量'));if(field.secret)label.append(element('small','','密钥不回显；保持圆点表示不修改，清空表示删除。'));row.append(label,fieldEditor(field));panel.append(row)}if(!found.length)panel.append(element('p','empty','没有匹配的设置'));root.append(panel)}
+async function load(){snapshot=await api('/api/settings');draft={};docDraft={};invalid={};dirty();render();if(snapshot.validation_error)notice(snapshot.validation_error,true)}
+$('#login-form').onsubmit=async e=>{e.preventDefault();try{const result=await api('/api/login',{password:$('#password').value});csrf=result.csrf;$('#password').value='';$('#login').hidden=true;$('#workspace').hidden=false;await load()}catch(e){notice(e.message,true)}};
+$('#logout').onclick=async()=>{await api('/api/logout',{});csrf='';snapshot=null;draft={};docDraft={};invalid={};$('#workspace').hidden=true;$('#login').hidden=false};
+$('#search').oninput=()=>render();$('#reload').onclick=async()=>{if(dirty()&&!confirm('放弃未保存修改并载入最新配置？'))return;try{await load()}catch(e){notice(e.message,true)}};
+$('#save').onclick=async()=>{if(Object.keys(invalid).length){notice('请先修正 JSON 格式：'+Object.keys(invalid).join('、')+'。',true);return}$('#save').disabled=true;try{if(Object.keys(draft).length){const result=await api('/api/save',{document:'config',base_revision:snapshot.revision,changes:draft});snapshot.revision=result.revision;for(const [key,value]of Object.entries(draft))snapshot.fields.find(f=>f.key===key).value=value;draft={}}for(const [name,value]of Object.entries(docDraft)){const result=await api('/api/save',{document:name,base_revision:snapshot.documents[name].revision,changes:value});snapshot.documents[name].revision=result.revision;snapshot.documents[name].value=value;delete docDraft[name]}await load();notice('已保存。点击“重启并生效”，等当前操作结束后加载新配置。')}catch(e){dirty();notice(e.message+'；未成功保存的修改仍保留在页面。',true)}};
+$('#restart').onclick=async()=>{if(dirty()){notice('请先保存修改，再重启生效。',true);return}try{const result=await api('/api/restart',{});notice(result.message)}catch(e){notice(e.message,true)}};
+window.addEventListener('beforeunload',e=>{if(dirty()){e.preventDefault();e.returnValue=''}});
+(async()=>{try{const session=await api('/api/session');csrf=session.csrf;$('#login').hidden=true;$('#workspace').hidden=false;await load()}catch{}})();
+setInterval(async()=>{if(!snapshot)return;try{snapshot.status=await api('/api/status');statusCards(snapshot.status)}catch{}},5000);

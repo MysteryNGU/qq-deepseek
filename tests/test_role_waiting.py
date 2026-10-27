@@ -100,9 +100,11 @@ class WaitingTests(unittest.IsolatedAsyncioTestCase):
     async def test_unrelated_work_and_chat_continue_but_child_goal_does_not_bypass_wait(self):
         task = self.wait(self.start_task())
         self.assertTrue((await self.say(dict(text='We can chat meanwhile.')))['ok'])
+        self.role.read(self.scope,dict(kind='intents'),self.root)
         child = self.intent(goal='dependent part',parent_ref=task['ref'])
         with self.assertRaises(SessionFailure):
             self.native()
+        self.role.read(self.scope,dict(kind='intents'),self.root)
         self.intent(goal='independent reading')
         self.assertTrue(self.native()['ok'])
         self.assertEqual(self.role.tasks.get(task['ref'])['status'],'waiting')
@@ -139,6 +141,7 @@ class WaitingTests(unittest.IsolatedAsyncioTestCase):
         from life.dsh_changes import process_queued
         from life.self_change import SelfChange
         parent = self.start_task()
+        self.role.read(self.scope,dict(kind='intents'),self.root)
         self.intent(goal='dependent upgrade',parent_ref=parent['ref'])
         self.role._self_change = SelfChange(self.life,self.cfg,self.tmp.name)
         await self.role._self_change.apply(self.scope,dict(target='worker',verification_goal='reload tools'),'queued-change')

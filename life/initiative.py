@@ -14,8 +14,11 @@ from .text import stable_id
 
 # These tools return their own synchronous read result and have no write effect.
 READ_ONLY = {'read_file','read','glob','grep','search','web_search','web_fetch','fetch','list_directory',
-    'skill'}
+    'skill','job_output'}
 CONTROL = {'list_agents','wait_agent','cancel_agent','interrupt_agent','subagent_status','subagent_cancel'}
+# These DSH tools own synchronous execution; their structured abort receipt
+# follows settlement. An arbitrary plugin may instead have launched remote work.
+SETTLED_CANCEL_TOOLS = READ_ONLY | {'pwsh','bash','edit','write','write_file','apply_patch'}
 UNSTABLE = {'call_id','callId','request_id','timestamp','created_at','updated_at','checkpoint','trace_id','seed'}
 
 
@@ -129,7 +132,16 @@ class Initiative:
         return bool(self.get('initiative:delegate:'+binding['session_id']) or
                     binding.get('intent_ref') and self.get('initiative:intent:'+binding['intent_ref']))
 
-    def interactive_busy(self):
+    def media_handoff(self, binding, job_id):
+        turn = self.role.turn_number(binding['session_id'])
+        if turn is not None:
+            self.put('initiative:media_handoff:'+binding['session_id'],dict(job_id=job_id,turn=turn,
+                generation=binding['generation']))
+
+    def clear_media_handoff(self, sid):
+        self.repo._exec('DELETE FROM meta WHERE k=?',('initiative:media_handoff:'+sid,))
+
+    def interactive_busy(self, media_job=None):
         if self.repo._one("SELECT 1 FROM agent_inputs i JOIN events e ON e.id=i.input_id JOIN agent_sessions s USING(session_id) "
                 "WHERE s.status='current' AND i.handled=0 AND e.source_kind='user_report' AND e.redacted_at IS NULL LIMIT 1"):
             return True
@@ -142,11 +154,18 @@ class Initiative:
                 if value['type']=='turn/start' and self.repo._one('SELECT 1 FROM agent_inputs i JOIN events e ON e.id=i.input_id '
                         "WHERE i.session_id=? AND i.claimed_turn=? AND e.source_kind='user_report' AND e.redacted_at IS NULL LIMIT 1",
                         (sid,value.get('data',{}).get('turn'))):
+                    handoff = self.get('initiative:media_handoff:'+sid) or {}
+                    binding = self.role.sessions.require(sid)
+                    if (media_job and handoff.get('job_id') == media_job and handoff.get('turn') == value.get('data',{}).get('turn')
+                            and handoff.get('generation') == binding['generation']):
+                        continue
                     return True
         return False
 
     def wait(self,scope,attribution,reason):
-        raise SessionFailure('resource_wait','后台资源正忙或交互轮尚未结束；已登记等待，实际就绪后会通知。可继续聊天、读取或取消')
+        slot = self.get(self.slot_key()) or {}
+        raise SessionFailure('resource_wait','后台执行尚未释放或交互轮尚未结束；已登记等待。仍可聊天、使用已声明的只读工具核对或取消',
+            reason=reason,execution_phase=slot.get('phase','idle'))
 
     def member_allowed(self,slot,attribution,sid):
         if slot and slot.get('members'):
@@ -170,7 +189,9 @@ class Initiative:
         if attribution['classification']!='autonomous':
             return
         slot = self.get(self.slot_key())
-        if self.interactive_busy() or not self.member_allowed(slot,attribution,sid):
+        if self.interactive_busy(member_id if kind=='job' else None):
+            self.wait(scope,attribution,'interactive_turn')
+        if not self.member_allowed(slot,attribution,sid):
             self.wait(scope,attribution,'execution_busy')
         value = dict(slot or {},**attribution,phase='reserved',updated_at=time.time())
         value['members'] = dict((slot or {}).get('members',{}))
@@ -206,6 +227,10 @@ class Initiative:
 
     def guard_key(self,attribution,tool,arguments):
         target = self.conditions(attribution,tool,arguments)['target']
+        # Shell commands have no structured file/url target. Keep their unknown
+        # outcomes separate so one interrupted command does not block all commands.
+        if target==digest({}):
+            target = request_signature(tool,arguments)
         owner = stable_id('guard-owner',attribution['owner_ref'],tool,target)
         return 'initiative:guard:'+attribution['root_scope_id']+':'+owner
 
@@ -218,6 +243,12 @@ class Initiative:
                 "AND json_extract(v,'$.scope_id')=? AND json_extract(v,'$.owner_ref')=?",
                 (attribution['root_scope_id'],attribution['owner_ref'])):
             candidate = json.loads(row['v'])
+            # Older guards grouped targetless commands together. Keep protection
+            # for the original request while allowing a different diagnostic.
+            if candidate['phase']=='outcome_unknown':
+                prior = self.get('initiative:operation:'+candidate.get('last_operation_ref','')) or {}
+                if prior.get('request_hash')==signature:
+                    raise SessionFailure('outcome_unknown','原操作的效果尚未核对，不能重放；可使用其他只读工具检查',guard_ref=row['k'])
             if candidate.get('probe',{}).get('request_hash')==signature:
                 key,guard = row['k'],candidate
                 break
@@ -242,16 +273,17 @@ class Initiative:
     def begin_operation(self,scope,binding,call,operation_id):
         attribution = self.attribution(scope,binding,call)
         guard_key = self.guard_allows(attribution,call['tool'],call.get('arguments'),operation_id)
-        if call['tool'] not in CONTROL:
+        effect = self.role.capabilities.policy(call['tool'],call.get('tool_identity'))['effect']
+        if call['tool'] not in CONTROL and effect!='read':
             self.reserve(scope,attribution,operation_id,'operation',binding['session_id'])
         self.put('initiative:operation:'+operation_id,dict(attribution=attribution,scope_id=scope.scope_id,
             guard_ref=guard_key,tool=call['tool'],request_hash=request_signature(call['tool'],call.get('arguments')),
-            effect=self.role.capabilities.policy(call['tool'],call.get('tool_identity'))['effect'],
+            effect=effect,
             call_id=call['call_id'],
             parent_operation_id=call.get('direct_parent_call_id')))
         return attribution
 
-    def record_result(self,operation_id,receipt_ref,*,failure=None,unknown=False,progress=False):
+    def record_result(self,operation_id,receipt_ref,*,failure=None,unknown=False,progress=False,cancelled=False):
         op = self.get('initiative:operation:'+operation_id)
         if not op:
             return
@@ -279,7 +311,7 @@ class Initiative:
                 relevant_versions=versions,last_request_hash=op['request_hash'],
                 condition_operation_ref=guard['condition_operation_ref'] if probing else operation_id,
                 resume_condition='相关条件发生真实变化，或一次有实质差别的方法探测')
-        elif progress:
+        elif progress or cancelled:
             guard.update(count=0,phase='active',relevant_versions=versions)
         guard['last_receipt_ref'] = receipt_ref
         guard['last_operation_ref'] = operation_id
@@ -311,6 +343,52 @@ class Initiative:
             slot['updated_at']=time.time()
             self.put(self.slot_key(),slot)
 
+    def cancellation(self,operation,data):
+        """Only structured runtime receipts establish cancellation, never output text."""
+        error = data.get('error')
+        message = data.get('message',{})
+        if not isinstance(error,dict) or not message.get('isError') or error.get('name')!='AbortError':
+            return None
+        code = error.get('code')
+        if code=='ABORTED_BEFORE_DISPATCH':
+            return code
+        if code=='ABORTED' and operation['tool'] in SETTLED_CANCEL_TOOLS:
+            return code
+        return None
+
+    def record_cancellation(self,operation,data,receipt_ref):
+        code = self.cancellation(operation,data)
+        metadata = self.get('initiative:operation:'+operation['id'])
+        if not code or not metadata or metadata.get('awaiting_async'):
+            return None
+        self.put('initiative:operation:'+operation['id'],dict(metadata,
+            execution_state='settled',execution_code=code,execution_receipt_ref=receipt_ref))
+        if code=='ABORTED_BEFORE_DISPATCH':
+            guard = self.get(metadata['guard_ref'])
+            if guard and guard.get('last_operation_ref')==operation['id'] and guard['phase']=='outcome_unknown':
+                guard.update(phase='active',count=0,resume_condition='原调用未派发；可以重新选择行动')
+                self.put(metadata['guard_ref'],guard)
+        return code
+
+    def preflight_failure(self,operation,data):
+        """Native file guards reject before mutation; arbitrary error text proves nothing."""
+        error = data.get('error')
+        message = data.get('message',{})
+        if operation['tool'] not in {'write','edit'} or not isinstance(error,dict) or not isinstance(message,dict):
+            return None
+        call = message.get('toolCallId') or data.get('callId')
+        if (message.get('isError') is True and error.get('name')=='FsError'
+                and error.get('code') in {'FS_NOT_OBSERVED','FS_STALE_VERSION'} and call
+                and stable_id('roleop',operation['session_id'],str(call))==operation['id']):
+            return error['code']
+        return None
+
+    def record_preflight_failure(self,operation,code,receipt_ref):
+        metadata = self.get('initiative:operation:'+operation['id'])
+        if metadata:
+            self.put('initiative:operation:'+operation['id'],dict(metadata,awaiting_async=False,
+                execution_state='settled',execution_code=code,execution_receipt_ref=receipt_ref))
+
     def observe_tool(self,operation,event):
         data = event.get('data',{})
         message = data.get('message',{})
@@ -326,36 +404,116 @@ class Initiative:
                         continue
         is_error = bool(message.get('isError'))
         explicit_failure = isinstance(value,dict) and value.get('ok') is False
-        failure = None
+        preflight = self.preflight_failure(operation,data)
+        failure = preflight
         declared=self.get('initiative:operation:'+operation['id']) or {}
-        read_only=declared.get('effect')=='read' or tool in READ_ONLY or self.role.capabilities.policy(tool)['effect']=='read'
-        if read_only and (is_error or explicit_failure):
+        read_only=declared.get('effect',self.role.capabilities.policy(tool)['effect'])=='read'
+        cancellation = self.cancellation(operation,data)
+        if read_only and (is_error or explicit_failure) and not cancellation:
             body = canonical(value if value is not None else content)
             code = value.get('code') if isinstance(value,dict) else None
             failure = str(code) if code else 'error:'+digest(normalized(re.sub(r'\b\d{10,}\b','<time>',body)))[:24]
-        unknown = bool((is_error or explicit_failure) and not read_only)
+        unknown = bool((is_error or explicit_failure) and not read_only and not preflight
+                       and cancellation!='ABORTED_BEFORE_DISPATCH')
         op_ref = operation['id']
         receipt_ref = operation['session_id']+':'+str(event['seq'])
         child = self.repo._one("SELECT k,v FROM meta WHERE k LIKE 'initiative:delegate:%' "
             "AND json_extract(v,'$.parent_operation_id')=? LIMIT 1",(op_ref,))
-        pending = tool=='subagent' and not is_error or isinstance(value,dict) and (
-            value.get('status') in {'pending','running','accepted','queued'} or value.get('job_id') or value.get('subagentId'))
+        pending = not read_only and not is_error and not explicit_failure and (tool=='subagent' or isinstance(value,dict) and (
+            value.get('status') in {'pending','running','accepted','queued'} or
+            (value.get('job_id') or value.get('subagentId')) and value.get('status') not in
+            {'done','completed','failed','cancelled'} and value.get('settled') is not True))
         child_finished = child and json.loads(child['v']).get('terminal_receipt')
         unknown = unknown or bool(pending and not child)
         self.record_result(op_ref,receipt_ref,failure=failure,unknown=unknown,
                            progress=not is_error and not explicit_failure and read_only)
+        if preflight:
+            self.record_preflight_failure(operation,preflight,receipt_ref)
         metadata = self.get('initiative:operation:'+op_ref)
         if metadata and isinstance(value,dict):
             metadata['coverage'] = 'partial' if value.get('truncated') or value.get('coverage')=='partial' else 'reported'
             self.put('initiative:operation:'+op_ref,metadata)
+        settled_cancel = self.record_cancellation(operation,data,receipt_ref) if not pending else None
         if child:
+            self.finish_member(op_ref)
+        elif settled_cancel:
             self.finish_member(op_ref)
         elif pending or unknown:
             self.put('initiative:operation:'+op_ref,dict(self.get('initiative:operation:'+op_ref),awaiting_async=bool(pending)))
             self.finish_member(op_ref,terminal=False)
         else:
             self.finish_member(op_ref)
-        return 'failed' if failure else 'unknown' if unknown else 'dispatched' if pending and not child_finished else 'succeeded'
+        return ('unknown' if unknown else 'cancelled') if settled_cancel else (
+            'failed' if failure else 'unknown' if unknown else 'dispatched' if pending and not child_finished else 'succeeded')
+
+    def untracked_tool_status(self,operation,data):
+        """Classify proved failures even when initiative tracking is disabled."""
+        if self.preflight_failure(operation,data):
+            return 'failed'
+        message = data.get('message',{})
+        value = data.get('value')
+        for block in message.get('content',[]) if value is None else []:
+            if block.get('type')=='text':
+                try:
+                    value = json.loads(block.get('text',''))
+                except (ValueError,TypeError):
+                    continue
+        failed = bool(message.get('isError') or isinstance(value,dict) and value.get('ok') is False)
+        code = self.cancellation(operation,data)
+        if code=='ABORTED_BEFORE_DISPATCH':
+            return 'cancelled'
+        declared = self.get('initiative:operation:'+operation['id']) or {}
+        if declared.get('effect',self.role.capabilities.policy(operation['tool'])['effect'])=='read':
+            return 'cancelled' if code=='ABORTED' else 'failed' if failed else 'succeeded'
+        return 'unknown' if failed else 'succeeded'
+
+    def reconcile_read_results(self):
+        """Repair matched read failures and native preflight refusals without replaying."""
+        count = 0
+        with self.repo.tx():
+            for op in self.repo._all("SELECT * FROM role_operations WHERE status='unknown' AND result IS NOT NULL"):
+                if op['scope_id'].split('|',1)[0]!=self.role.life.agent_id:
+                    continue
+                declared = self.get('initiative:operation:'+op['id']) or {}
+                try:
+                    data = json.loads(op['result'])
+                except (ValueError,TypeError):
+                    continue
+                if not isinstance(data,dict):
+                    continue
+                message = data.get('message',{})
+                if not isinstance(message,dict):
+                    continue
+                call = message.get('toolCallId') or data.get('callId')
+                if not call or stable_id('roleop',op['session_id'],str(call))!=op['id']:
+                    continue
+                # Native cancellation proves that execution stopped, not that a
+                # write had no effect. Release its lane while retaining unknown
+                # outcome and the operation's replay guard.
+                cancellation = self.record_cancellation(op,data,'reconciled-cancellation:'+op['id']) if declared else None
+                if cancellation:
+                    self.finish_member(op['id'])
+                    if cancellation=='ABORTED_BEFORE_DISPATCH':
+                        self.repo._exec("UPDATE role_operations SET status='cancelled' WHERE id=?",(op['id'],))
+                        count += 1
+                        continue
+                preflight = self.preflight_failure(op,data)
+                read_only = declared.get('effect',self.role.capabilities.policy(op['tool'])['effect'])=='read'
+                if not read_only and not preflight:
+                    continue
+                status = self.untracked_tool_status(op,data)
+                if status in {'failed','cancelled'}:
+                    self.repo._exec('UPDATE role_operations SET status=? WHERE id=?',(status,op['id']))
+                    if declared:
+                        declared['awaiting_async'] = False
+                        self.put('initiative:operation:'+op['id'],declared)
+                        receipt_ref = 'reconciled-tool:'+op['id']
+                        self.record_result(op['id'],receipt_ref,failure=preflight or 'recorded_read_failure')
+                        if preflight:
+                            self.record_preflight_failure(op,preflight,receipt_ref)
+                        self.finish_member(op['id'])
+                    count += 1
+        return count
 
     def attach_delegate(self,scope,parent_id,child_id,parent_call_id,activation_id=None):
         op_id = stable_id('roleop',parent_id,str(parent_call_id)) if parent_call_id else None
@@ -424,7 +582,25 @@ class Initiative:
                 (canonical(payload),jid,scope.scope_id))
         if attr['forget_epoch']!=self.repo.forget_epoch(scope.scope_id):
             raise SessionFailure('source_removed','生成任务所属来源已遗忘')
-        root = self.role.sessions.require(attr['root_session_id'])
+        try:
+            root = self.role.sessions.require(attr['root_session_id'])
+        except SessionFailure as error:
+            if error.code!='stale_context':
+                raise
+            old = self.repo._one('SELECT scope_id,forget_epoch FROM agent_sessions WHERE session_id=?',
+                (attr['root_session_id'],))
+            job = self.repo._one("SELECT status FROM work_jobs WHERE id=? AND kind='local_media' AND scope_id=?",
+                (jid,scope.scope_id))
+            if (not old or old['scope_id']!=scope.scope_id or old['forget_epoch']!=attr['forget_epoch']
+                    or not job or job['status'] not in {'pending','running','waiting'}):
+                raise
+            root = self.role.sessions.binding(scope)
+            # A queued job outlives its model session. Keep its request, origin,
+            # owner and run id, so rebinding cannot bypass retry guards or holds.
+            attr = dict(attr,adopted_from_session_id=attr['root_session_id'],
+                root_session_id=root['session_id'],generation=root['generation'])
+            payload['initiative'] = attr
+            self.repo._exec('UPDATE work_jobs SET payload=? WHERE id=?',(canonical(payload),jid))
         if root['generation']!=attr['generation']:
             raise SessionFailure('stale_context','生成任务的根执行已变化')
         task = self.role.tasks.get(attr['owner_ref'],scope.scope_id)
@@ -541,6 +717,7 @@ class Initiative:
 
     def reconcile(self):
         """Only persisted terminal evidence releases members; time alone never does."""
+        self.reconcile_read_results()
         slot = self.get(self.slot_key())
         if not slot or not slot.get('members'):
             return
@@ -552,6 +729,21 @@ class Initiative:
                     continue
             elif member['kind']=='operation':
                 op = self.repo._one('SELECT * FROM role_operations WHERE id=?',(ref,))
+                metadata = self.get('initiative:operation:'+ref) or {}
+                if metadata.get('execution_state')=='settled' and metadata.get('execution_receipt_ref') and not metadata.get('awaiting_async'):
+                    self.finish_member(ref)
+                    continue
+                if op and op['status']=='unknown' and op['result']:
+                    data = json.loads(op['result'])
+                    metadata = self.get('initiative:operation:'+ref) or {}
+                    call_id = data.get('message',{}).get('toolCallId') or data.get('callId')
+                    if call_id and call_id==metadata.get('call_id'):
+                        code = self.record_cancellation(op,data,'operation-result:'+ref)
+                        if code:
+                            if code=='ABORTED_BEFORE_DISPATCH':
+                                self.repo._exec("UPDATE role_operations SET status='cancelled' WHERE id=?",(ref,))
+                            self.finish_member(ref)
+                            continue
                 if op and op['status'] in {'succeeded','failed','cancelled'}:
                     attribution = self.get('initiative:operation:'+ref) or {}
                     if attribution.get('awaiting_async'):

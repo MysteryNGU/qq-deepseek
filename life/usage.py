@@ -96,6 +96,8 @@ class Usage:
             self.repo._exec('INSERT INTO usage_calls VALUES(?,?,?,?) ON CONFLICT(call_key) DO UPDATE SET payload=excluded.payload,'
                 'source_revision=excluded.source_revision,updated_at=excluded.updated_at',
                 (data['call_key'],canonical(data),record['revision'],time.time()))
+            if hasattr(self.role,'spending') and record.get('usage') and record.get('finished_at') and self.repo._one('SELECT 1 FROM spending_calls WHERE call_key=?',(data['call_key'],)):
+                self.role.spending.settle(dict(session_id=sid,record=record))
 
     def read(self,scope,p):
         owner = scope.conversation_id=='qq:private:'+str(self.role.cfg.owner)
@@ -122,11 +124,16 @@ class Usage:
         purposes = {key:sum(1 for v in values if v['purpose']==key) for key in sorted({v['purpose'] for v in values})}
         missing = sum(v['coverage']!='reported' or v['status'] in {'started','unknown'} for v in values)
         projection_gap = bool(self.repo._one('SELECT 1 FROM meta WHERE k=?',('usage_projection_gap:'+scope.scope_id,)))
+        from .spending import reported_cost,UNIT
+        prices=[reported_cost(v) for v in values]
+        budget=self.role.spending.snapshot() if owner and hasattr(self.role,'spending') else None
         return dict(scope='bot_global' if p.get('global') else 'current_conversation',since=start,until=end,calls=len(values),
             known_totals=totals,field_coverage=field_coverage,unknown_or_partial_calls=missing,projection_gap=projection_gap,
             coverage='partial' if missing or projection_gap else 'reported_for_recorded_calls' if values else 'unknown',
-            purposes=purposes,total_mismatches=sum(v['total_mismatch'] for v in values),price_estimate=None,price_status='not_configured',
-            excludes=['external_plugins_calling_providers_outside_DSH','Codex'],budget_state='not_configured',
+            purposes=purposes,total_mismatches=sum(v['total_mismatch'] for v in values),price_estimate=sum(v or 0 for v in prices)/UNIT if any(v is not None for v in prices) else None,
+            price_status='partial' if any(v is None for v in prices) else 'official_tariff_estimate',
+            excludes=['external_plugins_calling_providers_outside_DSH','Codex','non_token_service_fees'],budget=budget,
+            budget_state=budget['state'] if budget else 'not_visible',
             source='DSH actual stream calls; historical durable settlements where available')
 
     def hint(self,scope,task=None):

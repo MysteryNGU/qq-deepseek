@@ -125,8 +125,6 @@ class Appraisals:
                 relation_after,effects = reduce_relationship(relation,app.relation_impacts,actor_id=actor,
                     policy=self.life.relationships.policy,registry=self.life.relationships.registry,config=cfg,
                     settlement_day=cfg.day(at),settlement_at=at)
-            if source.source_kind not in {'user_report','tool_observation'}:
-                app.drive_evidence = [v for v in app.drive_evidence if v.get('kind') in {'activation_change','internal_regulation'}]
             raw = asdict(app)
             raw.update(_proposal_fingerprint=fingerprint,_stimuli=roots,_affect_config=asdict(self.life.config.affect),
                 _drive_config=self.life.drive_config().to_dict(),_desire_pressure=self.life.drive_pressure(scope),
@@ -150,7 +148,8 @@ class Appraisals:
                 notes.append(self.life.relationships.mutate_note(scope,op,call_key or app.id,index,f'{app.id}:{app.revision}'))
             receipt = dict(status='committed',appraisal_id=app.id,revision=app.revision,
                 relationship_version=relation_after.version if relation_after else None,
-                policy_version=self.life.relationships.policy.version,effects=effects,saved_note_refs=notes,journal_id=jid)
+                policy_version=self.life.relationships.policy.version,effects=effects,saved_note_refs=notes,journal_id=jid,
+                drive_effects=result[1].drive_effects)
             raw.update(_receipt=receipt,_change=dict(asdict(result[1]),relationship_effects=effects))
             self.repo._exec('UPDATE state_journal SET appraisal=?,after_state=? WHERE id=?',
                 (canonical(raw),canonical(self.life._state_packet(scope)),jid))

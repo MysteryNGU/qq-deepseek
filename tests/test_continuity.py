@@ -69,6 +69,7 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
     def test_interest_without_binding_does_not_run_or_resume(self):
         prior = self.f.task()
         bound = self.f.role.sessions.require(self.f.binding['session_id'])
+        self.f.role.read(self.f.scope,dict(kind='intents'),bound)
         with self.f.life.repo.tx():
             new = self.f.role.intent(self.f.scope,dict(kind='ongoing',goal='了解画风',origin='self',bind=False,
                 interest=dict(cues=['水彩'],open_question='如何留白？'),sources=[self.f.event.id]),bound)['intent']
@@ -128,10 +129,11 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.save()
         with self.f.life.repo.tx():
             for i in range(5):
+                self.f.role.read(self.f.scope,dict(kind='intents'),self.f.binding)
                 self.f.role.intent(self.f.scope,dict(kind='ongoing',goal='研究水彩画'+str(i),bind=False,
                     interest=dict(cues=['水彩画']),sources=[self.f.event.id]),self.f.binding)
         self.f.life.ingest_message(self.f.scope,'你好')
-        with patch.object(self.f.life.memory,'retrieve_multi',wraps=self.f.life.memory.retrieve_multi) as retrieve:
+        with patch.object(self.f.life.life_recall,'context',wraps=self.f.life.life_recall.context) as retrieve:
             preview,_memory = self.c.context(self.f.scope,self.f.binding,{})
         cues = retrieve.call_args.args[1]
         self.assertNotIn('你好',cues)
@@ -195,7 +197,7 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SessionFailure):
             self.f.role.read(self.f.scope,dict(kind='continuity'))
         with self.assertRaises(ValueError):
-            ResourcePolicy.parse(dict(continuity_context_target_tokens=1201))
+            ResourcePolicy.parse(dict(continuity_context_target_tokens=ResourcePolicy().memory_context_target_tokens+1))
         with self.assertRaises(ValueError):
             ResourcePolicy.parse(dict(autonomous_no_progress_limit=True))
 

@@ -1,0 +1,82 @@
+{
+  "checked_at": 1793025027.4073586,
+  "runtime": {
+    "version": "2026.10.26.12",
+    "source_signature": "9c37d4a759c3c3d84d4b05d40d4a80c8b223ae22c8bcee17c0a1af68307d0574"
+  },
+  "pid": 37840,
+  "channel_connected": true,
+  "cognition_ready": true,
+  "ordinary_share_receipt": {
+    "ok": true,
+    "request_id": "801d886e56384a61a0979ae5d69c862d",
+    "result": {
+      "owner_readable": true,
+      "owner_recall_found": true,
+      "resource_ref": "life_6c8469f7e97433f384471b7f"
+    }
+  },
+  "park_receipt": {
+    "ok": true,
+    "request_id": "d64f48332f074e3e9d37efca458206e8",
+    "result": {
+      "coverage": "unresolved",
+      "job_ref": "memory-organize_15f9b3d03a9730c3f685a620",
+      "scan_through": 17078,
+      "state": "parked"
+    }
+  },
+  "organize": {
+    "state": "attention_required",
+    "protocol": 1,
+    "engine_version": 2,
+    "next_check_at": 1793005907.2609212,
+    "window_active": true,
+    "job_status": "running",
+    "reason": "parked_batch_unresolved",
+    "repair_backlog": 0,
+    "parked_batches": 1,
+    "cursor_meaning": "scanned_not_summarized",
+    "excluded_count": 0
+  },
+  "window": {
+    "batch_through": 17118,
+    "checked_at": 1793002307.2609212,
+    "excluded_count": 0,
+    "excluded_refs": [],
+    "job_ref": "memory-organize_3a1f5cdb7e1d4ba4c454351e",
+    "through_seq": 17397
+  },
+  "tests": {
+    "full": 605,
+    "focused_after_last_tests_added": 40,
+    "drive_checks": 42
+  },
+  "persona": {
+    "candidate": "personas/xiaoyu-unified.md",
+    "activated": false
+  },
+  "latest_jobs": [
+    {
+      "job_ref": "memory-organize_eacfbb5b5fca71660dffae5a",
+      "status": "running",
+      "error": "",
+      "source_count": 20,
+      "has_summary": false
+    },
+    {
+      "job_ref": "memory-organize_6046b24590e3c9475b26b9d8",
+      "status": "done",
+      "error": "",
+      "source_count": 20,
+      "has_summary": true
+    },
+    {
+      "job_ref": "memory-organize_3a1f5cdb7e1d4ba4c454351e",
+      "status": "done",
+      "error": "",
+      "source_count": 20,
+      "has_summary": true
+    }
+  ]
+}

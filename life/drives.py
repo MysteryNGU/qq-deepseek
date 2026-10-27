@@ -53,7 +53,7 @@ DRIVE_ALIASES = {
 
 EFFECT_KINDS = {
     "activation_change", "interaction_satisfaction", "verified_task_satisfaction",
-    "internal_regulation", "preference_learning",
+    "internal_regulation", "preference_learning", "stimulation_change",
 }
 
 
@@ -85,6 +85,17 @@ class DriveDynamics:
     contact_cooldown_hours: float = 12.0
     max_contact_attempts_per_window: int = 1
     persona_preference: float = 0.50
+    # —— 场内爽度（短周期，时间衰减）——
+    stimulation_half_life_hours: float = 0.5      # 不推进就掉，半小时减半
+    climax_threshold: float = 0.55                # 第一次到顶所需爽度
+    climax_threshold_falloff: float = 0.85        # 每高潮一次阈值打折（越来越容易）
+    climax_threshold_floor: float = 0.20          # 阈值下限
+    climax_keep_ratio: float = 0.60               # 高潮后保留的爽度（持续兴奋）
+    scene_settle_idle_hours: float = 0.75         # 停手这么久就自动结算
+    scene_relief_min: float = 0.25                # 一场结算下限
+    scene_relief_max: float = 0.80                # 一场结算上限
+    scene_frustration_min: float = 0.15          # 没高潮结算时欲火余量下限
+    scene_frustration_max: float = 0.45          # 没高潮结算时欲火余量上限
 
     @property
     def label(self) -> str:
@@ -125,6 +136,22 @@ def validate_drive_config(c: DriveDynamics) -> DriveDynamics:
         raise ValueError(f"invalid_contact_attempts:{c.dimension}")
     if not (0.0 <= float(c.growth_multiplier_min) <= float(c.growth_multiplier_max)):
         raise ValueError(f"invalid_growth_multiplier:{c.dimension}")
+    if float(c.stimulation_half_life_hours) <= 0:
+        raise ValueError(f"invalid_stimulation_half_life:{c.dimension}")
+    if not (0.0 < float(c.climax_threshold) <= 1.0):
+        raise ValueError(f"invalid_climax_threshold:{c.dimension}")
+    if not (0.0 < float(c.climax_threshold_floor) <= float(c.climax_threshold)):
+        raise ValueError(f"invalid_climax_threshold_floor:{c.dimension}")
+    if not (0.0 < float(c.climax_threshold_falloff) <= 1.0):
+        raise ValueError(f"invalid_climax_threshold_falloff:{c.dimension}")
+    if not (0.0 <= float(c.climax_keep_ratio) <= 1.0):
+        raise ValueError(f"invalid_climax_keep_ratio:{c.dimension}")
+    if float(c.scene_settle_idle_hours) <= 0:
+        raise ValueError(f"invalid_scene_settle_idle:{c.dimension}")
+    if not (0.0 <= float(c.scene_relief_min) <= float(c.scene_relief_max) <= float(c.ceiling)):
+        raise ValueError(f"invalid_scene_relief:{c.dimension}")
+    if not (0.0 <= float(c.scene_frustration_min) <= float(c.scene_frustration_max) <= float(c.ceiling)):
+        raise ValueError(f"invalid_scene_frustration:{c.dimension}")
     return c
 
 
@@ -143,6 +170,10 @@ class DriveState:
     last_contact_at: float = 0.0
     pending_contact_id: str = ""
     regulation_due: bool = False
+    stimulation: float = 0.0          # 场内爽度 0..1，随时间衰减
+    stimulation_peak: float = 0.0     # 本场最高爽度
+    stimulation_at: float = 0.0       # 最后一次被推进的时间
+    scene_climaxes: int = 0           # 本场已高潮次数
     updated_at: float = field(default_factory=now_ts)
 
     @property
@@ -501,6 +532,13 @@ def advance_drive_segment(d: DriveState, c: DriveDynamics, start: float, end: fl
             d.phase = "regulation_pending"
         cursor = stop
 
+    stim = float(getattr(d, "stimulation", 0.0) or 0.0)
+    if stim > 0.0:
+        d.stimulation = _decay(stim, c.stimulation_half_life_hours, max(0.0, end - start))
+    # Legacy fields are retained for migration, never idle settlement.
+    if d.stimulation < 1e-8:
+        d.stimulation = d.stimulation_peak = d.stimulation_at = 0.0
+        d.scene_climaxes = 0
     d.updated_at = end
     d.regulation_due = bool(
         c.regulation_enabled
@@ -629,6 +667,16 @@ def apply_one_evidence(state: DriveStateSet, evidence: DriveEvidence,
         d.satiety = clamp01(float(d.satiety) + min(0.5, gain))
         _begin_recovery(d, c, at)
         actual = float(d.tension) - before
+    elif ev.kind == "stimulation_change":
+        conf = max(0.0, min(1.0, float(ev.confidence)))
+        if ev.dimension != 'libido':
+            raise ValueError('stimulation_requires_adult_intimate_protocol')
+        # advance_to owns decay; last input time is not an integration cursor.
+        d.stimulation = clamp01(float(d.stimulation) + clamp(float(ev.delta) * conf, -1.0, 1.0))
+        d.stimulation_peak = max(float(d.stimulation_peak), float(d.stimulation))
+        d.stimulation_at = at
+        # Retired protocol cannot generate new peaks; ADD-08 owns transitions.
+        actual = float(ev.delta)*conf
     elif ev.kind == "internal_regulation":
         if not ev.confirmed:
             raise ValueError("internal_regulation_requires_confirmed_plan")

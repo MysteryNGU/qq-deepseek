@@ -229,6 +229,7 @@ class AffectChange:
     source_appraisal_id: str
     proposed_delta: dict[str, float] = field(default_factory=dict)
     clipping_reasons: dict[str, list[str]] = field(default_factory=dict)
+    drive_effects: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -262,20 +263,6 @@ class DesireState:
 
 
 @dataclass
-class RetrievalPacket:
-    scope: Scope
-    facts: list[Memory] = field(default_factory=list)
-    episodes: list[Memory] = field(default_factory=list)
-    knowledge: list[Memory] = field(default_factory=list)
-    interpretations: list[Memory] = field(default_factory=list)
-    uncertain: list[Memory] = field(default_factory=list)
-    open_loops: list[OpenLoop] = field(default_factory=list)
-    text: str = ""
-    token_estimate: int = 0
-    missing: list[str] = field(default_factory=list)
-
-
-@dataclass
 class LegacyRelationshipState:
     scope: Scope
     relationship_id: str = ""
@@ -302,7 +289,7 @@ class RelationshipState:
     metrics: dict[str, float] = field(default_factory=dict)
     schema_version: int = 2
     policy_version: str = ''
-    semantics_version: str = 'relationship-semantics-1'
+    semantics_version: str = 'relationship-semantics-2'
     metric_basis: dict[str, str] = field(default_factory=dict)
     daily_key: str = ''
     daily_used: dict[str, float] = field(default_factory=dict)

@@ -35,10 +35,11 @@ class MemoryTests(unittest.TestCase):
         self.save(dict(kind='preference',text='复杂事情讲清楚，可适当展开',sources=[later.id],
                        supersedes=[old['memory_id']],cues=['复杂','解释'],skill_refs=['explain.md']))
         block = self.life.context_block(self.scope,'解释复杂问题',2000)
-        self.assertIn('复杂事情讲清楚',block)
+        self.assertIn(later.text,block)
+        self.assertNotIn('复杂事情讲清楚，可适当展开',block)
         self.assertNotIn('回复要简短',block)
         self.assertIn('explain.md',block)
-        self.assertNotIn('复杂事情讲清楚',self.life.context_block(self.other,'解释复杂问题',2000))
+        self.assertNotIn(later.text,self.life.context_block(self.other,'解释复杂问题',2000))
 
     def test_imagination_cannot_become_external_fact(self):
         imagined = self.event('想象了一座房子','inference')

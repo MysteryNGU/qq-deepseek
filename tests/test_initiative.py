@@ -39,10 +39,10 @@ class InitiativeTests(unittest.TestCase):
         return self.i.guards(self.f.scope)[0]
 
     def test_R01_one_global_slot_across_scopes_and_chat_still_readable(self):
-        self.assertTrue(self.call()['ok'])
+        self.assertTrue(self.call(tool='pwsh')['ok'])
         other = Scope(self.f.scope.agent_id,'qq:private:3','1')
         binding = self.f.role.sessions.binding(other)
-        denied = self.call('other',root=binding,scope=other)
+        denied = self.call('other',tool='pwsh',root=binding,scope=other)
         self.assertEqual(denied['code'],'resource_wait')
         self.assertEqual(self.f.life.repo._one('SELECT COUNT(*) AS n FROM role_operations')['n'],1)
         self.assertEqual(self.f.life.repo._one("SELECT state FROM role_wakes WHERE scope_id=?",(other.scope_id,))['state'],'waiting_resource')
@@ -51,10 +51,10 @@ class InitiativeTests(unittest.TestCase):
         self.assertEqual(len(slot['members']),1)
 
     def test_R03_same_run_cannot_start_two_tools(self):
-        self.call('one')
-        self.assertEqual(self.call('two')['code'],'resource_wait')
+        self.call('one',tool='pwsh')
+        self.assertEqual(self.call('two',tool='pwsh')['code'],'resource_wait')
         self.result('one')
-        self.assertTrue(self.call('two')['ok'])
+        self.assertTrue(self.call('two',tool='pwsh')['ok'])
 
     def test_G01_guard_survives_new_call_ids_and_restart(self):
         guard = self.suspend()
@@ -64,6 +64,23 @@ class InitiativeTests(unittest.TestCase):
             self.call('new-id')
         self.assertEqual(failure.exception.code,'retry_suspended')
         self.assertTrue(self.call('other-target',arguments=dict(path='unrelated.txt'))['ok'])
+
+    def test_saved_read_failure_clears_a_phantom_async_hold_without_replaying(self):
+        self.call('old-read')
+        op = self.f.life.repo._one('SELECT * FROM role_operations WHERE id=?',
+            (stable_id('roleop',self.root['session_id'],'old-read'),))
+        data = dict(message=dict(toolCallId='old-read',isError=True,
+            content=[dict(type='text',text=canonical(dict(ok=False,job_id='observed-only',code='ENOENT')))]))
+        with self.f.life.repo.tx():
+            self.f.life.repo._exec("UPDATE role_operations SET status='unknown',result=? WHERE id=?",(canonical(data),op['id']))
+            metadata = self.i.get('initiative:operation:'+op['id'])
+            self.i.put('initiative:operation:'+op['id'],dict(metadata,awaiting_async=True))
+            self.i.record_result(op['id'],'old-bad-classification',unknown=True)
+        self.assertEqual(self.i.guards(self.f.scope)[0]['phase'],'outcome_unknown')
+        self.assertEqual(self.i.reconcile_read_results(),1)
+        self.assertFalse(self.i.get('initiative:operation:'+op['id'])['awaiting_async'])
+        self.assertEqual(self.i.guards(self.f.scope)[0]['phase'],'active')
+        self.assertTrue(self.call('next-read')['ok'])
 
     def test_G02_new_greeting_and_checkpoint_do_not_clear_guard(self):
         guard = self.suspend()
@@ -112,7 +129,7 @@ class InitiativeTests(unittest.TestCase):
         self.call('spawn',tool='subagent')
         with self.f.life.repo.tx():
             self.f.role._register_delegate('child',self.root['session_id'],self.root,'spawn')
-        self.assertEqual(self.call('root-extra')['code'],'resource_wait')
+        self.assertEqual(self.call('root-extra',tool='pwsh')['code'],'resource_wait')
         child = self.f.role.sessions.require('child')
         self.assertTrue(self.call('child-read',root=child)['ok'])
         op_id = stable_id('roleop','child','child-read')
@@ -146,7 +163,7 @@ class InitiativeTests(unittest.TestCase):
         self.assertEqual(result.payload['child_session_id'],'child')
 
     def test_R04_reconcile_keeps_unverified_owner_and_expired_gpu_lease(self):
-        self.call()
+        self.call(tool='pwsh')
         with self.f.life.repo.tx():
             self.i.reconcile()
         self.assertEqual(self.i.get(self.i.slot_key())['phase'],'outcome_unknown')
@@ -160,11 +177,11 @@ class InitiativeTests(unittest.TestCase):
         self.assertFalse(jobs.acquire(jobs.claim('b'),'gpu:0'))
 
     def test_R05_waiters_wake_one_at_a_time_and_decline_advances(self):
-        self.call()
+        self.call(tool='pwsh')
         second = Scope(self.f.scope.agent_id,'qq:private:3','1')
         third = Scope(self.f.scope.agent_id,'qq:private:4','1')
         for scope in (second,third):
-            self.call(scope.conversation_id,root=self.f.role.sessions.binding(scope),scope=scope)
+            self.call(scope.conversation_id,tool='pwsh',root=self.f.role.sessions.binding(scope),scope=scope)
         self.result('read')
         offer = self.i.get('initiative:resource_offer')
         self.assertEqual(offer['scope_id'],second.scope_id)
@@ -212,7 +229,7 @@ class InitiativeTests(unittest.TestCase):
         self.assertEqual(self.i.attribution(self.f.scope,self.root)['classification'],'autonomous')
 
     def test_rest_and_disabled_feature_do_not_release_live_work(self):
-        self.call()
+        self.call(tool='pwsh')
         with self.f.life.repo.tx():
             self.f.role.rest(self.f.scope,dict(next_attention=dict(mode='none')),self.root)
         self.assertTrue(self.i.get(self.i.slot_key())['members'])
@@ -252,13 +269,168 @@ class InitiativeTests(unittest.TestCase):
         with self.f.life.repo.tx():
             note=self.f.role.remember(self.f.scope,dict(kind='inference',text='synthetic continuity note',sources=[self.f.event.id],
                 continuity=dict(type='thought',action='create')),self.root,call_key='note')
-        self.call()
+        self.call(tool='pwsh')
         self.f.life.forget(self.f.scope,memory_ids=[note['memory_id']])
         slot=self.i.get(self.i.slot_key())
         self.assertTrue(slot['members'])
         self.assertEqual(slot['phase'],'outcome_unknown')
         self.assertFalse(self.i.guards(self.f.scope))
         self.assertNotIn('arguments',self.i.get('initiative:operation:'+next(iter(slot['members']))))
+
+    def aborted(self,call_id='scan',code='ABORTED',*,reconcile=False):
+        op=self.f.life.repo._one('SELECT * FROM role_operations WHERE id=?',
+            (stable_id('roleop',self.root['session_id'],call_id),))
+        data=dict(error=dict(name='AbortError',code=code),message=dict(toolCallId=call_id,isError=True,
+            content=[dict(type='text',text='Error: tool call aborted')]))
+        with self.f.life.repo.tx():
+            self.f.life.repo._exec("UPDATE role_operations SET status='unknown',result=? WHERE id=?",(canonical(data),op['id']))
+            if reconcile:
+                self.i.record_result(op['id'],'old-result',unknown=True)
+                self.i.finish_member(op['id'],terminal=False)
+                self.i=Initiative(self.f.role)
+                self.f.role.initiative=self.i
+                self.i.reconcile()
+            else:
+                status=self.i.observe_tool(op,dict(seq=50,data=data))
+                self.f.life.repo._exec('UPDATE role_operations SET status=? WHERE id=?',(status,op['id']))
+        return self.f.life.repo._one('SELECT * FROM role_operations WHERE id=?',(op['id'],))
+
+    def test_unknown_execution_allows_readonly_diagnostics_without_releasing_owner(self):
+        self.call('scan',tool='pwsh',arguments=dict(command='Get-ChildItem -Recurse'))
+        self.result('scan',error=True,code='TIMEOUT')
+        before=self.i.get(self.i.slot_key())
+        for tool in ('glob','read','grep'):
+            self.assertTrue(self.call(tool,tool=tool)['ok'])
+        self.assertEqual(self.i.get(self.i.slot_key()),before)
+        self.assertEqual(self.call('new-work',tool='pwsh',arguments=dict(command='different'))['code'],'resource_wait')
+
+    def test_aborted_shell_releases_execution_but_keeps_effect_unknown(self):
+        args=dict(command='Get-ChildItem -Recurse')
+        self.call('scan',tool='pwsh',arguments=args)
+        op=self.aborted()
+        self.assertEqual(op['status'],'unknown')
+        self.assertFalse(self.i.get(self.i.slot_key())['members'])
+        activity=self.f.role.continuity.activities(self.f.scope,ref=op['id'])[0]
+        self.assertEqual((activity['phase'],activity['execution_state']),('outcome_unknown','settled'))
+        with self.assertRaises(SessionFailure) as failure:
+            self.call('replay',tool='pwsh',arguments=args)
+        self.assertEqual(failure.exception.code,'outcome_unknown')
+        self.assertTrue(self.call('different',tool='pwsh',arguments=dict(command='Get-Item bot_console.py'))['ok'])
+
+    def test_before_dispatch_abort_has_no_effect_and_can_be_reselected(self):
+        self.call('scan',tool='write_file')
+        op=self.aborted(code='ABORTED_BEFORE_DISPATCH')
+        self.assertEqual(op['status'],'cancelled')
+        self.assertFalse(self.i.get(self.i.slot_key())['members'])
+        self.assertTrue(self.call('retry',tool='write_file')['ok'])
+
+    def test_restart_reconciles_saved_abort_without_replaying_command(self):
+        for code in ('ABORTED','ABORTED_BEFORE_DISPATCH'):
+            with self.subTest(code=code):
+                self.call(code,tool='pwsh',arguments=dict(command=code))
+                op=self.aborted(code,code,reconcile=True)
+                self.assertFalse(self.i.get(self.i.slot_key())['members'])
+                self.assertEqual(op['status'],'unknown' if code=='ABORTED' else 'cancelled')
+
+    def test_unregistered_plugin_abort_does_not_claim_background_work_stopped(self):
+        self.call('scan',tool='plugin_async')
+        self.aborted()
+        self.assertTrue(self.i.get(self.i.slot_key())['members'])
+
+    def test_verified_execution_exit_frees_lane_without_claiming_success(self):
+        self.call('old',tool='pwsh',arguments=dict(command='synthetic side effect'))
+        op=stable_id('roleop',self.root['session_id'],'old')
+        with self.f.life.repo.tx():
+            self.f.life.repo._exec("UPDATE role_operations SET status='unknown' WHERE id=?",(op,))
+            self.i.record_result(op,'lost-receipt',unknown=True)
+            metadata=self.i.get('initiative:operation:'+op)
+            self.i.put('initiative:operation:'+op,dict(metadata,execution_state='settled',
+                execution_receipt_ref='verified-worker-tree-exit'))
+            self.i.reconcile()
+        self.assertFalse(self.i.get(self.i.slot_key())['members'])
+        self.assertEqual(self.f.life.repo._one('SELECT status FROM role_operations WHERE id=?',(op,))['status'],'unknown')
+        with self.assertRaises(SessionFailure):
+            self.call('repeat',tool='pwsh',arguments=dict(command='synthetic side effect'))
+
+    def test_error_text_is_not_runtime_cancellation_evidence(self):
+        self.call('scan',tool='pwsh')
+        self.result('scan',error=True,code='ABORTED')
+        with self.f.life.repo.tx():
+            self.i.reconcile()
+        self.assertTrue(self.i.get(self.i.slot_key())['members'])
+
+    def file_refusal(self,call_id,code='FS_NOT_OBSERVED',name='FsError'):
+        return dict(error=dict(name=name,code=code),message=dict(toolCallId=call_id,isError=True,
+            content=[dict(type='text',text='synthetic file refusal')]))
+
+    def test_native_file_preflight_refusals_release_lane_with_and_without_continuity(self):
+        for enabled in (True,False):
+            for tool in ('write','edit'):
+                for code in ('FS_NOT_OBSERVED','FS_STALE_VERSION'):
+                    with self.subTest(enabled=enabled,tool=tool,code=code):
+                        self.f.cfg.continuity_enabled=True
+                        call_id=tool+code+str(enabled)
+                        self.call(call_id,tool=tool,arguments=dict(file_path=call_id+'.txt'))
+                        self.f.cfg.continuity_enabled=enabled
+                        op_id=stable_id('roleop',self.root['session_id'],call_id)
+                        op=self.f.life.repo._one('SELECT * FROM role_operations WHERE id=?',(op_id,))
+                        self.assertEqual(self.i.untracked_tool_status(op,self.file_refusal(call_id,code)),'failed')
+                        self.f.role._observe_result(self.root['session_id'],dict(type='tool/result',seq=51,
+                            data=self.file_refusal(call_id,code)))
+                        op=self.f.life.repo._one('SELECT * FROM role_operations WHERE id=?',(op_id,))
+                        self.assertEqual(op['status'],'failed')
+                        self.assertFalse((self.i.get(self.i.slot_key()) or {}).get('members'))
+                        if enabled:
+                            self.assertEqual(self.i.get('initiative:operation:'+op_id)['execution_state'],'settled')
+
+    def test_saved_file_refusal_repairs_slot_and_guard_once_without_replay(self):
+        self.call('old-write',tool='write')
+        op_id=stable_id('roleop',self.root['session_id'],'old-write')
+        with self.f.life.repo.tx():
+            self.f.life.repo._exec("UPDATE role_operations SET status='unknown',result=? WHERE id=?",
+                (canonical(self.file_refusal('old-write')),op_id))
+            self.i.record_result(op_id,'old-unknown-file-result',unknown=True)
+            self.i.finish_member(op_id,terminal=False)
+            self.i.reconcile()
+        self.assertEqual(self.f.life.repo._one('SELECT status FROM role_operations WHERE id=?',(op_id,))['status'],'failed')
+        self.assertFalse(self.i.get(self.i.slot_key())['members'])
+        self.assertEqual(self.i.guards(self.f.scope)[0]['phase'],'active')
+        snapshot=self.i.get('initiative:operation:'+op_id)
+        self.assertEqual(self.i.reconcile_read_results(),0)
+        self.assertEqual(self.i.get('initiative:operation:'+op_id),snapshot)
+        self.assertTrue(self.call('different-work',tool='pwsh')['ok'])
+
+    def test_file_refusal_requires_native_tool_error_type_and_matching_call(self):
+        cases=[('plugin_async','FsError','refusal'),('write','Error','refusal'),('edit','FsError','another-call')]
+        for n,(tool,name,receipt_call) in enumerate(cases):
+            with self.subTest(tool=tool,name=name,receipt_call=receipt_call):
+                # Each unresolved owner remains protected, so use a fresh isolated fixture.
+                f=Fixture()
+                try:
+                    f.cfg.continuity_enabled=True
+                    f.role.continuity_protocol=1
+                    f.task()
+                    binding=f.role.sessions.require(f.binding['session_id'])
+                    f.role.before_tool(binding,f.scope,dict(tool=tool,call_id='refusal',
+                        session_id=binding['session_id'],arguments=dict(file_path='x.txt')))
+                    op=f.life.repo._one('SELECT * FROM role_operations')
+                    data=self.file_refusal(receipt_call,name=name)
+                    with f.life.repo.tx():
+                        status=f.role.initiative.observe_tool(op,dict(seq=n,data=data))
+                        f.life.repo._exec("UPDATE role_operations SET status=?,result=? WHERE id=?",(status,canonical(data),op['id']))
+                        f.role.initiative.reconcile()
+                    self.assertEqual(status,'unknown')
+                    self.assertTrue(f.role.initiative.get(f.role.initiative.slot_key())['members'])
+                finally:
+                    f.close()
+
+    def test_readonly_exception_does_not_bypass_public_scope_or_failure_guard(self):
+        other=Scope(self.f.scope.agent_id,'qq:private:3','3')
+        self.assertEqual(self.call('public',root=self.f.role.sessions.binding(other),scope=other)['code'],'scope_mismatch')
+        self.suspend()
+        with self.assertRaises(SessionFailure) as failure:
+            self.call('again')
+        self.assertEqual(failure.exception.code,'retry_suspended')
 
 
 if __name__=='__main__':

@@ -103,6 +103,43 @@ class BridgeTestCase(unittest.TestCase):
         bridge.ensure_profile()
         self.assertEqual(json.loads(patch.read_text('utf-8')),[])
 
+    def test_profile_recovers_pnpm_core_link_without_changing_installed_copy(self):
+        import json
+        bridge=self.new_bridge();bridge.ensure_profile()
+        profile=bridge.profile_dir();installed=profile/'node_modules/@qq-life/bridge-core'
+        store=profile/'node_modules/.pnpm/@qq-life+bridge-core@file+qq-life-core/node_modules/@qq-life/bridge-core'
+        self.assertTrue(installed.resolve().is_relative_to(self.home.resolve()))
+        self.assertTrue(store.resolve().is_relative_to(self.home.resolve()))
+        store.parent.mkdir(parents=True)
+        installed.rename(store)
+        old=(store/'cordis.patch.yml').read_bytes()
+        if os.name=='nt':
+            import _winapi
+            _winapi.CreateJunction(str(store),str(installed))
+        else:
+            installed.symlink_to(store,target_is_directory=True)
+        manifest=profile/'package.json'
+        manifest.write_text(manifest.read_text('utf-8'),encoding='utf-8-sig')
+        bridge.ensure_profile();bridge.ensure_profile()
+        self.assertEqual(installed.resolve(),(profile/'qq-life-core').resolve())
+        self.assertEqual((store/'cordis.patch.yml').read_bytes(),old)
+        self.assertEqual(json.loads(manifest.read_text('utf-8'))['dependencies']['@qq-life/bridge-core'],'link:./qq-life-core')
+
+    def test_profile_still_rejects_foreign_core_links(self):
+        bridge=self.new_bridge();bridge.ensure_profile()
+        installed=bridge.profile_dir()/'node_modules/@qq-life/bridge-core'
+        foreign=Path(self.tmp.name)/'foreign-core'
+        self.assertTrue(installed.resolve().is_relative_to(self.home.resolve()))
+        installed.rename(foreign)
+        if os.name=='nt':
+            import _winapi
+            _winapi.CreateJunction(str(foreign),str(installed))
+        else:
+            installed.symlink_to(foreign,target_is_directory=True)
+        with self.assertRaisesRegex(DshBridgeError,'链接不属于'):
+            bridge.ensure_profile()
+        self.assertEqual(installed.resolve(),foreign.resolve())
+
     def test_handshake_requires_real_ownership(self) -> None:
         os.environ["STUB_OWNED"] = "0"
         bridge = self.new_bridge()

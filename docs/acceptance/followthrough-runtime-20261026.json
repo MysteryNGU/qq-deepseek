@@ -1,0 +1,22 @@
+{
+  "checked_at": 1793021711.1933818,
+  "pid": 57388,
+  "runtime": {
+    "version": "2026.10.26.11",
+    "source_signature": "64f9336eb9581330b042f110f625f2eb42a57d9fd54d3f9eb83971db6ef36fc0"
+  },
+  "channel_connected": true,
+  "cognition_ready": true,
+  "continuity": {
+    "enabled": true,
+    "protocol": 1,
+    "dsh_adapter_version": "768a03072495036f174cd0f1d5618fff58ba6aa0ae1bcdbc5dc6552ca051bf65"
+  },
+  "old_execution_released": true,
+  "unit_tests": 595,
+  "drive_checks": 42,
+  "image_smoke_report": "data/maintenance/image-followthrough-smoke/report.json",
+  "qq_api_verified": true,
+  "new_group_member_verified": true,
+  "web_login_http": 200
+}

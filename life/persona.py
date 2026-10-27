@@ -34,39 +34,10 @@ def write_view(path,body):
         Path(name).unlink(missing_ok=True)
 
 
-def ensure_audience_sections(path,legacy_public):
-    """One-time conservative partition of a pre-existing private persona."""
-    source = path.read_text('utf-8')
-    if not AUDIENCE_BLOCK.search(source) and legacy_public.is_file():
-        common = legacy_public.read_text('utf-8')
-        if common.startswith('<!-- Derived persona'):
-            return
-        write_view(path,'<!-- persona:public -->\n'+common+'\n<!-- /persona:public -->\n\n'
-            '<!-- persona:private -->\n'+source+'\n<!-- /persona:private -->\n')
-
-
-def public_persona(path,derived=None):
-    """Unmarked/common text and public sections grow together; private blocks stay private."""
-    source = path.read_text('utf-8') if path.is_file() else ''
-    text = project_public_text(source)
-    if derived is not None:
-        body = '<!-- Derived persona sha256='+hashlib.sha256(source.encode()).hexdigest()+' -->\n'+text+'\n'
-        if not derived.is_file() or derived.read_text('utf-8')!=body:
-            write_view(derived,body)
-    return text
-
-
 def project_public_text(source):
     text = AUDIENCE_BLOCK.sub(lambda m:m[2] if m[1]=='public' else '',source).strip()
     if '<!-- persona:' in text or '<!-- /persona:' in text:
         raise ValueError('malformed_persona_audience_block')
-    return text
-
-
-def replace_public_persona(source,text):
-    if AUDIENCE_BLOCK.search(source):
-        private = '\n'.join(m[0] for m in AUDIENCE_BLOCK.finditer(source) if m[1]=='private')
-        return '<!-- persona:public -->\n'+text+'\n<!-- /persona:public -->\n'+private+'\n'
     return text
 
 

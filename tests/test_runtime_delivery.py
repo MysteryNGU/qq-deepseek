@@ -38,6 +38,14 @@ class DurableRuntimeTests(unittest.TestCase):
     def prepare(self, ctx, text="reply", segment=0):
         return self.life.delivery.prepare(ctx, "send_private_msg", {"user_id": 42, "message": text}, segment=segment)
 
+    def test_api_timeout_is_exposed_as_unknown_to_all_delivery_callers(self):
+        ctx=self.context();identity=self.prepare(ctx)
+        async def transport(action,params):
+            return dict(retcode=1200,status='failed',message='EventChecker timeout')
+        result=asyncio.run(self.life.delivery.send_prepared(identity,transport))
+        self.assertEqual(result['message'],'delivery_unknown_reconcile_required')
+        self.assertEqual(self.life.repo._one('SELECT status FROM deliveries WHERE id=?',(identity,))['status'],'unknown')
+
     def test_two_connections_cannot_claim_same_job(self):
         self.life.jobs.enqueue(self.scope, "request", {}, key="job")
         lease = self.life.jobs.claim("job", ttl=5)

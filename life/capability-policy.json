@@ -1,5 +1,14 @@
 [
   {
+    "tool": "job_output",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": null,
+    "resource": "local",
+    "source": "native-job-output-reader"
+  },
+  {
     "tool": "mcp__bili__bili_login_check",
     "effect": "read",
     "principal_adoption": false,
@@ -475,5 +484,32 @@
     "account": null,
     "resource": "local",
     "source": "native-local-compatibility"
+  },
+  {
+    "tool": "zhihu_search",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "zhihu-open-platform",
+    "resource": "network",
+    "source": "dsh-zhihu-search@2.2.1"
+  },
+  {
+    "tool": "zhihu_global_search",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "zhihu-open-platform",
+    "resource": "network",
+    "source": "dsh-zhihu-search@2.2.1"
+  },
+  {
+    "tool": "zhihu_zhida",
+    "effect": "read",
+    "principal_adoption": false,
+    "audience": "owner",
+    "account": "zhihu-open-platform",
+    "resource": "network",
+    "source": "dsh-zhihu-search@2.2.1"
   }
 ]

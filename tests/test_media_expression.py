@@ -37,6 +37,27 @@ class MediaExpressionTests(unittest.IsolatedAsyncioTestCase):
         self.life.close()
         self.tmp.cleanup()
 
+    async def test_native_network_rejection_is_not_an_unknown_send(self):
+        async def transport(action,params):
+            return dict(retcode=1200,status='failed',message='EventChecker Failed: {"result":1006514,"errMsg":"网络连接异常!"}')
+        expression=Expressions(self.life,self.media,self.voices,transport,sleep=self.sleep)
+        with self.assertRaises(SessionFailure) as got:
+            await expression(self.scope,'native-network-error',dict(text='test'),[self.event.id])
+        self.assertEqual(got.exception.code,'channel_offline')
+        row=self.life.repo._one('SELECT status,receipt FROM deliveries')
+        self.assertEqual(row['status'],'failed')
+        import json
+        self.assertEqual(json.loads(row['receipt'])['platform_error_code'],1006514)
+
+    async def test_event_checker_timeout_does_not_prove_send_failure(self):
+        async def transport(action,params):
+            return dict(retcode=1200,status='failed',message='EventChecker timeout waiting for onMsgInfoListUpdate')
+        expression=Expressions(self.life,self.media,self.voices,transport,sleep=self.sleep)
+        with self.assertRaises(SessionFailure) as got:
+            await expression(self.scope,'native-timeout',dict(text='test'),[self.event.id])
+        self.assertEqual(got.exception.code,'outcome_unknown')
+        self.assertEqual(self.life.repo._one('SELECT status FROM deliveries')['status'],'unknown')
+
     async def test_order_and_all_images_preserved_with_actor_identity(self):
         from PIL import Image
         image = io.BytesIO()

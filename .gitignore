@@ -44,12 +44,25 @@ napcat-onekey/
 # 人格、记忆及本机学习内容：只保留在部署机器
 /persona*.md
 !/persona.example.md
+!/persona.public.example.md
 /personas/
 人格设定.md
 self.md
+/diary/
+/qzone_post.py
 audit/
-/skills/
-/scripts/
+/skills/*
+!/skills/咨询Codex.md
+/scripts/*
+!/scripts/codex_consult.py
+!/scripts/diagnose_memory_pause.py
+!/scripts/evaluate_memory_service.py
+!/scripts/install_local_embedding.py
+!/scripts/memory_admin.py
+!/scripts/benchmark_speech_latency.py
+!/scripts/reload_speech_runtime.py
+/.acceptance/
+/docs/acceptance/add08-memory-pause.json
 
 # 与本项目无关的游戏自动化脚本
 ZenlessZoneZero-Auto/

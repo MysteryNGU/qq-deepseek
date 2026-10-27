@@ -105,6 +105,7 @@ class DshBridge:
         self._next_id = 0
         self._generation = 0
         self.runtime_access = {}
+        self.runtime_context_policy = ''
         self._notification_handler = None
         self._reconciled = False
         self._closed = False
@@ -298,6 +299,15 @@ class DshBridge:
             '- id: attachment-local',
             '  config:',
             '    maxImageDimension: 32768',
+            '- id: llm-deepseek',
+            '  config:',
+            '    maxTokens: 16384',
+            '- id: compaction-basic',
+            '  config:',
+            '    thresholdRatio: 0.16',
+            '    retainTokens: 32768',
+            '    headroomTokens: 16384',
+            '    maxTokens: 8192',
         ]
         if pnpm_command:
             rows.extend([
@@ -352,7 +362,28 @@ class DshBridge:
         installed=prof/'node_modules/@qq-life/bridge-core'
         if installed.is_symlink() or (hasattr(installed,'is_junction') and installed.is_junction()):
             if installed.resolve()!=core.resolve():
-                raise DshBridgeError('Bot 核心 bundle 链接不属于当前 profile')
+                # pnpm materializes file: packages in its profile-local virtual
+                # store. Migrate that owned copy to the generated source bundle;
+                # never rewrite pnpm's hardlinked package contents or follow an
+                # unrelated link outside this profile.
+                target=installed.resolve()
+                store=(prof/'node_modules/.pnpm').resolve()
+                relative=target.relative_to(store) if target.is_relative_to(store) else None
+                owned=(prof.resolve() in target.parents and relative is not None and len(relative.parts)==4
+                       and relative.parts[0].startswith('@qq-life+bridge-core@file+qq-life-core')
+                       and relative.parts[1:]==('node_modules','@qq-life','bridge-core'))
+                manifest=target/'package.json'
+                if not owned or not manifest.is_file() or json.loads(manifest.read_text('utf-8-sig')).get('name')!=package['name']:
+                    raise DshBridgeError('Bot 核心 bundle 链接不属于当前 profile')
+                if installed.is_symlink():
+                    installed.unlink()
+                else:
+                    os.rmdir(installed)
+                if os.name=='nt':
+                    import _winapi
+                    _winapi.CreateJunction(str(core.resolve()),str(installed))
+                else:
+                    installed.symlink_to(core,target_is_directory=True)
         else:
             if (installed/'package.json').is_file() and json.loads((installed/'package.json').read_text('utf-8')).get('name')!=package['name']:
                 raise DshBridgeError('Bot 核心 bundle 位置已由其他包占用')
@@ -360,8 +391,8 @@ class DshBridge:
             for name in ('package.json','cordis.patch.yml'):
                 shutil.copyfile(core/name,installed/name)
         manifest=prof/'package.json'
-        value=json.loads(manifest.read_text('utf-8'))
-        value.setdefault('dependencies',{})['@qq-life/bridge-core']='file:./qq-life-core'
+        value=json.loads(manifest.read_text('utf-8-sig'))
+        value.setdefault('dependencies',{})['@qq-life/bridge-core']='link:./qq-life-core'
         bundles=value.setdefault('dsh',{}).setdefault('profile',{}).setdefault('bundles',[])
         bundles=[name for name in bundles if name!='@qq-life/bridge-core']
         position=max((i+1 for i,name in enumerate(bundles) if name in {'@deepseek-ai/dsh-base','@deepseek-ai/dsh-sdk-app'}),default=0)
@@ -478,6 +509,8 @@ class DshBridge:
 
     def _verify_identity(self, hello: dict[str, Any]) -> None:
         """握手时核对身份：真的是 Bot 自己的 profile 才继续。"""
+        if getattr(self.cfg,'spending_policy',{}).get('enabled') and hello.get('spending_protocol')!=1:
+            raise DshBridgeError('DSH 缺少请求前费用保护；拒绝启用付费模型')
         if str(hello.get("profile") or "") != PROFILE_NAME:
             raise DshBridgeError(
                 f"DSH profile 不是 Bot 的 {PROFILE_NAME}：{hello.get('profile')}")
@@ -852,11 +885,13 @@ class DshBridge:
         hello = self._call("qq_life/hello", self._hello_parameters(), timeout=30.0)
         self._verify_identity(hello)
         self.loaded_adapter_version = str(hello.get('roleAdapterVersion') or '')
+        self.runtime_context_policy = str(hello.get('runtime_context_policy') or '')
         return hello
 
     def _hello_parameters(self):
-        return dict(continuity_protocol=1,continuity_enabled=bool(getattr(self.cfg,'continuity_enabled',False)),
-                    capability_protocol=1,media_adapter_protocol=1)
+        return dict(experience_protocol=1,continuity_protocol=1,continuity_enabled=bool(getattr(self.cfg,'continuity_enabled',False)),
+                    capability_protocol=1,media_adapter_protocol=1,
+                    consult_protocol=1 if getattr(self.cfg,'consult_config','') else None)
 
     def current_agent_catalog(self,session_id,generation):
         return self._call('qq_life/session/catalog',dict(session_id=session_id,generation=generation),timeout=30)

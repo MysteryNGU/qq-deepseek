@@ -15,7 +15,7 @@ from .contracts import (
     RelationshipState, Scope, new_id, now_ts,
 )
 from .knowledge import KnowledgeService
-from .memory import DEFAULT_MEMORY, MemoryConfig, MemoryService
+from .memory import MemoryService
 from .repo import Repository
 from .state import (
     DEFAULT_AFFECT, DEFAULT_DESIRE, AffectConfig, AffectChange, DesireConfig,
@@ -31,23 +31,25 @@ from .drives import (
     summarize as summarize_drives, view_at as drive_view_at,
 )
 from .text import stable_id
+SUPPORTED_MEMORY_SCHEMA = 2
 
 SUPPORTED_RELATIONSHIP_SCHEMA = 2
+SUPPORTED_EXPERIENCE_SCHEMA = 1
 
 
 @dataclass
 class LifeConfig:
-    memory: MemoryConfig = None  # type: ignore[assignment]
     affect: AffectConfig = None  # type: ignore[assignment]
     desire: DesireConfig = None  # type: ignore[assignment]
     drives: DriveConfig = None  # type: ignore[assignment]
     relationship_owner: str = '0'
     relations: Any = None
     relation_registry: Any = None
+    memory_index: Any = None
+    experience: Any = None
 
     def __post_init__(self) -> None:
         from copy import deepcopy
-        self.memory = self.memory or deepcopy(DEFAULT_MEMORY)
         self.affect = self.affect or deepcopy(DEFAULT_AFFECT)
         self.desire = self.desire or deepcopy(DEFAULT_DESIRE)
         self.drives = self.drives or DriveConfig()
@@ -73,7 +75,7 @@ class LifeRuntime:
         self.jobs = WorkQueue(self.repo, clock)
         self.delivery = DeliveryService(self, clock)
         self.persona = PersonaService(self.repo, self.agent_id)
-        self.memory = MemoryService(self.repo, self.config.memory)
+        self.memory = MemoryService(self.repo)
         self.knowledge = KnowledgeService(self.repo, self.memory)
         from .recollection import Recollection
         self.recollection = Recollection(self)
@@ -86,6 +88,24 @@ class LifeRuntime:
         self.memory.tombstones = self.tombstones
         # Must precede any retrieval, prompt construction or background job.
         self.tombstones.recover()
+        from .life_catalog import LifeCatalog
+        from .life_access import LifeAccess
+        from .memory_index import MemoryIndex
+        from .life_recall import LifeRecall
+        from .memory_organize import MemoryOrganize
+        self.catalog = LifeCatalog(self.repo, self.agent_id, clock)
+        self.life_access = LifeAccess(self.catalog)
+        self.memory.access = self.life_access
+        self.repo.life_access = self.life_access
+        self.memory_index = MemoryIndex(self.catalog, self.life_access, self.jobs, self.config.memory_index)
+        self.life_recall = LifeRecall(self.catalog, self.life_access, self.memory_index)
+        self.memory_organize = MemoryOrganize(self.catalog, self.life_access, self.jobs)
+        self.memory.organizer = self.memory_organize
+        from .memory_migration import activate
+        activate(self)
+        from .experience import ExperienceSimulation
+        self.experience = ExperienceSimulation(self, self.config.experience)
+        self.experience.recover()
 
     def close(self) -> None:
         self.repo.close()
@@ -148,6 +168,8 @@ class LifeRuntime:
         if not created:
             got = self.repo.get_event(_id)
             return got or event, False
+        if hasattr(self, 'experience'):
+            self.experience.receive(self.repo.get_event(event.id))
         return event, True
 
     def ingest_message(self, scope: Scope, text: str, *, role: str = "user",
@@ -234,17 +256,22 @@ class LifeRuntime:
         self.update_mood(scope, change.state, now=at)
         # Appraisal 的驱力证据与情绪在同一事件边界结算；去重键由 repo 保证。
         drive_evidence = []
+        filtered = []
         for item in (getattr(app, "drive_evidence", None) or []):
             kind = str(item.get("kind") or "activation_change")
+            if event.source_kind not in {'user_report','tool_observation'} and kind not in {'activation_change','internal_regulation'}:
+                filtered.append(dict(dimension=item['dimension'],effect_kind=kind,evaluated=True,applied=False,reason='external_evidence_required'))
+                continue
             if kind == "interaction_satisfaction" and not (
                     item.get("confirmed") and item.get("real_participant")
                     and item.get("relationship_allows", True)):
+                filtered.append(dict(dimension=item['dimension'],effect_kind=kind,evaluated=True,applied=False,reason='real_confirmed_interaction_required'))
                 continue
             drive_evidence.append(DriveEvidence(
                 id=stable_id("drv", app.id, str(item.get("dimension")), kind),
                 dimension=str(item.get("dimension") or ""), kind=kind,
                 delta=float(item.get("delta") or 0.0), root_id=event.id,
-                confidence=float(item.get("confidence") or app.certainty),
+                confidence=float(item.get("confidence", app.certainty)),
                 confirmed=bool(item.get("confirmed")),
                 real_participant=bool(item.get("real_participant")),
                 relationship_allows=bool(item.get("relationship_allows", True)),
@@ -253,7 +280,9 @@ class LifeRuntime:
                                                getattr(app, "interpretation", "")),
             ))
         if drive_evidence:
-            self.apply_drive_evidence(scope, drive_evidence, now=at)
+            _, settlements = self.apply_drive_evidence(scope, drive_evidence, now=at)
+            change.drive_effects = settlements
+        change.drive_effects.extend(filtered)
         return app, change
 
     def rebuild_after_forget(self, scope, journal=None):
@@ -567,17 +596,11 @@ class LifeRuntime:
 
     # ---------------------------------------------------------------- 检索
 
-    def context_packet(self, scope: Scope, query: str, budget: int | None = None):
-        from .text import estimate_tokens
-        total = self.memory.cfg.token_budget if budget is None else max(0, int(budget))
-        note = self.recollection.block(scope, query, min(1200, total // 3))
-        packet = self.memory.retrieve(scope, query, budget=max(0, total - estimate_tokens(note)))
-        packet.text = '\n'.join(x for x in (packet.text, note) if x)
-        packet.token_estimate = estimate_tokens(packet.text)
-        return packet
-
-    def context_block(self, scope: Scope, query: str, budget: int | None = None) -> str:
-        return self.context_packet(scope, query, budget).text
+    def context_block(self, scope: Scope, query: str, budget: int = 2400) -> str:
+        from .resource_policy import estimate_tokens
+        note = self.recollection.block(scope, query, min(1200, budget // 3))
+        recalled = self.life_recall.context(scope, [query], max(0, budget-estimate_tokens(note)))
+        return '\n'.join(x for x in (recalled, note) if x)
 
     # ---------------------------------------------------------------- 投影
 

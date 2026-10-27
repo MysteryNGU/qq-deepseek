@@ -1,0 +1,18 @@
+{
+  "life/experience.py": "f89641e80df14a3b7b91f598e4a4d3feb7395fa0ef7e795e9b408aeded9cfbd3",
+  "life/appraisal.py": "54fdbf3d6c55265960961a41292a42404a11187fad383356c40e1cfc05cb7c67",
+  "life/memory_index.py": "a0c0cdda27e4e023ad2503abfc553403a10b3e86a9f11bde40f1417d964d9ebd",
+  "life/role_agent.py": "1e5ccd1454f7701c008f40977b448b0a51579176c5f5f60d071de4e193e089b6",
+  "life/runtime.py": "72f312a69ebb67d8347c490c57aa0c3e5bb9cf829df08104425d345c59d16e06",
+  "life/expression.py": "c0a8ce1ead08091386c5053cfb31d4f6e4cca01e0a4c6d37f569740297a48304",
+  "life/delivery.py": "763e1c5252faa64612b4c99ff3903c8f43bc3fe990591438c77de9049857f71b",
+  "life/drives.py": "751f79ff004ff5c85e65ec7a95613c801a1fdd5f65da6afa62f55a8b1439b877",
+  "life/role_host.py": "5b70510cee96b7baf62086b163ec5b80531f787634d40cde6d34ae004c424917",
+  "life/role_config.py": "9e50cfe3ff717d0f740a8640b09d4b0e281ade614043e5e0ed3e08c375555d40",
+  "life/services/dsh_bridge.py": "a85e475d736c61ca578a086138e85bb35dd722cef92790655f1518410483f705",
+  "scripts/diagnose_memory_pause.py": "03ef3f5780c2fbff3db402d96573e207d4a71b7aa80b55c044e61fbce01c76af",
+  "supervise.py": "cb42c4a83c4f21298d7d6eaed93a96b9df02dee4657f488ef732bff952ef6d50",
+  "tests/test_experience.py": "697c74cb42190aaa5e20bb8973b7e47a2bbeec287cd657f6fc8308d7cf3b358c",
+  "tests/test_experience_host.py": "212767c2aeb383bcea7145c1bf4a44dec485f74931f7cb8911525a52776dcc59",
+  "tests/test_add08_regressions.py": "3d166c8d2b80a9a74be616a67bc0e1aba2453030decdaabc841e21d87ec2a052"
+}

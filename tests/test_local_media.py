@@ -132,17 +132,68 @@ class LocalMediaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_initiative_native_and_media_share_actual_execution_lane(self):
         role,root=self.enable_continuity()
-        role.before_tool(root,self.scope,dict(tool='read_file',call_id='native',session_id=root['session_id'],arguments=dict(path='fixture')))
+        role.before_tool(root,self.scope,dict(tool='pwsh',call_id='native',session_id=root['session_id'],arguments=dict(command='synthetic work')))
         queued=self.submit()
         self.assertFalse(await self.service.run_one())
         self.assertFalse(self.backend.requests)
-        self.assertEqual(self.service.status(self.scope,queued['job_id'])['waiting_reason'],'resource_wait')
+        self.assertEqual(self.service.status(self.scope,queued['job_id'])['waiting_reason'],'execution_busy')
         from life.text import stable_id
         with self.life.repo.tx():
             role.initiative.finish_member(stable_id('roleop',root['session_id'],'native'))
             self.life.repo._exec('UPDATE work_jobs SET due=0 WHERE id=?',(queued['job_id'],))
         await self.service.run_one()
         self.assertEqual(len(self.backend.requests),1)
+
+    async def test_accepted_media_can_start_while_its_parent_turn_waits_for_result(self):
+        role,root=self.enable_continuity()
+        role.bridge.session_events=lambda *a,**kw:dict(events=[],has_more=False,agent_status='idle')
+        role.sessions.enqueue(root,self.source)
+        role.sessions.apply_event(root['session_id'],dict(seq=0,type='turn/start',data=dict(turn=1)))
+        role.sessions.apply_event(root['session_id'],dict(seq=1,type='step/start',data=dict(turn=1,step=1)))
+        with self.life.repo.tx():
+            self.life.repo._exec("UPDATE agent_inputs SET state='consumed',claimed_turn=1,handled=1")
+        receipt=await role.callback(dict(root_session_id=root['session_id'],session_id=root['session_id'],caller='role',
+            kind='life.media',call_id='submit-in-turn',proposal=dict(kind='image',prompt='blue mug',sources=[self.source.id])))
+        self.assertTrue(receipt['ok'],receipt)
+        self.assertEqual(receipt['next_action'],'await_media_result')
+        self.assertTrue(role.initiative.interactive_busy())
+        self.assertTrue(await self.service.run_one())
+        self.assertEqual(self.service.status(self.scope,receipt['job_id'])['status'],'completed')
+        self.assertEqual(len(self.backend.requests),1)
+
+    async def test_new_unhandled_user_input_still_blocks_a_media_handoff(self):
+        role,root=self.enable_continuity()
+        role.sessions.apply_event(root['session_id'],dict(seq=0,type='turn/start',data=dict(turn=1)))
+        role.sessions.apply_event(root['session_id'],dict(seq=1,type='step/start',data=dict(turn=1,step=1)))
+        job=self.submit()
+        with self.life.repo.tx():
+            role.initiative.media_handoff(root,job['job_id'])
+        event,_=self.life.ingest_message(self.scope,'please stop and read this first')
+        role.sessions.enqueue(root,event)
+        self.assertFalse(await self.service.run_one())
+        self.assertFalse(self.backend.requests)
+        self.assertEqual(self.service.status(self.scope,job['job_id'])['waiting_reason'],'interactive_turn')
+
+    async def test_resource_admission_is_not_generation_and_old_wait_reason_is_cleared(self):
+        entered=asyncio.Event();release=asyncio.Event()
+        async def resource_probe():
+            entered.set();await release.wait();return None
+        self.backend.resources_ready=resource_probe
+        self.backend.wait=asyncio.Event()
+        job=self.submit()
+        with self.life.repo.tx():
+            self.life.repo._exec('UPDATE work_jobs SET checkpoint=? WHERE id=?',
+                (json.dumps(dict(waiting_reason='gpu_memory_low')),job['job_id']))
+        running=asyncio.create_task(self.service.run_one())
+        await entered.wait()
+        self.assertEqual(self.service.status(self.scope,job['job_id'])['status'],'queued')
+        release.set()
+        while not self.backend.requests:
+            await asyncio.sleep(.001)
+        status=self.service.status(self.scope,job['job_id'])
+        self.assertEqual(status['status'],'generating')
+        self.assertIsNone(status['waiting_reason'])
+        self.backend.wait.set();await running
 
     async def test_initiative_media_failure_guard_suspends_without_model_polling(self):
         role,_root=self.enable_continuity()
@@ -187,6 +238,20 @@ class LocalMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.life.repo._one("SELECT 1 FROM resource_leases WHERE resource='gpu:0'"))
         self.assertEqual(role.initiative.guards(self.scope)[0]['phase'],'outcome_unknown')
 
+    async def test_queued_image_survives_retired_model_session(self):
+        role,root=self.enable_continuity()
+        job=self.submit()
+        before=json.loads(self.life.repo._one('SELECT payload FROM work_jobs WHERE id=?',(job['job_id'],))['payload'])
+        role.sessions.retire(self.scope)
+        await self.service.run_one()
+        self.assertEqual(self.service.status(self.scope,job['job_id'])['status'],'completed')
+        after=json.loads(self.life.repo._one('SELECT payload FROM work_jobs WHERE id=?',(job['job_id'],))['payload'])
+        self.assertEqual(after['spec'],before['spec'])
+        self.assertEqual(after['initiative']['run_id'],before['initiative']['run_id'])
+        self.assertEqual(after['initiative']['classification'],before['initiative']['classification'])
+        self.assertEqual(after['initiative']['adopted_from_session_id'],root['session_id'])
+        self.assertEqual(len(self.backend.requests),1)
+
     async def test_disabling_continuity_keeps_queued_background_work_dormant(self):
         role,_root=self.enable_continuity()
         job=self.submit()
@@ -198,7 +263,7 @@ class LocalMediaTests(unittest.IsolatedAsyncioTestCase):
     async def test_pre_activation_queue_is_adopted_before_actual_execution(self):
         queued=self.submit('legacy-queued')
         role,root=self.enable_continuity()
-        role.before_tool(root,self.scope,dict(tool='read_file',call_id='native',session_id=root['session_id'],arguments=dict(path='fixture')))
+        role.before_tool(root,self.scope,dict(tool='pwsh',call_id='native',session_id=root['session_id'],arguments=dict(command='synthetic work')))
         self.assertFalse(await self.service.run_one())
         self.assertFalse(self.backend.requests)
         from life.text import stable_id

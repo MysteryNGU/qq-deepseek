@@ -13,7 +13,7 @@ from .contracts import RelationshipState, Scope
 from .text import stable_id, terms
 
 PROTOCOL_VERSION = 2
-SEMANTICS_VERSION = 'relationship-semantics-1'
+SEMANTICS_VERSION = 'relationship-semantics-2'
 BASIS = {'policy_initialization','recorded_experiences','policy_and_recorded_experiences','legacy_unverified'}
 LABELS = {'familiarity':'熟悉度','trust':'信任度','comfort':'舒适度','bond':'情感联结'}
 DEFINITIONS = {
@@ -26,9 +26,9 @@ BANDS = {
     'familiarity':['几乎没有足够了解，很多事需要询问','初步认识，知道少量信息','已有若干共同经历，了解部分习惯',
                    '相当熟悉，知道较多偏好和经历','深度熟悉，共同背景丰富；仍可能有新变化'],
     'trust':['记录显示明显戒心；无证据时只能说尚不清楚','谨慎信任，需要结合事情核对','有一定可靠经历，也有不确定或分歧',
-             '通常愿意信赖，仍会独立判断具体事情','稳定而深厚的信赖，不等于无条件相信所有主张'],
+             '通常愿意信赖，沟通自然，乐于配合明确的请求','稳定而深厚的信赖，沟通坦诚，配合自然'],
     'comfort':['相处常感拘谨、紧张或不自在','可以交流，但表达较保留','日常交流尚自然，部分情境仍谨慎',
-               '通常放松，愿意表达不同意见和真实感受','通常很自在，不需要刻意维持表面和气'],
+               '通常放松，交流自然，愿意分享真实感受','通常很自在，亲近自然，沟通轻松坦诚'],
     'bond':['尚未形成稳定的个人牵挂','有一些好感或关心，联结较轻','这段关系已值得维持，开始有持续关注',
             '关系比较重要，愿意延续相处和分享生活','深厚而持久的牵挂，分歧与短暂分别不自动抹去联结'],
 }
@@ -363,7 +363,7 @@ class Relationships:
     def _mutate_note(self,scope,op,call_key,index=0,interpretation_ref=None):
         if not isinstance(op,dict) or op.get('operation','create') not in {'create','replace','resolve','revoke'}:
             raise SessionFailure('invalid_relation_input','关系材料操作无效')
-        if set(op)-{'operation','actor_id','relation_kind','origin','text','sources','confidence','salience','lifetime_days','base_note_ref'}:
+        if set(op)-{'operation','actor_id','relation_kind','origin','text','sources','confidence','salience','lifetime_days','base_note_ref','applicability','intent_ref'}:
             raise SessionFailure('invalid_relation_input','关系材料包含未知字段')
         if not call_key:
             raise SessionFailure('invalid_relation_input','关系材料缺少宿主调用幂等键')
@@ -407,11 +407,26 @@ class Relationships:
         if not isinstance(text,str) or not text.strip() or len(text)>2000:
             raise SessionFailure('invalid_relation_input','关系材料需要非空正文，最长 2000 字符')
         sources = list(dict.fromkeys(op['sources']+(json.loads(previous['sources']) if previous else [])))
-        self.require_sources(scope,sources)
+        events=self.require_sources(scope,sources)
+        from .learning_evidence import applicability_binding,user_statements
+        from .memory_policy import INFERENCE_DAYS,source_deadline
+        if origin=='explicit_statement' and len(user_statements(events))!=len(events):
+            raise SessionFailure('invalid_relation_input','explicit_statement_requires_direct_user_text')
+        application,reference,context_revision=applicability_binding(self.repo,scope,sources,
+            op.get('applicability','task') if relation_kind in {'preference','role_description'} else 'ongoing',op.get('intent_ref'))
+        if origin=='interpretation':
+            days=min(days or INFERENCE_DAYS,INFERENCE_DAYS)
+        elif application!='ongoing':
+            days=min(days or INFERENCE_DAYS,INFERENCE_DAYS)
         status = {'create':'active','replace':'active','resolve':'resolved','revoke':'revoked'}[action]
         now = self.life.clock()
+        expires=now+days*86400 if days else None
+        if origin=='interpretation':
+            expires=source_deadline(self.repo,sources,expires,now,scope)
         self.repo._exec('INSERT INTO memory_annotations(id,scope_id,kind,text,cues,sources,created,expires,status,always_load) '
-            "VALUES(?,?,'relationship_note',?,'[]',?,?,?,?,?)",(identity,scope.scope_id,text.strip(),canonical(sources),now,now+days*86400 if days else None,status,0))
+            "VALUES(?,?,'relationship_note',?,'[]',?,?,?,?,?)",(identity,scope.scope_id,text.strip(),canonical(sources),now,expires,status,0))
+        self.repo._exec('UPDATE memory_annotations SET applicability=?,context_ref=?,context_revision=? WHERE id=?',
+            (application,reference,context_revision,identity))
         root = previous['root_id'] if previous else identity
         revision = previous['revision']+1 if previous else 1
         self.repo._exec('INSERT INTO relationship_annotation_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -440,7 +455,12 @@ class Relationships:
                 self.require_sources(scope,json.loads(row['sources']))
             except SessionFailure:
                 continue
-            result.append(dict(note_ref=row['id'],actor_id=actor,kind=row['relation_kind'],text=row['text'],
+            from .learning_evidence import annotation_view
+            view=annotation_view(self.repo,scope,row,self.life.clock())
+            if view is None:
+                continue
+            result.append(dict(note_ref=row['id'],actor_id=actor,kind=row['relation_kind'],text=view['text'],
+                authority=view['authority'],applicability=row['applicability'],source_quotes=view['source_quotes'],
                 status='open' if row['relation_kind']=='repair' else 'active',origin=row['origin'],confidence=row['confidence'],
                 salience=row['salience'],revision=row['revision'],sources=json.loads(row['sources'])))
         return result

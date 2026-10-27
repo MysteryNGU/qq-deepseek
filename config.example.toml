@@ -2,6 +2,11 @@
 # Native tools share action_per_hour/day; 0 means unlimited.
 name = "大肥鱼"
 persona = "persona.md"
+# Set true to use the same persona file in owner/private/group contexts.
+unified_persona = true
+same_person_group_recall = true
+profile_review_enabled = true
+public_persona = "personas/public.md"
 ws_url = "ws://127.0.0.1:3001"
 ws_token = ""
 api_key = ""
@@ -11,10 +16,13 @@ owner = 0
 friends = []
 known_people = {  }
 allow_groups = []
+acknowledge_before_work = true # 接到请求后，先确认应答已送达，再开始外部工具工作。
 allow_all_private = false
 life_db = "data/life.db"
 life_agent = "default"
 continuity_enabled = false
+# Set after doctor and the consultation integration checks pass.
+consult_config = ""
 # Optional policy overrides; ordinary packages can supply installed identity/policy metadata.
 capability_policies = []
 life_dynamics = {  }
@@ -47,6 +55,8 @@ timeout_seconds = 600
 min_available_ram_mib = 1024
 min_free_vram_mib = 4096
 max_pending_jobs = 8
+# Keep a loaded speech model for follow-up replies; unload before image jobs.
+speech_idle_seconds = 300
 # The sole backend registry; backend-specific settings belong in each provider.config.
 providers = []
 defaults = {}
@@ -67,13 +77,111 @@ defaults = {}
 # worker_threads = 4
 
 [resource_policy]
+# Idle polls draw once after the action sequence ends; real inputs stay immediate.
+idle_min_seconds = 600
+idle_random_max_seconds = 3600
+# Legacy settings retained for older configurations and non-idle cooldowns.
 idle_base_seconds = 900
 idle_max_seconds = 7200
 unchanged_per_tier = 2
-text_preview_target_tokens = 1500
-text_result_max_tokens = 2000
-text_result_max_utf8_bytes = 12000
-dynamic_context_target_tokens = 3000
-memory_context_target_tokens = 1200
-continuity_context_target_tokens = 400
+text_preview_target_tokens = 3000
+text_result_max_tokens = 4000
+text_result_max_utf8_bytes = 24000
+dynamic_context_target_tokens = 6000
+memory_context_target_tokens = 2400
+continuity_context_target_tokens = 800
 autonomous_no_progress_limit = 3
+
+# Covers Bot-owned DSH model streams, not other applications or plugin-direct APIs.
+[spending_policy]
+enabled = false
+daily_target_fen = 500
+daily_limit_fen = 1000
+
+# Rebuildable indexes over life.db, without a second chat archive.
+[memory_index]
+chunk_tokens = 384
+overlap_tokens = 48
+route_limit = 40
+scan_limit = 10000
+rrf_k = 60
+related_hops = 2
+retire_after_hours = 24
+
+# Historical person review is separate from hourly summarization.
+[profile_backfill]
+enabled = false
+batch_events = 8
+interval_seconds = 60
+timeout_seconds = 300
+
+# Ordinary continuous tasks; each next step starts after the prior turn settles.
+[activity]
+enabled = true
+step_delay_seconds = 5
+no_progress_limit = 3
+self_step_limit = 8
+
+[media_library]
+max_active_per_scope = 50
+lifetime_days = 30
+
+# Same-role background sessions require DSH memory_protocol = 1.
+[memory_organize]
+enabled = true
+ordinary_sharing_enabled = true
+interval_seconds = 3600
+batch_events = 80
+lease_seconds = 120
+max_source_pages = 64
+timeout_seconds = 900
+
+# Opt in only after verifying this endpoint/model on the same synthetic corpus.
+# No DeepSeek chat endpoint or model is implicitly treated as an embedding API.
+[embedding]
+enabled = false
+endpoint = ""
+model_id = ""
+model_revision = ""
+provider_revision = ""
+dimension = 0
+api_key_env = ""
+allow_external_text = false
+price_version = ""
+# To enable, supply the verified integer price in nano-CNY per input token.
+# input_nano_per_token = 0  # Only for a verified free/local endpoint.
+max_input_tokens = 8192
+max_request_bytes = 262144
+timeout_seconds = 30
+
+# Optional owned CPU service; weights must be downloaded and verified first.
+# It only listens on 127.0.0.1 and starts/stops with the Bot.
+[local_embedding]
+enabled = false
+model_path = "data/models/bge-small-zh-v1.5"
+manifest_digest = ""
+host = "127.0.0.1"
+port = 8231
+threads = 2
+
+# ADD-08: numerical adult_intimate state. This does not enter a scene or start
+# continuous input. The current user must explicitly confirm context and mode.
+[experience]
+simulation_enabled = true
+expression_policy = "existing_chat"
+threshold = 0.55
+release_threshold = 0.35
+min_hold_seconds = 0.0
+peak_keep_ratio = 0.4
+recovery_seconds = 120.0
+arousal_half_life_seconds = 1800.0
+satiety_half_life_seconds = 600.0
+valence_half_life_seconds = 900.0
+adaptation_seconds = 300.0
+adaptation_recovery_seconds = 600.0
+load_recovery_seconds = 900.0
+engagement_seconds = 180.0
+input_rate_per_second = 0.003
+load_rate_per_second = 0.0002
+sensitivity_min = 0.25
+sensitivity_max = 1.5

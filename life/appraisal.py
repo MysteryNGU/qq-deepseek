@@ -22,6 +22,92 @@ ALLOWED_EVENT_TYPES = {
 }
 
 
+def validate_shape(raw, path='appraisal'):
+    """Validate model JSON before any input acknowledgement or immutable digest.
+
+    Missing optional fields have defaults. Wrong types and non-finite numbers
+    are correctable errors, never evidence that may be silently discarded.
+    """
+    from .agent_session import SessionFailure
+    def fail(field, expected):
+        raise SessionFailure('invalid_input', f'{field} 必须是{expected}；修正该字段后重新提交',
+                             field=field, expected=expected, correction='修正后重提；结构校验失败未占用调用编号')
+    if not isinstance(raw, dict):
+        fail(path, 'JSON对象')
+    if any(key in raw for key in ('experience', 'experience_domain', 'event_impulse', 'continuous_input', 'effects')):
+        raise SessionFailure('experience_protocol_required','专项快字段仅由life.simulation写入；小时评价不能再次累计')
+    def number(value, field):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            fail(field, '有限数值')
+    for key in ('sources', 'source_event_ids', 'context_refs', 'resolves_cause_ids', 'affected_need_ids'):
+        if key in raw and (not isinstance(raw[key], list) or any(not isinstance(v, str) for v in raw[key])):
+            fail(path+'.'+key, '字符串数组')
+    for key in ('id', 'subject_actor_id', 'meaning_kind', 'event_type', 'interpretation', 'user_need',
+                'target', 'persistence_reason', 'self_text', 'supersedes_appraisal_id'):
+        if key in raw and not isinstance(raw[key], str):
+            fail(path+'.'+key, '字符串')
+    for key in ('revision', 'based_on_state_version', 'based_on_relationship_version'):
+        if key in raw and (type(raw[key]) is not int or raw[key] < (1 if key=='revision' else 0)):
+            fail(path+'.'+key, '有效非负整数' if key!='revision' else '正整数')
+    for key in ('certainty', 'relevance', 'novelty', 'goal_congruence'):
+        if key in raw:
+            number(raw[key], path+'.'+key)
+            lo = -1 if key=='goal_congruence' else 0
+            if not lo <= raw[key] <= 1:
+                fail(path+'.'+key, f'{lo}到1的有限数值')
+    for key in ('relation_impacts', 'relation_context_changes'):
+        if key in raw and (not isinstance(raw[key], list) or any(not isinstance(v, dict) for v in raw[key])):
+            fail(path+'.'+key, '操作对象数组')
+    for i,op in enumerate(raw.get('relation_context_changes',[])):
+        for key in ('operation','actor_id','relation_kind','origin','text','salience','base_note_ref','applicability','intent_ref'):
+            if key in op and not isinstance(op[key],str):
+                fail(f'{path}.relation_context_changes[{i}].{key}', '字符串')
+        if 'sources' in op and (not isinstance(op['sources'],list) or any(not isinstance(v,str) for v in op['sources'])):
+            fail(f'{path}.relation_context_changes[{i}].sources','字符串数组')
+        for key in ('confidence','lifetime_days'):
+            if key in op:
+                number(op[key],f'{path}.relation_context_changes[{i}].{key}')
+    for key in ('quoted_or_hypothetical', 'negated'):
+        if key in raw and type(raw[key]) is not bool:
+            fail(path+'.'+key, '布尔值')
+    for key in ('affect_impulse', 'proposed_affect_delta', 'recovery_half_life_seconds'):
+        if key in raw:
+            if not isinstance(raw[key], dict):
+                fail(path+'.'+key, '指标到有限数值的对象')
+            for metric, value in raw[key].items():
+                if metric not in EMOTIONS:
+                    fail(path+'.'+key+'.'+metric, '已注册情绪指标')
+                number(value, path+'.'+key+'.'+metric)
+                if key=='recovery_half_life_seconds' and value <= 0:
+                    fail(path+'.'+key+'.'+metric,'正的有限时常')
+    evidence = raw.get('drive_evidence', [])
+    if not isinstance(evidence, list) or len(evidence) > 8:
+        fail(path+'.drive_evidence', '最多8个证据对象的数组')
+    for i, item in enumerate(evidence):
+        field = f'{path}.drive_evidence[{i}]'
+        if not isinstance(item, dict):
+            fail(field, '证据对象')
+        dim = item.get('dimension', item.get('need'))
+        kind = item.get('kind', item.get('effect_kind', 'activation_change'))
+        if not isinstance(dim, str) or not canonical_dimension(dim):
+            fail(field+'.dimension', '已注册需要名称')
+        if not isinstance(kind, str) or kind not in EFFECT_KINDS:
+            fail(field+'.kind', '已注册效果名称')
+        if kind=='stimulation_change':
+            raise SessionFailure('experience_protocol_required', field+'.kind: stimulation_change 已迁移；仅在明确adult_intimate场景使用life.simulation的appraise_input，不可通过普通驱力入口计入', field=field+'.kind')
+        for key in ('delta', 'confidence'):
+            if key in item:
+                number(item[key], field+'.'+key)
+        if 'confidence' in item and not 0 <= item['confidence'] <= 1:
+            fail(field+'.confidence', '0到1的有限数值')
+        for key in ('confirmed', 'real_participant', 'relationship_allows'):
+            if key in item and type(item[key]) is not bool:
+                fail(field+'.'+key, '布尔值')
+        for key in ('participant_id', 'note'):
+            if key in item and not isinstance(item[key], str):
+                fail(field+'.'+key, '字符串')
+
+
 def _num(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -33,8 +119,7 @@ def _num(value: Any, default: float = 0.0) -> float:
 def validate_appraisal(raw: dict[str, Any] | None, scope: Scope,
                        known_event_ids: Iterable[str],
                        fallback_sources: list[str] | None = None, *, relation_registry=None) -> Appraisal | None:
-    if not isinstance(raw, dict):
-        return None
+    validate_shape(raw)
     from .agent_session import SessionFailure
     from .relationships import default_registry,validate_impacts
     if any(key.startswith('_') for key in raw):

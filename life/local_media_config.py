@@ -12,6 +12,7 @@ class LocalMediaConfig:
     min_available_ram_mib: int = 1024
     min_free_vram_mib: int = 4096
     max_pending_jobs: int = 8
+    speech_idle_seconds: int = 300
     providers: list[dict] = field(default_factory=list)
     defaults: dict[str,str] = field(default_factory=dict)
 
@@ -24,7 +25,7 @@ class LocalMediaConfig:
         if type(result.enabled) is not bool:
             raise ValueError('local_media_enabled_requires_boolean')
         for name in ('timeout_seconds','min_available_ram_mib','min_free_vram_mib',
-                     'max_pending_jobs'):
+                     'max_pending_jobs','speech_idle_seconds'):
             if type(getattr(result,name)) is not int or getattr(result,name)<1:
                 raise ValueError('invalid_local_media_limit:'+name)
         for field in fields(cls):

@@ -69,14 +69,32 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
         self.bridge.session_events.assert_not_called()
         self.assertFalse(self.life.repo._all('SELECT * FROM usage_calls'))
 
-    def test_T02_T04_adaptive_idle_has_one_identity_and_two_unchanged_per_tier(self):
+    def test_T02_T04_random_idle_has_one_identity_and_inclusive_bounds(self):
         delays = []
-        for i in range(9):
-            self.input()
-            result = self.role.rest(self.scope,dict(reflection_outcome='unchanged',reason='new words '+str(i)),self.root)
-            delays.append(result['attention']['after_seconds'])
-        self.assertEqual(delays,[900,1800,1800,3600,3600,7200,7200,7200,7200])
+        with patch('life.resource_policy.random.SystemRandom') as rng:
+            rng.return_value.randint.side_effect=[600,3600,1234]
+            for i in range(3):
+                self.input()
+                result=self.role.rest(self.scope,dict(reflection_outcome='unchanged'),self.root)
+                delays.append(result['attention']['after_seconds'])
+            self.assertEqual(delays,[600,3600,1234])
+            rng.return_value.randint.assert_called_with(600,3600)
         self.assertEqual(self.life.repo._one("SELECT COUNT(*) AS n FROM role_wakes WHERE state='pending' AND kind='idle_probe'")['n'],1)
+
+    def test_random_timer_starts_after_turn_end_and_survives_repeated_ticks(self):
+        self.role.sessions.apply_event(self.root['session_id'],dict(type='turn/start',seq=0,time=1000,data=dict(turn=1)))
+        with patch('life.resource_policy.time.time',return_value=1000):
+            result=self.role.attention.finish(self.scope,self.root,{},'end')
+        self.assertEqual(result['mode'],'after_sequence')
+        self.role.attention.settle_sequences()
+        self.assertFalse(self.life.repo._one("SELECT 1 FROM role_wakes WHERE kind='idle_probe'"))
+        self.role.sessions.apply_event(self.root['session_id'],dict(type='turn/end',seq=1,time=5000,data=dict(turn=1)))
+        with patch('life.resource_policy.time.time',return_value=5000), patch('life.resource_policy.random.SystemRandom') as rng:
+            rng.return_value.randint.return_value=600
+            self.role.attention.settle_sequences()
+            self.role.attention.settle_sequences()
+            rng.return_value.randint.assert_called_once()
+        self.assertEqual(self.life.repo._one("SELECT due FROM role_wakes WHERE kind='idle_probe'")['due'],5600)
 
     def test_T03_T07_explicit_short_schedule_survives_default_final_expression(self):
         self.input()
@@ -108,7 +126,7 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
         self.role = RoleAgent(self.life,self.bridge,self.cfg,self.path,AsyncMock())
         later = dict(self.life.repo._one('SELECT * FROM role_wakes'))
         self.assertEqual(row,later)
-        self.assertLessEqual(self.role.resources.idle_delay(100000),7200)
+        self.assertLessEqual(self.role.resources.idle_delay(100000),3600)
 
     async def test_T08_wait_blocker_cannot_be_released_by_idle(self):
         task = self.role.tasks.ensure(self.scope,'waiting','Wait for an answer')
@@ -174,11 +192,11 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
         from supervise import validate_data_compatibility
         source = self.path/'old-code';(source/'life').mkdir(parents=True)
         (source/'bot.py').write_text('# old')
-        (source/'life/runtime.py').write_text('# no supported-format declaration')
+        (source/'life/runtime.py').write_text('SUPPORTED_MEMORY_SCHEMA = 2\n# no supported relationship format')
         self.life.relationship(self.scope)
         with self.assertRaisesRegex(RuntimeError,'relationship_schema_incompatible'):
             validate_data_compatibility(source,database=self.life.repo.path)
-        (source/'life/runtime.py').write_text('SUPPORTED_RELATIONSHIP_SCHEMA = 2\n')
+        (source/'life/runtime.py').write_text('SUPPORTED_MEMORY_SCHEMA = 2\nSUPPORTED_RELATIONSHIP_SCHEMA = 2\n')
         validate_data_compatibility(source,database=self.life.repo.path)
 
     def test_T13_T16_middle_error_and_exact_full_pagination(self):
@@ -286,14 +304,20 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('scope',packet)
         self.assertNotIn('sampled_at',packet)
 
-    def test_T27_required_reminders_survive_tiny_target_and_more_than_two_hundred_items(self):
+    def test_T27_legacy_reminders_have_bounded_preview_and_remain_readable(self):
         event,_=self.life.ingest_message(self.scope,'Keep these explicit reminders.')
-        for i in range(205):
-            self.life.recollection.annotate(self.scope,'reminder','MUST_REMEMBER_'+str(i)+' '+('retain this instruction '*5),[event.id],always_load=True)
+        with self.life.repo.tx():
+            for i in range(205):
+                self.life.repo._exec("INSERT INTO memory_annotations(id,scope_id,kind,text,cues,sources,created,always_load) VALUES(?,?,?,?,?,?,?,1)",
+                    ('legacy-'+str(i),self.scope.scope_id,'reminder','MUST_REMEMBER_'+str(i)+' '+('retain this instruction '*5),
+                     '[]',canonical([event.id]),i))
         self.role.resources=ResourcePolicy.parse(dict(dynamic_context_target_tokens=128))
         packet=json.loads(self.role.context(self.root,self.scope,{}).split('当前状态与材料：\n')[1])
-        self.assertEqual(len(packet['mandatory_reminders']),205)
-        self.assertIn('MUST_REMEMBER_0 ',canonical(packet['mandatory_reminders']))
+        self.assertLessEqual(len(packet['mandatory_reminders']),12)
+        self.assertLessEqual(estimate_tokens(canonical(packet['mandatory_reminders'])),800)
+        self.assertEqual(packet['reminder_count'],205)
+        self.assertEqual(self.life.repo._one('SELECT COUNT(*) AS n FROM memory_annotations')['n'],205)
+        self.assertIn('MUST_REMEMBER_0 ',self.life.repo._one("SELECT text FROM memory_annotations WHERE id='legacy-0'")['text'])
         self.assertTrue(packet['mandatory_overflow'])
         other=self.life.scope('qq:group:3','1')
         self.assertFalse(self.life.recollection.annotations(other,'',None,mandatory=True))

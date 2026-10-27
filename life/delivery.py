@@ -76,6 +76,19 @@ class DeliveryService:
                                    self.runtime.jobs.policy_epoch(scope.scope_id))
 
     def _valid(self, row, *, dispatch=True):
+        if dispatch and self.repo._one("SELECT 1 FROM sqlite_master WHERE name='expressions'"):
+            expression=self.repo._one('SELECT plan FROM expressions WHERE id=?',(row['turn_id'],))
+            if expression:
+                from .agent_session import SessionFailure
+                plan=json.loads(expression['plan'])
+                if 'experience_run_ref' in plan or 'experience_control_revision' in plan:
+                    event=self.repo.get_event(plan['event_id'])
+                    if not event:
+                        return False
+                    try:
+                        self.runtime.experience.guard_expression(event.scope,plan)
+                    except SessionFailure:
+                        return False
         if dispatch and row["context_revision"] != self.revision_id(row["scope_id"]):
             return False
         if row["forget_epoch"] != self.repo.forget_epoch(row["scope_id"]):
@@ -141,11 +154,17 @@ class DeliveryService:
                          and response.get("status", "ok") == "ok" and isinstance(data, dict)
                          and data.get("message_id") is not None)
             rejected = isinstance(response, dict) and response.get("retcode") not in (None, 0, 1)
+            from .onebot_receipt import failure_reason
+            failure=failure_reason(response)
+            if failure and failure['reason']=='platform_receipt_timeout':
+                rejected=False
             status = "confirmed" if confirmed else ("failed" if rejected else "unknown")
             # Receipts remain useful after deletion, but their body must not
             # resurrect forgotten content or an obsolete task.
             valid = self._valid(row, dispatch=False)
-            receipt = {"message_id": data["message_id"]} if confirmed else {}
+            receipt = {"message_id": data["message_id"]} if confirmed else dict(failure or {})
+            if not confirmed and isinstance(response,dict) and type(response.get('retcode')) is int:
+                receipt['retcode']=response['retcode']
             self.repo._exec("UPDATE deliveries SET status=?,receipt=?,updated=? WHERE id=? AND token=?",
                             (status, json.dumps(receipt), self.clock(), delivery_id, token))
             if confirmed and valid:
@@ -177,11 +196,11 @@ class DeliveryService:
                             "WHERE id=? AND token=? AND status='dispatching'",
                             (json.dumps(dict(reason='transport_not_started')), self.clock(), delivery_id, token))
 
-    def review_candidates(self, scope, limit=5):
+    def review_candidates(self, scope, limit=5, *, since=0):
         """Return unresolved expressions once, without replaying network writes."""
         rows = self.repo._all("SELECT d.* FROM deliveries d LEFT JOIN delivery_reviews r ON r.delivery_id=d.id "
-            "WHERE d.scope_id=? AND d.status IN ('deferred','unknown','failed') AND r.delivery_id IS NULL "
-            "ORDER BY d.created,d.segment", (scope.scope_id,))
+            "WHERE d.scope_id=? AND d.created>=? AND d.status IN ('deferred','unknown','failed') AND r.delivery_id IS NULL "
+            "ORDER BY d.created,d.segment", (scope.scope_id,since))
         expressions = []
         for row in rows:
             if self._valid(row, dispatch=False) and row['turn_id'] not in expressions:
@@ -231,7 +250,8 @@ class DeliveryService:
             self.settle(delivery_id, token)
             raise
         confirmed = self.settle(delivery_id, token, response)
-        if not confirmed and isinstance(response, dict) and response.get("retcode") in (None, 0, 1):
+        settled=self.repo._one('SELECT status FROM deliveries WHERE id=?',(delivery_id,))
+        if not confirmed and settled and settled['status']=='unknown':
             return {"retcode": -1, "status": "failed", "message": "delivery_unknown_reconcile_required"}
         return response
 

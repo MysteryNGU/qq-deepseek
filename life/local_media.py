@@ -29,6 +29,7 @@ class LocalMedia:
         self.settings = LocalMediaConfig.parse(getattr(cfg,'local_media',None))
         self.config = self.settings.resolve(root)
         self.adapters=AdapterRegistry(self.config,root)
+        self.life.catalog.provider_current=self.learning_version_current
         self.voices.adapters=self.adapters
         self.root = Path(self.config['root'])
         self.project = Path(root).resolve()
@@ -46,6 +47,17 @@ class LocalMedia:
         self._resource_checked_at,self._resource_wait = -float('inf'),None
         self.resource_clock = time.monotonic
         self.voices.local_enabled = self.settings.enabled
+
+    def learning_version_current(self,tags):
+        for tag in tags:
+            if not tag.startswith('media-version:'):
+                continue
+            version=json.loads(tag[len('media-version:'):])
+            provider=self.adapters.providers.get(version.get('provider_id'))
+            if not self.settings.enabled or provider is None or any(version.get(k)!=provider.get(k)
+                    for k in ('model_version','adapter_version','digest')):
+                return False
+        return True
 
     def capability(self,scope):
         return dict(enabled=self.settings.enabled,tool='life_media',actions=['submit','status','cancel'],
@@ -132,8 +144,14 @@ class LocalMedia:
             if selected:
                 voice=self.voices.local_record(selected['id'],p.get('voice_revision',selected['revision']),scope)
                 provider=self.adapters.resolve(kind,p.get('provider_id'),voice)
+                # An operator may approve a measured, runtime-only adapter
+                # upgrade. Voice/model/adapter versions and reference content
+                # remain bound; old frozen jobs still fail their source hash.
+                voice_digest=voice.get('provider_digest',provider['digest'])
+                compatible=(voice_digest in provider.get('runtime_compatible_digests',[]) and
+                            voice.get('provider_revision')==provider['adapter_version'])
                 if (voice['engine']!=provider['description']['engine'] or voice['engine_version']!=provider['model_version'] or
-                        voice.get('provider_digest',provider['digest'])!=provider['digest']):
+                        voice_digest!=provider['digest'] and not compatible):
                     raise SessionFailure('stale_context','音色绑定的模型版本与所选后端不同，请重新试音')
         refs=p.get('reference_asset_ids',[])
         if not isinstance(refs,list) or len(refs)>20 or any(not isinstance(aid,str) for aid in refs):
@@ -168,6 +186,8 @@ class LocalMedia:
         if Path(config['root'])!=self.root:
             raise SessionFailure('invalid_input','现有作业的受管目录不能通过媒体重载移动')
         registry=AdapterRegistry(config,self.project)
+        if isinstance(self.backend,MediaProcess):
+            await self.backend.close()
         self.settings,self.config,self.adapters=settings,config,registry
         self.cfg.local_media=configured.local_media
         self.voices.adapters=registry;self.voices.local_enabled=settings.enabled
@@ -239,10 +259,14 @@ class LocalMedia:
         payload,checkpoint = json.loads(row['payload']),json.loads(row['checkpoint'])
         self.sources_valid(scope,payload.get('sources',[]))
         state = {'pending':'queued','running':'generating','done':'completed'}.get(row['status'],row['status'])
+        if row['status']=='running' and checkpoint.get('phase')=='admitting':
+            state = 'queued'
         result = dict(job_id=jid,status=state,kind=payload['spec']['kind'],cancel_requested=bool(checkpoint.get('cancel_requested')),
             asset_id=checkpoint.get('asset_id'),result_event_id=checkpoint.get('event_id'),
-            error=row['error'] or None,waiting_reason=checkpoint.get('waiting_reason'),
+            error=row['error'] or None,waiting_reason=checkpoint.get('waiting_reason') if state!='generating' else None,
             created=row['created'],updated=row['updated'])
+        if state in {'queued','generating','waiting'}:
+            result.update(next_action='await_media_result',message='完成或失败会自动返回 media_result；无需反复查询，当前可以回应或安静结束。')
         provider=payload['spec'].get('_adapter')
         if provider:
             result.update(provider_id=provider['provider_id'],provider_revision=provider['adapter_version'],
@@ -335,6 +359,10 @@ class LocalMedia:
         execution_started = None
         initiative_admitted = False
         try:
+            with self.repo.tx():
+                checkpoint = {k:v for k,v in lease.checkpoint.items() if k not in {'waiting_reason','waiting_code'}}
+                self.repo._exec('UPDATE work_jobs SET checkpoint=? WHERE id=? AND lease_token=?',
+                               (canonical(dict(checkpoint,phase='admitting')),lease.id,lease.token))
             reason = self.check(lease,payload)
             if reason:
                 await self.terminal(lease,payload,'cancelled',error=reason)
@@ -342,6 +370,9 @@ class LocalMedia:
             if not self.jobs.acquire(lease,'gpu:0'):
                 self.jobs.finish(lease,'pending',delay=2,checkpoint=dict(waiting_reason='gpu_busy'))
                 return False
+            if hasattr(self.backend,'prepare'):
+                await self.backend.prepare(payload['spec'])
+                self._resource_checked_at=-float('inf')
             if self.resource_clock()-self._resource_checked_at>=5:
                 self._resource_wait = await self.backend.resources_ready()
                 self._resource_checked_at = self.resource_clock()
@@ -373,6 +404,9 @@ class LocalMedia:
                 with self.repo.tx():
                     self.initiative.started(lease.id)
             execution_started = time.monotonic()
+            with self.repo.tx():
+                self.repo._exec('UPDATE work_jobs SET checkpoint=? WHERE id=? AND lease_token=?',
+                               (canonical(dict(checkpoint,phase='generating')),lease.id,lease.token))
             result = await self.backend.run(request,folder,lambda:self.check(lease,payload))
             reason = self.check(lease,payload)
             if reason:
@@ -386,7 +420,8 @@ class LocalMedia:
             raise
         except SessionFailure as error:
             if error.code in {'resource_wait','retry_suspended'}:
-                self.jobs.finish(lease,'pending' if error.code=='resource_wait' else 'waiting',delay=5,checkpoint=dict(waiting_reason=error.code))
+                self.jobs.finish(lease,'pending' if error.code=='resource_wait' else 'waiting',delay=5,
+                    checkpoint=dict(waiting_reason=error.data.get('reason',error.code),waiting_code=error.code))
                 if error.code=='resource_wait' and self.initiative and payload.get('initiative'):
                     self.initiative.role.attention.wait_resource(scope,payload['initiative']['owner_ref'],error.code)
                 return False
@@ -527,6 +562,8 @@ class LocalMedia:
             await self.publish(row['id'],payload,'cancelled',error=reason)
 
     async def recover(self):
+        if hasattr(self.backend,'recover_root'):
+            await self.backend.recover_root(self.root)
         await self.retire_changed_jobs()
         for row in self.repo._all('SELECT * FROM work_jobs WHERE kind=?',(JOB_KIND,)):
             payload = json.loads(row['payload'])
@@ -617,6 +654,8 @@ class LocalMedia:
         async def pump():
             while not self.closing:
                 try:
+                    if hasattr(self.backend,'maintenance'):
+                        await self.backend.maintenance()
                     if await self.run_one():
                         continue
                     for row in self.repo._all("SELECT * FROM work_jobs WHERE kind=? AND status IN ('done','failed','cancelled','unknown') "
@@ -640,6 +679,8 @@ class LocalMedia:
             self.task.cancel()
             await asyncio.gather(self.task,return_exceptions=True)
             self.task=None
+        if hasattr(self.backend,'close'):
+            await self.backend.close()
         if self.lock_file:
             import os
             if os.name=='nt':

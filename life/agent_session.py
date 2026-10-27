@@ -93,6 +93,45 @@ class AgentSessions:
             raise SessionFailure('stale_context', '会话包含已遗忘的上下文')
         return dict(row)
 
+    def renew_idle(self, scope):
+        """After 64 settled turns, start fresh without carrying generated summaries.
+
+        Pending inputs and owned executions prevent renewal. Tasks, evidence,
+        unknown outcomes and replay guards remain in their authoritative stores.
+        """
+        with self.repo.tx():
+            binding = self.binding(scope)
+            sid = binding['session_id']
+            count = self.repo._one("SELECT COUNT(*) AS n FROM (SELECT 1 FROM agent_events WHERE session_id=? "
+                "AND json_extract(payload,'$.type')='turn/end' LIMIT 64)",(sid,))['n']
+            if count < 64 or self.pending(sid):
+                return binding
+            last = self.repo._one("SELECT payload FROM agent_events WHERE session_id=? AND "
+                "json_extract(payload,'$.type') IN ('turn/start','turn/end') ORDER BY seq DESC LIMIT 1",(sid,))
+            if not last or json.loads(last['payload'])['type'] != 'turn/end':
+                return binding
+            if self.repo._one("SELECT 1 FROM work_jobs WHERE scope_id=? AND status IN ('pending','running','waiting') LIMIT 1",(scope.scope_id,)):
+                return binding
+            if self.repo._one("SELECT 1 FROM role_operations WHERE (session_id=? OR session_id IN "
+                "(SELECT session_id FROM agent_sessions WHERE parent_session_id=?)) AND status='dispatched' LIMIT 1",(sid,sid)):
+                return binding
+            if self.repo._one("SELECT 1 FROM agent_inputs i JOIN agent_sessions s USING(session_id) "
+                "WHERE s.parent_session_id=? AND i.handled=0 AND i.state<>'rejected' LIMIT 1",(sid,)):
+                return binding
+            slot = self.repo._one('SELECT v FROM meta WHERE k=?',('initiative:slot:'+scope.agent_id,))
+            if slot and json.loads(slot['v']).get('members'):
+                return binding
+            self.repo._exec("UPDATE agent_sessions SET status='retired' WHERE session_id=?",(sid,))
+            new = self.binding(scope)
+            task = self.repo._one('SELECT v FROM meta WHERE k=?',('action_task:'+str(binding.get('intent_ref')),))
+            if task and json.loads(task['v']).get('status') == 'active':
+                current = json.loads(task['v'])
+                self.repo._exec('UPDATE agent_sessions SET intent_ref=?,intent_revision=? WHERE session_id=?',
+                               (current['ref'],current.get('revision',1),new['session_id']))
+            self.repo._exec("UPDATE role_wakes SET generation=? WHERE scope_id=? AND state IN ('pending','waiting_resource')",
+                           (new['generation'],scope.scope_id))
+            return self.require(new['session_id'])
+
     def enqueue(self, binding, event, *, mode='steer',content_blocks=None):
         sid = binding['session_id']
         payload = dict(session_id=sid, input_id=event.id,
@@ -252,6 +291,7 @@ class AgentSessions:
                 raise SessionFailure(page['code'], page.get('message', ''))
             for event in page['events']:
                 self.apply_event(sid, event)
+                await asyncio.sleep(0)
             if not page.get('has_more'):
                 return
             if self.require(sid)['cursor']<=binding['cursor']:

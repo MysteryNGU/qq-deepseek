@@ -1,0 +1,6 @@
+# Optional CPU loopback service. Existing compatible packages may be reused.
+# No remote model code is loaded; use the pinned safetensors manifest.
+torch>=2.6,<3
+transformers>=4.45,<6
+safetensors>=0.4,<1
+huggingface-hub>=0.24,<2

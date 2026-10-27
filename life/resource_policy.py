@@ -1,8 +1,9 @@
-"""Deterministic attention pacing and bounded reading; never plans the role's life."""
+"""Durable random idle pacing and bounded reading."""
 from dataclasses import asdict,dataclass,fields
 import hashlib
 import json
 import math
+import random
 import time
 
 from .agent_session import SessionFailure,canonical,digest
@@ -14,13 +15,16 @@ class ResourcePolicy:
     idle_base_seconds: int = 900
     idle_max_seconds: int = 7200
     unchanged_per_tier: int = 2
-    text_preview_target_tokens: int = 1500
-    text_result_max_tokens: int = 2000
-    text_result_max_utf8_bytes: int = 12000
-    dynamic_context_target_tokens: int = 3000
-    memory_context_target_tokens: int = 1200
-    continuity_context_target_tokens: int = 400
+    idle_min_seconds: int = 600
+    idle_random_max_seconds: int = 3600
+    text_preview_target_tokens: int = 3000
+    text_result_max_tokens: int = 4000
+    text_result_max_utf8_bytes: int = 24000
+    dynamic_context_target_tokens: int = 6000
+    memory_context_target_tokens: int = 2400
+    continuity_context_target_tokens: int = 800
     autonomous_no_progress_limit: int = 3
+    motivation_cooldown_seconds: int = 900
 
     @classmethod
     def parse(cls,raw=None):
@@ -30,7 +34,7 @@ class ResourcePolicy:
         result = cls(**raw)
         if any(type(v) is not int or v<=0 for v in asdict(result).values()):
             raise ValueError('resource_policy_requires_positive_integers')
-        if (result.idle_max_seconds<result.idle_base_seconds or result.text_result_max_tokens<result.text_preview_target_tokens
+        if (result.idle_max_seconds<result.idle_base_seconds or result.idle_random_max_seconds<result.idle_min_seconds or result.text_result_max_tokens<result.text_preview_target_tokens
                 or result.text_result_max_tokens<128 or result.text_result_max_utf8_bytes<512
                 or result.continuity_context_target_tokens>result.memory_context_target_tokens):
             raise ValueError('invalid_resource_policy_bounds')
@@ -41,8 +45,7 @@ class ResourcePolicy:
         return 'resources-'+digest(asdict(self))[:16]
 
     def idle_delay(self,streak):
-        tier = min(streak//self.unchanged_per_tier,math.ceil(math.log2(self.idle_max_seconds/self.idle_base_seconds)))
-        return min(self.idle_max_seconds,self.idle_base_seconds*2**tier)
+        return random.SystemRandom().randint(self.idle_min_seconds,self.idle_random_max_seconds)
 
 
 def estimate_tokens(value):
@@ -52,7 +55,7 @@ def estimate_tokens(value):
 
 
 class AttentionPlans:
-    KINDS = {'idle_probe','self_scheduled','task_due','delegate_result','tool_result','recovery'}
+    KINDS = {'idle_probe','self_scheduled','task_due','delegate_result','tool_result','recovery','experience','motivation'}
 
     def __init__(self,role,policy):
         self.role,self.repo,self.policy = role,role.repo,policy
@@ -83,7 +86,7 @@ class AttentionPlans:
                 binding = self.repo._one("SELECT scope_json FROM agent_sessions WHERE scope_id=? AND status='current'",(row['scope_id'],))
                 if binding:
                     from .contracts import Scope
-                    self.schedule(Scope(**json.loads(binding['scope_json'])),None,policy.idle_base_seconds,'恢复后的空闲思考机会',kind='idle_probe')
+                    self.schedule(Scope(**json.loads(binding['scope_json'])),None,policy.idle_delay(0),'恢复后的空闲思考机会',kind='idle_probe')
             self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',('resource_policy_current',canonical(dict(version=policy.version,parameters=asdict(policy),at=time.time()))))
             self.repo._exec("INSERT OR REPLACE INTO meta VALUES('attention_plan_schema','1')")
 
@@ -113,10 +116,35 @@ class AttentionPlans:
 
     def external_input(self,scope):
         with self.repo.tx():
+            self.repo._exec('DELETE FROM meta WHERE k=?',('idle_after_sequence:'+scope.scope_id,))
             self.repo._exec('DELETE FROM meta WHERE k=?',('attention_explicit:'+scope.scope_id,))
             self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE scope_id=? AND kind='idle_probe' AND state='pending'",(scope.scope_id,))
             self.repo._exec('INSERT INTO idle_states VALUES(?,0,?,NULL) ON CONFLICT(scope_id) DO UPDATE SET unchanged_streak=0',
                 (scope.scope_id,time.time()))
+
+    def arm_idle(self,scope):
+        """Draw once after the whole sequence settles, never while a tool is running."""
+        marker=self.repo._one('SELECT v FROM meta WHERE k=?',('idle_after_sequence:'+scope.scope_id,))
+        if not marker:return None
+        saved=json.loads(marker['v'])
+        binding=self.repo._one("SELECT * FROM agent_sessions WHERE scope_id=? AND status='current' AND parent_session_id IS NULL",(scope.scope_id,))
+        if not binding:return None
+        if saved['epoch']!=self.repo.forget_epoch(scope.scope_id) or self.repo._one('SELECT 1 FROM meta WHERE k=?',('attention_explicit:'+scope.scope_id,)):
+            self.repo._exec('DELETE FROM meta WHERE k=?',('idle_after_sequence:'+scope.scope_id,));return None
+        last=self.repo._one("SELECT payload FROM agent_events WHERE session_id=? AND json_extract(payload,'$.type') IN ('turn/start','turn/end') ORDER BY seq DESC LIMIT 1",(binding['session_id'],))
+        if self.role.sessions.pending(binding['session_id']) or last and json.loads(last['payload'])['type']=='turn/start':return None
+        if self.repo._one("SELECT 1 FROM role_operations WHERE scope_id=? AND status IN ('dispatched','unknown')",(scope.scope_id,)):return None
+        if self.repo._one("SELECT 1 FROM role_wakes WHERE scope_id=? AND kind!='idle_probe' AND state IN ('pending','dispatching','waiting_resource')",(scope.scope_id,)):return None
+        delay=self.policy.idle_delay(0)
+        key=self.schedule(scope,None,delay,'空闲回顾：检查动机和未完成事项，选择具体行动或说明暂不行动的原因。',kind='idle_probe')
+        self.repo._exec('DELETE FROM meta WHERE k=?',('idle_after_sequence:'+scope.scope_id,))
+        return dict(mode='adaptive',plan_id=key,after_seconds=delay)
+
+    def settle_sequences(self):
+        from .contracts import Scope
+        with self.repo.tx():
+            for row in self.repo._all("SELECT s.scope_json FROM agent_sessions s JOIN meta m ON m.k='idle_after_sequence:'||s.scope_id WHERE s.status='current' AND s.parent_session_id IS NULL"):
+                self.arm_idle(Scope(**json.loads(row['scope_json'])))
 
     def wait_resource(self,scope,candidate,reason):
         ref = candidate if self.role.tasks.get(candidate or '',scope.scope_id) else None
@@ -126,7 +154,15 @@ class AttentionPlans:
                 self.repo._exec("UPDATE role_wakes SET state='waiting_resource' WHERE id=?",(key,))
         return key
 
+    def _interactive_plan(self,plan):
+        if not plan['intent_ref']:
+            return False
+        row=self.repo._one('SELECT v FROM meta WHERE k=?',('initiative:intent:'+plan['intent_ref'],))
+        return bool(row and json.loads(row['v']).get('classification')=='interactive')
+
     def resource_ready_one(self):
+        if self.role.spending.admission_paused():
+            return
         offered = self.repo._one("SELECT v FROM meta WHERE k='initiative:resource_offer'")
         if offered:
             value = json.loads(offered['v'])
@@ -136,6 +172,8 @@ class AttentionPlans:
             self.repo._exec("DELETE FROM meta WHERE k='initiative:resource_offer'")
         for plan in self.repo._all("SELECT w.* FROM role_wakes w LEFT JOIN meta m ON m.k='initiative:intent:'||w.intent_ref "
                 "WHERE w.state='waiting_resource' ORDER BY CASE WHEN json_extract(m.v,'$.classification')='interactive' THEN 0 ELSE 1 END,w.due,w.id"):
+            if not self.role.spending.background_allowed() and not self._interactive_plan(plan):
+                continue
             binding = self.repo._one("SELECT * FROM agent_sessions WHERE scope_id=? AND status='current' AND parent_session_id IS NULL",(plan['scope_id'],))
             if (not binding or binding['generation']!=plan['generation'] or
                     self.repo.forget_epoch(plan['scope_id'])!=plan['forget_epoch'] or
@@ -156,6 +194,8 @@ class AttentionPlans:
     async def dispatch_due(self,now):
         import asyncio
         from .contracts import Scope
+        if self.role.spending.admission_paused():
+            return
         rows = self.repo._all("SELECT * FROM role_wakes WHERE state IN ('pending','dispatching') AND due<=? ORDER BY due",(now,))
         scopes = dict.fromkeys(r['scope_id'] for r in rows)
         for scope_id in scopes:
@@ -171,6 +211,11 @@ class AttentionPlans:
                         self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE id=? AND plan_revision=?",(plan['id'],plan['plan_revision']))
                         self.finish_resource_offer(scope_id)
                 else:
+                    if (plan['state']=='pending' and plan['kind'] in {'idle_probe','self_scheduled','task_due','motivation'}
+                            and not self.role.spending.background_allowed() and not self._interactive_plan(plan)):
+                        # Keep the plan durable; normal dispatch resumes when
+                        # the Beijing calendar day has a fresh budget.
+                        continue
                     batch.append(plan)
             if not batch:
                 continue
@@ -212,6 +257,8 @@ class AttentionPlans:
                     sources.extend(json.loads(source['v']) if source else json.loads(p['source_refs']))
                 sources = list(dict.fromkeys(sources))
                 payload = dict(wake_kind=batch[0]['kind'] if len({p['kind'] for p in batch})==1 else 'mixed',wake_plans=reasons,reply_source_ids=sources)
+                if any(p['kind'] in {'motivation','idle_probe'} for p in batch):
+                    payload['motivation_refs']=[r['id'] for r in self.role.motivations.rows(scope) if r['status']=='pending'][:3]
                 identity = stable_id('wake-batch',*[p['id']+':'+str(p['plan_revision']) for p in batch])
                 with self.repo.tx():
                     event,_ = self.role.life.ingest(scope,'runtime_wake','inference','\n'.join(p['reason'] for p in batch),
@@ -270,16 +317,22 @@ class AttentionPlans:
                 if selected=='event' and not (mode.get('intent_ref') and self.role.tasks.get(mode['intent_ref'],scope.scope_id)):
                     raise SessionFailure('invalid_input','等待真实事件需要现有 intent_ref')
                 self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE scope_id=? AND kind='idle_probe' AND state='pending'",(scope.scope_id,))
+                self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE scope_id=? AND kind='motivation' AND state='pending'",(scope.scope_id,))
                 self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',('attention_explicit:'+scope.scope_id,canonical(dict(mode=selected,outcome_ref=outcome_ref))))
                 return dict(mode=selected)
+            # A task can finish within the same model turn that scheduled it.
+            # Its obsolete continuation must not suppress the next idle timer.
+            for plan in self.repo._all("SELECT id,intent_ref FROM role_wakes WHERE scope_id=? AND kind='task_due' AND state='pending'",(scope.scope_id,)):
+                if plan['intent_ref'] and self.role.tasks.blocker(plan['intent_ref'],scope.scope_id):
+                    self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE id=?",(plan['id'],))
             explicit = self.repo._one("SELECT id FROM role_wakes WHERE scope_id=? AND kind IN ('self_scheduled','task_due') AND state IN ('pending','dispatching')",(scope.scope_id,))
             if explicit:
                 return dict(mode='existing_explicit',plan_id=explicit['id'])
             if expressed and self.repo._one('SELECT 1 FROM meta WHERE k=?',('attention_explicit:'+scope.scope_id,)):
                 return dict(mode='existing_explicit')
-            delay = self.policy.idle_delay(streak)
-            key = self.schedule(scope,None,delay,'空闲时可以继续想一想，也可以休息。',kind='idle_probe')
-            return dict(mode='adaptive',plan_id=key,after_seconds=delay,unchanged_streak=streak)
+            self.repo._exec("UPDATE role_wakes SET state='cancelled' WHERE scope_id=? AND kind='idle_probe' AND state='pending'",(scope.scope_id,))
+            self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',('idle_after_sequence:'+scope.scope_id,canonical(dict(epoch=self.repo.forget_epoch(scope.scope_id),outcome_ref=outcome_ref))))
+            return dict(self.arm_idle(scope) or dict(mode='after_sequence',state='waiting_for_completion'),unchanged_streak=streak)
 
 
 def read_observation(role,scope,proposal,policy,*,original_text=None):

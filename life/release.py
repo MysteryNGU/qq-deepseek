@@ -217,7 +217,8 @@ class ReleaseController:
 
     def _files(self):
         files = list(self.source.glob("*.py"))
-        for folder, pattern in (("life", "*.py"),('life','*.cjs'),('life','*.json'),('tests','*.py'), ("skills", "*.md"), ("audit", "*.py"), ("audit", "*.json")):
+        files.extend(self.source.glob('scripts/codex_consult.py'))
+        for folder, pattern in (("life", "*.py"),('life','*.cjs'),('life','*.json'),('life/settings_ui','*.html'),('life/settings_ui','*.css'),('life/settings_ui','*.js'),('tests','*.py'), ("skills", "*.md"), ("audit", "*.py"), ("audit", "*.json")):
             files.extend((self.source / folder).rglob(pattern))
         for path in files:
             if path.is_symlink() or self.source not in path.resolve().parents:

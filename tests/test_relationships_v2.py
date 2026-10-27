@@ -328,10 +328,10 @@ class RelationshipsV2Tests(unittest.TestCase):
         self.assertEqual(self.life.relationships.note_receipt(first['note_ref'])['status'],'superseded')
 
     def test_R28_two_replacements_cannot_both_win(self):
-        first = self.note(relation_kind='preference')
-        self.note(operation='replace',base_note_ref=first['note_ref'],relation_kind='preference',text='New preference')
+        first = self.note(relation_kind='preference',applicability='ongoing')
+        self.note(operation='replace',base_note_ref=first['note_ref'],relation_kind='preference',text='New preference',applicability='ongoing')
         with self.assertRaises(SessionFailure) as error:
-            self.note(operation='replace',base_note_ref=first['note_ref'],relation_kind='preference',text='Conflicting preference')
+            self.note(operation='replace',base_note_ref=first['note_ref'],relation_kind='preference',text='Conflicting preference',applicability='ongoing')
         self.assertEqual(error.exception.code,'stale_context')
         self.assertEqual(len(self.life.relationships.view(self.owner,'1')['active_preferences']),1)
 
