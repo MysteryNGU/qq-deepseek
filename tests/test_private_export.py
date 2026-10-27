@@ -39,19 +39,23 @@ class PrivateExportTests(unittest.TestCase):
             self.assertTrue(any(e['mode']=='sqlite_consistent_backup' for e in manifest['entries']))
         self.assertEqual((self.root/'config.toml').read_bytes(), before)
 
-    def test_process_state_excluded_and_old_admin_requests_not_auto_restored(self):
+    def test_only_configuration_memory_and_skills_are_exported(self):
         folder=self.root/'data/settings';folder.mkdir()
         (folder/'server.json').write_text('{"pid":123}')
         (folder/'login.txt').write_text('fixture-password')
+        (self.root/'bot.py').write_text('print(123)')
+        skills=self.root/'skills';skills.mkdir();(skills/'method.md').write_text('Personal method')
         admin=self.root/'data/memory-admin';admin.mkdir()
         (admin/'request.json').write_text('{"action":"retry"}')
         with contextlib.redirect_stdout(io.StringIO()):path=Exporter(self.root,self.root/'backups').write()
         with zipfile.ZipFile(path) as archive:
             names=archive.namelist()
+            self.assertNotIn('project/bot.py', names)
+            self.assertIn('project/skills/method.md', names)
             self.assertNotIn('project/data/settings/server.json', names)
             self.assertIn('project/data/settings/login.txt', names)
             self.assertNotIn('project/data/memory-admin/request.json', names)
-            self.assertIn('recovery-only/project/data/memory-admin/request.json', names)
+            self.assertNotIn('recovery-only/project/data/memory-admin/request.json', names)
             self.assertFalse(any('/backups/' in name for name in names))
 
     def test_busy_bot_refuses_export_instead_of_claiming_cross_store_consistency(self):

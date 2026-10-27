@@ -1,4 +1,4 @@
-"""Local migration export, including secrets. Standard library only; no network."""
+"""Export configuration, memory and skills only, including secrets. Standard library only; no network."""
 from __future__ import annotations
 
 import argparse
@@ -95,50 +95,33 @@ class Exporter:
 
     def collect(self):
         config = tomllib.loads((self.root/'config.toml').read_text('utf-8'))
-        # Current source and locally learned methods are included as well as private settings.
-        self.tree(self.root, 'project', skip_top={'data', 'tools', 'napcat', 'napcat-onekey',
-                  'backups', '.acceptance', 'ZenlessZoneZero-Auto'})
-        for name in ('bot-watchdog.ps1', 'napcat-login.ps1'):
-            self.add(self.root/'tools'/name, 'project/tools/'+name)
-        self.tree(self.root/'data', 'project/data', skip_top=DATA_SKIP, data=True)
+        # Only configuration, memory and skills. Source and runtimes come from Git/installers.
+        self.add(self.root/'config.toml', 'project/config.toml')
+        for name in ('life-dynamics.json', 'self.md'):
+            self.add(self.root/name, 'project/'+name)
+        for path in self.root.glob('.env*'):
+            if path.name != '.env.example':self.add(path, 'project/'+path.name)
         self.configured(config.get('life_db', 'data/life.db'), 'life_db', required=True)
         self.configured(config.get('persona', 'persona.md'), 'persona', required=True)
+        if not config.get('unified_persona', False):
+            self.configured(config.get('public_persona'), 'public_persona')
         self.configured(config.get('consult_config'), 'consult_config')
-        media = config.get('local_media', {})
-        self.configured(media.get('preset_manifest'), 'local_media.preset_manifest', required=bool(media.get('enabled')))
-        if media.get('preset_manifest'):
-            manifest = resolve(self.root, media['preset_manifest'])
-            if manifest.exists():
-                for preset in json.loads(manifest.read_text('utf-8')).get('presets', []):
-                    for kind in ('reference', 'sample'):
-                        self.configured(preset.get(kind, {}).get('path'), 'voice.'+preset['id']+'.'+kind, required=True)
-        if media.get('root') and resolve(self.root, media['root']) != self.root/'data/local-media':
-            self.configured(media['root'], 'local_media.root')
-        external = [('dsh_home', 'dsh-home'), ('dsh_root', 'dsh-source'), ('bili_plugin', 'bili-plugin')]
-        for key, label in external:
-            value = config.get(key)
-            if not value:continue
-            path = resolve(self.root, value)
-            if not path.is_dir():self.missing.append(dict(setting=key, path=str(path)));continue
-            self.tree(path, 'external/'+label, skip_top={'cache', 'test-plugin', '.acceptance'})
-        if config.get('consult_config'):
-            p = resolve(self.root, config['consult_config'])
-            if p.is_file():
-                consult = json.loads(p.read_text('utf-8'))
-                if consult.get('project'):
-                    self.tree(resolve(self.root, consult['project']), 'external/consult-project')
-                if consult.get('data_dir'):self.configured(consult['data_dir'], 'consult.data_dir')
+        self.configured(config.get('local_media', {}).get('preset_manifest'), 'local_media.preset_manifest')
+        self.tree(self.root/'skills', 'project/skills')
+        self.tree(self.root/'diary', 'project/diary')
+        for name in ('auth.json', 'login.txt'):
+            self.add(self.root/'data/settings'/name, 'project/data/settings/'+name)
+        # The dedicated DSH home holds configuration and persistent conversational memory.
+        if config.get('dsh_home'):
+            home = resolve(self.root, config['dsh_home'])
+            self.roots.append(dict(setting='dsh_home', source=str(home), archive='external/dsh-home'))
+            if not home.is_dir():raise FileNotFoundError('dsh_home: '+str(home))
+            for name in ('.credentials.yaml', '.anonymous-user-id'):
+                self.add(home/name, 'external/dsh-home/'+name)
+            for name in ('profiles', 'sessions', 'qq-life', 'storages', 'bili-duty'):
+                self.tree(home/name, 'external/dsh-home/'+name)
         for name in ('napcat-onekey/NapCat.52230.Shell/config', 'napcat/config'):
             self.tree(self.root/name, 'project/'+name)
-        # Model and executable locations are listed, not silently packaged as portable installs.
-        def paths(value, key='config'):
-            if isinstance(value, dict):
-                for k, v in value.items():paths(v, key+'.'+k)
-            elif isinstance(value, list):
-                for i, v in enumerate(value):paths(v, key+'.'+str(i))
-            elif isinstance(value, str) and (':\\' in value or ':/' in value or key.endswith('model_path')):
-                self.manual.append(dict(setting=key, source=value))
-        paths(config)
         env_names = {'DEEPSEEK_API_KEY', 'QQ_WS_URL'}
         def envs(value):
             if isinstance(value, dict):
@@ -194,7 +177,7 @@ class Exporter:
             try:commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=self.root, text=True, stderr=subprocess.DEVNULL).strip()
             except (OSError, subprocess.CalledProcessError):commit = None
             manifest = dict(created=datetime.now().astimezone().isoformat(), commit=commit, root=str(self.root),
-                scope='source_private_configuration_memory_and_bot_owned_state', entries=entries,
+                scope='configuration_memory_skills_only', entries=entries,
                 roots=self.roots, excluded=self.excluded, missing_optional=self.missing,
                 paths_to_review=self.manual, sqlite_snapshot=True, cross_store_atomic=False)
             archive.writestr('migration/manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -219,34 +202,24 @@ class Exporter:
         return target
 
 
-MIGRATION_GUIDE = '''小鱼个人化与隐私迁移包
+MIGRATION_GUIDE = '''小鱼配置、记忆与 skills 导出包
 
-本 ZIP 未加密，包含真实密钥、人格、记忆、人物画像、登录配置和专用会话。
-仅通过自己的可信设备/存储转移，不要提交 Git 或公开分享。
+仅包含三类资料：
+1. 配置：实际 config.toml、动力配置、当前人格、咨询配置、音色配置清单、设置登录凭据、NapCat 配置及 Bot 专用 DSH 配置。
+2. 记忆：life.db（含经历、人物画像、关系、任务状态等）、self.md/日记、Bot 专用 DSH 会话和持久存储。
+3. skills：本机 skills 目录。
 
-内容：project/ 为当前项目源码、私有配置、人格、skills/scripts、生活数据库、媒体和设置密码。
-external/ 为 Bot 专用 DSH 数据/源码、B站插件、咨询项目（以 manifest 为准）。
-SQLite 用备份 API 生成一致副本，包含 WAL 中已提交数据，不直接拼接复制 WAL。
-recovery-only/ 保存旧发布控制数据库及维护命令材料，仅供核对，不直接覆盖新机运行目录。
-不复制进程锁、PID、健康文件、重启请求；不自动执行恢复、对账或发布。
+不包含程序源码、scripts、测试、文档历史、插件代码、模型、音色音频、图片、虚拟环境、node_modules 或安装包。
+源码通过 Git 获取。音色清单只是配置，引用的音频素材不在本包中。
 
-新机步骤：
-1. 停止旧电脑 Bot，并保持停止，避免两个副本同时回复。当前包是导出时快照，之后发生的新对话不在包中。
-2. 在空目录解压并保留一份原包。project/ 可放到新机项目目录。默认不做额外校验；显式 --verify 才生成校验文件。
-3. 按 migration/manifest.json 的 roots 放置 external/ 各目录。尽量保留原盘符/目录，但用户名不同的路径仍需调整。
-4. 新建 Python 虚拟环境并安装 requirements.txt；配置兼容 DSH、Node/pnpm、QQ 与 NapCat。
-5. 检查 config.toml、咨询 config、DSH profile、音色 manifest 中的绝对路径。
-   migration/manifest.json 中 paths_to_review 是配置里的路径线索；数据库、冻结任务或工具历史也可能引用旧路径。
-   不要对数据库做盲目字符串替换；若路径改变，先核对资源登记和未完成任务。
-6. 另外复制/安装模型权重、语音引擎、sd-server 和运行依赖。虚拟环境、node_modules、模型权重、安装包未打包。
-   特别核对 config 的 voice_engine_root、voice_model_dir、image_server、image_model_dir、local_embedding.model_path。
-7. NapCat config 已保存，但 QQ 登录缓存不保证跨机器通用，准备重新扫码；Codex 咨询需在新机自行安装和登录。
-8. migration/environment.private.json 只保存导出进程可见的已配置环境覆盖项；其他进程独有变量不会被自动读取。
-9. 先启动设置页确认配置，再启动 QQ/Bot，进行一轮普通聊天、记忆读取和需要的语音测试。
+新机先通过 Git 准备代码和依赖，再把 project/ 下内容放入项目对应位置。
+external/dsh-home/ 放到新机为此 Bot 配置的 DSH home，目录映射见 migration/manifest.json。
+检查 config.toml、咨询配置、音色清单和 DSH 配置中的绝对路径。数据库里旧任务/资产路径不要盲目替换。
+SQLite 使用备份 API，已提交的 WAL 数据已合入备份。旧电脑应停止 Bot，避免两个副本同时回复。
+本包未加密，含真实密钥和隐私，只通过自己的可信设备转移，不上传 Git。
+默认不做额外校验；QQ 登录可能需要重新扫码，媒体素材与运行环境另外准备。
+''' 
 
-主机可边离线待机边备份；为避免多个存储在导出期间变化，认知服务在线时导出会拒绝，请先停止 Bot。
-缺失可选路径和排除项完整记录在 manifest，不能把本包当作操作系统/第三方依赖的完整克隆。
-'''
 
 
 def main():

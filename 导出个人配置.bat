@@ -2,7 +2,7 @@
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
-echo 正在导出源码、个人化配置、记忆和 Bot 专用状态。
+echo 正在导出配置、记忆和 skills，不包含源码与运行环境。
 echo 压缩包包含真实密钥，不要公开分享。模型和运行依赖另行迁移。
 if exist ".venv\Scripts\python.exe" (
     ".venv\Scripts\python.exe" -X utf8 "scripts\export_private_bundle.py" --root "%CD%" %*
