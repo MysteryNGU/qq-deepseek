@@ -36,6 +36,27 @@ function image(name: string): ContentBlock {
 }
 
 describe('durable request projections',() => {
+  it('logs the final consumed-input batch and replaces its previous presentation',async () => {
+    const f=await harness(),s=f.agent.session
+    try {
+      s.append('turn/start',{ turn: 1 });s.append('step/start',{ turn: 1,step: 1 })
+      s.append('request/header',{ header: { config: { provider: 'mock',model: 'mock' } },reason: 'initial' })
+      f.control.configure(f.agent,{ resource_policy: policy,context_plan: plan })
+      f.host.mockImplementationOnce(async () => ({ ok: true,input_batch: { ref: 'ib:first',input_ids: ['a','b'],turn: 1,step: 1 } }))
+      await f.control.prepare({ agent: f.agent,turn: 1,step: 1,signal: new AbortController().signal })
+      expect(JSON.stringify(s.deriveMessages())).toContain('ib:first')
+      s.append('step/end',{ turn: 1,step: 1 });s.append('step/start',{ turn: 1,step: 2 })
+      f.control.configure(f.agent,{ resource_policy: policy,context_plan: plan })
+      f.host.mockImplementationOnce(async () => ({ ok: true,input_batch: { ref: 'ib:second',input_ids: ['c'],turn: 1,step: 2 } }))
+      await f.control.prepare({ agent: f.agent,turn: 1,step: 2,signal: new AbortController().signal })
+      const visible=JSON.stringify(s.deriveMessages())
+      expect(visible).toContain('ib:second');expect(visible).not.toContain('ib:first')
+      expect(JSON.stringify(s.snapshotEvents())).toContain('ib:first')
+      const restored=Session.create(s.id,s.snapshotEvents(),undefined,undefined,[imageOffloadProjection])
+      expect(JSON.stringify(restored.deriveMessages())).toBe(visible)
+    } finally { await f.close() }
+  })
+
   it('deduplicates only versioned read pairs and retains distinct same-text user events and unknown writes',async () => {
     const f=await harness(),s=f.agent.session
     try {
@@ -151,6 +172,40 @@ describe('durable request projections',() => {
       expect(JSON.stringify(s.deriveMessages())).toContain('UNANSWERED_USER_WORDS')
       expect(s.snapshotEvents().filter(event => event.type==='compaction/start')).toHaveLength(1)
       expect(s.snapshotEvents().filter(event => event.type==='compaction/end')).toHaveLength(1)
+    } finally { await f.close() }
+  })
+
+  it.each(['resolved','pending','unknown'])('compacts only certified resolved input errors (%s) and bounds handoffs per live turn',async (state) => {
+    const f=await harness(),s=f.agent.session
+    try {
+      await f.ctx.plugin(BasicCompactionEngine,{ auto: false,maxTokens: 40 })
+      const compact=vi.spyOn(f.ctx.compaction,'compactRegion')
+      const add=(text: string) => s.append('user/message',createUserMessage({
+        content: [{ type: 'text',text: text.repeat(400) }],source: { kind: 'user' } }),{ surfaceOp: 'append' })
+      s.append('turn/start',{ turn: 1 });s.append('step/start',{ turn: 1,step: 1 })
+      add('Earlier settled A ');add('Earlier settled B ')
+      const id=ToolCallId('old-failed-call')
+      s.append('assistant/message',{ turn: 1,step: 1,stream: [],message: createAssistantMessage({
+        source: { provider: 'mock',model: 'mock' },content: [{ type: 'tool-call',id,name: 'life_say',arguments: '{}' }] }) },{ surfaceOp: 'append' })
+      const failed=s.append('tool/result',{ turn: 1,step: 1,message: createToolResultMessage({ callId: id,isError: true,
+        content: [{ type: 'text',text: JSON.stringify({ ok: false,code: state==='unknown' ? 'outcome_unknown' : 'input_pending',message: 'preserve until resolved' }) }] }) },{ surfaceOp: 'append' })
+      s.append('step/end',{ turn: 1,step: 1 });s.append('turn/end',{ turn: 1,reason: { kind: 'completed' } })
+      add('Later settled A ');add('Later settled B ')
+      s.append('turn/start',{ turn: 2 });s.append('step/start',{ turn: 2,step: 1 })
+      s.append('request/header',{ header: { config: { provider: 'mock',model: 'mock' } },reason: 'initial' })
+      const context_plan={ ...plan,resolved_input_error_turn: state==='pending' ? 0 : 1 }
+      f.control.configure(f.agent,{ resource_policy: policy,context_plan })
+      add('CURRENT_REQUIRED_WORDS ')
+      await f.control.prepare({ agent: f.agent,turn: 2,step: 1,signal: new AbortController().signal })
+      expect(compact).toHaveBeenCalledTimes(1)
+      const [start,end]=compact.mock.calls[0]!
+      expect(start<=failed.seq && end>=failed.seq).toBe(state==='resolved')
+      expect(s.surface.nodes.includes(failed.seq)).toBe(state!=='resolved')
+      f.control.configure(f.agent,{ resource_policy: policy,context_plan })
+      await f.control.prepare({ agent: f.agent,turn: 2,step: 2,signal: new AbortController().signal })
+      expect(compact).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(s.deriveMessages())).toContain('CURRENT_REQUIRED_WORDS')
+      expect(s.snapshotEvents().some(event=>event.seq===failed.seq)).toBe(true)
     } finally { await f.close() }
   })
 })

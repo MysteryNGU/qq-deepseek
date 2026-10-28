@@ -76,6 +76,31 @@ class ExperienceTests(unittest.TestCase):
                 self.assertFalse(receipt['applied'])
                 self.assertEqual(receipt['unchanged_reason'], 'zero_confidence')
 
+    def test_compact_coverage_keeps_old_pending_items_and_versioned_detail_pages(self):
+        self.enter()
+        oldest=self.source('older unresolved input')
+        self.source('second unresolved input')
+        for index in range(34):
+            self.source('settled input '+str(index))
+            self.impulse(0)
+        full=self.state()
+        compact=self.life.experience.read(self.scope,compact=True)
+        self.assertIsInstance(full['input_coverage'],list)
+        self.assertNotIn(oldest.id,[r['event_id'] for r in full['input_coverage']])
+        self.assertIn(oldest.id,[r['event_id'] for r in compact['input_coverage']['pending']])
+        self.assertEqual(compact['fences'],full['fences'])
+        self.assertGreater(compact['input_coverage']['processed_count'],32)
+        page=self.life.experience.coverage(self.scope,limit=1,unresolved=True)
+        self.assertEqual(page['next_read']['status'],'unresolved')
+        following=self.life.experience.coverage(self.scope,limit=1,unresolved=True,cursor=page['next_cursor'])
+        self.assertNotEqual(page['items'][0]['event_id'],following['items'][0]['event_id'])
+        group=self.life.scope('qq:group:90','1')
+        self.assertEqual(self.life.experience.coverage(group)['total_count'],0)
+        self.source('changes coverage version')
+        with self.assertRaises(SessionFailure) as error:
+            self.life.experience.coverage(self.scope,unresolved=True,cursor=page['next_cursor'])
+        self.assertEqual(error.exception.code,'stale_context')
+
     def test_non_finite_and_wrong_domain_rejected(self):
         self.enter()
         for field, value in (('confidence', float('nan')), ('confidence', float('inf')), ('confidence', False),

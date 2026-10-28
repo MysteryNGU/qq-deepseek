@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS life_calls(
 CREATE TABLE IF NOT EXISTS input_resolutions(
  session_id TEXT NOT NULL,call_id TEXT NOT NULL,digest TEXT NOT NULL,created REAL NOT NULL,
  PRIMARY KEY(session_id,call_id));
+CREATE TABLE IF NOT EXISTS input_batches(
+ session_id TEXT NOT NULL,batch_ref TEXT NOT NULL,input_ids TEXT NOT NULL,
+ turn INTEGER NOT NULL,step INTEGER NOT NULL,forget_epoch INTEGER NOT NULL,
+ PRIMARY KEY(session_id,batch_ref));
 CREATE TABLE IF NOT EXISTS role_wakes(
  id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, intent_ref TEXT,
  reason TEXT NOT NULL, due REAL NOT NULL, state TEXT NOT NULL DEFAULT 'pending');
@@ -232,13 +236,15 @@ class AgentSessions:
 
     def pending_failure(self, session_id):
         pending = self.pending_view(session_id)
-        # The DSH tool adapter displays the message, not arbitrary receipt fields.
-        # Include a bounded, actionable batch here as well as structured metadata.
-        message = ('本次理解进度已保存，仍有未确认处理的输入。settled 只表示所在模型轮已结束，'
-            '不表示你已处理；consumed/settled 都可以在理解后提交 handled_input_ids，跨轮也有效。'
-            '需要原文时用 life_read(kind=observation,event_id=input_id)；pending/accepted 先等实际进入模型。'
-            '请处理下列剩余输入后再表达或休息：'+canonical(pending[:12]))
-        return SessionFailure('input_pending', message, pending_inputs=pending[:12], pending_count=len(pending))
+        items=[{k:item[k] for k in ('input_id','state','can_acknowledge')} for item in pending[:12]]
+        ready=[item['input_id'] for item in items if item['can_acknowledge']]
+        # The native tool adapter displays only message, so the corrective IDs
+        # must be present there without repeating the original message previews.
+        message=('输入尚未确认。已进入模型、理解后可确认的编号：'+canonical(ready)+
+            '。在下一次 life_say/life_rest（含 notice）中合并 handled_input_ids；继续执行工作可用 '
+            'life_intent(action:resolve,handled_input_ids)。settled 仍需确认；未读输入不能确认。')
+        return SessionFailure('input_pending',message,pending_inputs=items,pending_count=len(pending),
+            acknowledgeable_input_ids=ready,has_more=len(pending)>len(items))
 
     def apply_event(self, sid, event):
         checksum, seq = digest(event), int(event['seq'])
@@ -268,11 +274,37 @@ class AgentSessions:
             self.repo._exec('UPDATE agent_sessions SET cursor=? WHERE session_id=?', (seq, sid))
         return True
 
+    def input_batch(self,sid):
+        """Freeze only consumed inputs after the complete request has been logged."""
+        binding=self.require(sid)
+        row=self.repo._one("SELECT payload FROM agent_events WHERE session_id=? "
+            "AND json_extract(payload,'$.type')='step/start' ORDER BY seq DESC LIMIT 1",(sid,))
+        if not row:return None
+        position=json.loads(row['payload'])['data']
+        ids=[i['input_id'] for i in self.pending(sid) if i['state'] in {'consumed','settled'}]
+        if not ids:return None
+        ref='ib:'+digest(dict(session=sid,epoch=binding['forget_epoch'],**position,ids=ids))[:24]
+        with self.repo.tx():
+            self.repo._exec('INSERT OR IGNORE INTO input_batches VALUES(?,?,?,?,?,?)',
+                (sid,ref,canonical(ids),position['turn'],position['step'],binding['forget_epoch']))
+        return dict(ref=ref,input_ids=ids,turn=position['turn'],step=position['step'])
+
+    def resolution_ids(self,sid,resolution):
+        ids=resolution.get('handled_input_ids',[])
+        if not isinstance(ids,list) or any(not isinstance(i,str) for i in ids):
+            raise SessionFailure('invalid_input','handled_input_ids 必须是编号数组')
+        ref=resolution.get('handled_batch_ref')
+        if ref is not None:
+            binding=self.require(sid)
+            row=self.repo._one('SELECT * FROM input_batches WHERE session_id=? AND batch_ref=?',(sid,ref))
+            if not row or row['forget_epoch']!=binding['forget_epoch']:
+                raise SessionFailure('stale_context','输入批次不存在或已失效；使用当前批次引用')
+            ids=[*ids,*json.loads(row['input_ids'])]
+        return list(dict.fromkeys(ids))
+
     def resolve(self, sid, resolution):
         """Release only input holds that this model request actually consumed."""
-        ids = resolution.get('handled_input_ids', [])
-        if not isinstance(ids, list):
-            raise SessionFailure('invalid_input', 'handled_input_ids 必须是数组')
+        ids = self.resolution_ids(sid,resolution)
         with self.repo.tx():
             self.require(sid)
             for iid in ids:

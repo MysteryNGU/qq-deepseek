@@ -1,6 +1,6 @@
 # 配套 DSH：Git 获取、构建与迁移
 
-更新：2026-10-27。此说明面向另一台 Windows 电脑，和 [完整迁移交接说明](migration-agent-handoff.md) 一起使用。
+更新：2026-10-29。此说明面向另一台 Windows 电脑，和 [完整迁移交接说明](migration-agent-handoff.md) 一起使用。
 
 ## 1. 一次克隆获取 Bot 和定制 DSH
 
@@ -58,6 +58,8 @@ dsh_home = "D:/projects/dsh-qq-home"
 ```
 
 这些字段位于原配置对应位置，修改原键，不新建重复键。`dsh_node` 改为新机实际 node.exe 绝对路径，可用 `(Get-Command node).Source` 查询。若使用 `dsh_pnpm_entry`，填写实际 `pnpm/bin/pnpm.cjs` 或 `pnpm.mjs` 文件，不能填写 pnpm.cmd；全局 npm 安装可先用 `npm root --global` 定位 pnpm 包，再检查其 `bin/`。同时调整 `dsh_tmp`、插件 link、媒体、咨询等旧电脑路径。
+
+QQ 原图会优先读取平台解析的本地缓存，再尝试公共 QQ CDN 下载。需要缓存读取时，将 `get_image` 实际返回文件所在的 QQ 媒体缓存目录加入 `media_local_roots`；按新机账号和目录填写，不沿用旧机的绝对路径。未配置额外缓存目录时仍可使用 CDN 直连，HTTPS 证书校验保持开启。图片重读和主人本机截图导入会将实际像素送入模型会话。
 
 检查导入的 `dsh-qq-home/profiles/sdk/package.json`：指向旧工程的本地 link 改为新工程中的对应包；外部插件按实际引用恢复。profile 的依赖也需要在新机安装，不能只给主 workspace 安装依赖。保留已有 profile 和状态，不能删除重建来避开缺少插件或路径错误。
 

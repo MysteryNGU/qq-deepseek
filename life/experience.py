@@ -575,7 +575,33 @@ class ExperienceSimulation:
             return dict(integrated_until=s['integrated_until'], state_revision=revision,
                         transition_refs=[t['id'] for t in transitions])
 
-    def read(self, scope, after_transition_seq=None):
+    def coverage(self,scope,*,limit=16,cursor=None,unresolved=False):
+        """Read scope-bound coverage pages without changing semantic settlement."""
+        if type(limit) is not int or not 1<=limit<=32:
+            invalid('coverage.limit','1到32的整数')
+        rows=[dict(r) for r in self.repo._all('SELECT x.event_id,x.status,x.reason,x.source_version FROM experience_inputs x '
+            'JOIN events e ON e.id=x.event_id WHERE x.agent_id=? AND e.agent_id=? AND e.conversation_id=? '
+            'AND e.audience_policy_id=? AND e.redacted_at IS NULL ORDER BY x.rowid',
+            (self.life.agent_id,scope.agent_id,scope.conversation_id,scope.audience_policy_id))]
+        settled={'evaluated','unchanged','legacy_settled'}
+        pending=[r for r in rows if r['status'] not in settled and r['reason']!='cancelled_by_explicit_control']
+        version=digest(rows)
+        selected=pending if unresolved else rows
+        offset=0
+        if cursor is not None:
+            if (not isinstance(cursor,dict) or cursor.get('version')!=version or cursor.get('unresolved')!=unresolved
+                    or type(cursor.get('offset')) is not int or not 0<=cursor['offset']<=len(selected)):
+                raise SessionFailure('stale_context','覆盖记录已变化，请从第一页重新读取')
+            offset=cursor['offset']
+        items=selected[offset:offset+limit]
+        after=offset+len(items)
+        next_cursor=dict(version=version,offset=after,unresolved=unresolved) if after<len(selected) else None
+        return dict(version=version,items=items,total_count=len(rows),processed_count=len(rows)-len(pending),pending_count=len(pending),
+            has_more=next_cursor is not None,next_cursor=next_cursor,
+            next_read=dict(kind='simulation',view='input_coverage',cursor=next_cursor,limit=limit,
+                **(dict(status='unresolved') if unresolved else {})) if next_cursor else None)
+
+    def read(self, scope, after_transition_seq=None,*,compact=False):
         if after_transition_seq is not None and (type(after_transition_seq) is not int or after_transition_seq<0):
             invalid('after_transition_seq','非负整数')
         revision, s = self._load()
@@ -593,8 +619,16 @@ class ExperienceSimulation:
             "SELECT * FROM experience_transitions WHERE agent_id=? AND status='active' AND seq>? ORDER BY seq",
             (self.life.agent_id, after_transition_seq or 0))]
         transitions = [t for t in transitions if t['scope']==asdict(scope) and t.get('rule_version')==RULE]
-        inputs = [dict(r) for r in self.repo._all('SELECT event_id,status,reason,source_version FROM experience_inputs '
-            'WHERE agent_id=? ORDER BY rowid DESC LIMIT 32', (self.life.agent_id,))]
+        if compact:
+            page=self.coverage(scope,limit=8,unresolved=True)
+            inputs=dict(pending=[{k:r[k] for k in ('event_id','status','source_version')} for r in page['items']],
+                processed_count=page['processed_count'],pending_count=page['pending_count'],has_more=page['has_more'],
+                detail_read=dict(kind='simulation',view='input_coverage',limit=16))
+            if page['next_cursor']:
+                inputs['next_read']=dict(page['next_read'],status='unresolved')
+        else:
+            inputs = [dict(r) for r in self.repo._all('SELECT event_id,status,reason,source_version FROM experience_inputs '
+                'WHERE agent_id=? ORDER BY rowid DESC LIMIT 32', (self.life.agent_id,))]
         s['sensitivity']=self._effective_sensitivity(s)
         s['config']={k:v for k,v in s['config'].items() if k not in
             ('private_enabled','relief_amount','relief_half_life','rate_gain_per_run','rate_gain_cap',

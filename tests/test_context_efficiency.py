@@ -21,6 +21,15 @@ class ContextEfficiencyTests(unittest.IsolatedAsyncioTestCase):
         return self.role.people.save(scope,dict(actor_id=actor,field=field,topic_key=topic,text=text,
             origin='explicit_statement',sources=[event.id],base_revision=0),binding,'profile-'+event.id)
 
+    async def test_native_defaults_are_selected_for_owner_private_chat_only(self):
+        for conversation,expected in [('qq:private:1',['pwsh','job_output','job_kill']),('qq:private:2',[]),('qq:group:90',[])]:
+            scope=self.life.scope(conversation,'1')
+            binding=self.role.sessions.binding(scope)
+            result=await self.role.callback(dict(kind='static_context',root_session_id=binding['session_id'],
+                session_id=binding['session_id']))
+            self.assertTrue(result['ok'],result)
+            self.assertEqual(result['default_tools'],expected)
+
     def test_contract_fixture_is_generated_from_the_python_source_and_rejects_bad_fields(self):
         fixture=Path(__file__).resolve().parents[1]/'vendor/dsh-bridge-work/packages/sdk/server/tests/fixtures/qq-life-contracts.json'
         self.assertEqual(catalog(),json.loads(fixture.read_text('utf-8')))
@@ -91,6 +100,27 @@ class ContextEfficiencyTests(unittest.IsolatedAsyncioTestCase):
         for raw in (dict(pressure_ratio=True),dict(pressure_ratio=1),dict(pressure_ratio=float('nan'))):
             with self.assertRaises(ValueError):ResourcePolicy.parse(raw)
         for streak in (0,100000):self.assertTrue(600<=policy.idle_delay(streak)<=3600)
+
+    def test_acknowledgement_hint_and_resolved_error_boundary_follow_real_input_state(self):
+        sid=self.f.binding['session_id'];sessions=self.role.sessions
+        first=sessions.enqueue(self.f.binding,self.f.event)
+        with self.repo.tx():
+            self.repo._exec("UPDATE agent_inputs SET message_id='m1' WHERE input_id=?",(first['input_id'],))
+        sessions.apply_event(sid,dict(seq=0,type='step/start',data=dict(turn=1,step=1)))
+        sessions.apply_event(sid,dict(seq=1,type='user/message',data=dict(id='m1')))
+        sessions.apply_event(sid,dict(seq=2,type='turn/end',data=dict(turn=1)))
+        later,_=self.life.ingest_message(self.f.scope,'later unread words must not be repeated')
+        sessions.enqueue(self.f.binding,later)
+        failure=sessions.pending_failure(sid).receipt()
+        self.assertEqual(failure['acknowledgeable_input_ids'],[first['input_id']])
+        self.assertIn(first['input_id'],failure['message'])
+        self.assertNotIn('later unread words',canonical(failure))
+        self.assertEqual(self.role.context_plan(self.f.binding,self.f.scope)['resolved_input_error_turn'],0)
+        with self.assertRaises(SessionFailure):sessions.resolve(sid,dict(handled_input_ids=[later.id]))
+        sessions.resolve(sid,dict(handled_input_ids=[first['input_id']]))
+        with self.repo.tx():
+            self.repo._exec("UPDATE agent_inputs SET state='consumed',claimed_turn=2 WHERE input_id=?",(later.id,))
+        self.assertEqual(self.role.context_plan(self.f.binding,self.f.scope)['resolved_input_error_turn'],1)
 
     def test_complete_estimates_survive_host_projection_without_filling_unknown_usage(self):
         record=dict(call_key='complete-estimate',revision=2,session_id=self.f.binding['session_id'],

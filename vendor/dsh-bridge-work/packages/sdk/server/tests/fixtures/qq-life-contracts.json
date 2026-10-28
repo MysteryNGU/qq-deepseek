@@ -1,9 +1,9 @@
 {
-  "version": "927d4a5065cb3381f4b4cce0fdefba8e431e3e25c5047ffd7a55d8abfc4a5b8e",
+  "version": "aa61412f91d318ad5d95f645eedd89980ec2b01cf0899c9bc03aea387b17095e",
   "items": [
     {
       "name": "life_read",
-      "description": "读取当前状态、来源、历史及能力目录；精确 ref + schema_hash + load:true 加载工具。",
+      "description": "读取状态、来源和能力。图片用 kind:media,asset_id；主人本机截图用 kind:media,action:import,path。成功后原图进入同一会话供视觉查看。精确 ref+schema_hash+load:true 加载工具。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -27,6 +27,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -635,12 +638,12 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_read",
-      "schema_hash": "54d1effa1787d2b06a85aa246d93bec24e21a1cd7c0d89c5e7e50ecaa578695f",
+      "schema_hash": "94ad164f05ff6875d48d017535eae19d91e5b9ad2f1f841018ff550f6c3bf691",
       "version": 1
     },
     {
       "name": "life_say",
-      "description": "向当前对话发送自然表达；最后一条显式 end_turn:true。未知发送先对账。",
+      "description": "向当前对话发送自然表达。理解当前输入批次后同次提交 handled_batch_ref（含 notice），也可逐条用 handled_input_ids；不必另加 resolve。最后一条显式 end_turn:true。未知发送先对账。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -664,6 +667,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -1239,12 +1245,12 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_say",
-      "schema_hash": "a3c2f6cd33720b00057854fd556ffcb4aec1837e5e542851bbddae11071ea308",
+      "schema_hash": "b45d85d367fc8d0ae2bb8624bd004b9c733a89426a904f667f9313929d0a2e7c",
       "version": 1
     },
     {
       "name": "life_rest",
-      "description": "保存私人想法并结束当前轮；沿用已有随机空闲间隔。",
+      "description": "结束当前轮。理解当前输入批次后同次提交 handled_batch_ref，也可逐条用 handled_input_ids；未读输入不能确认。沿用已有随机空闲间隔。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1268,6 +1274,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -1758,12 +1767,12 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_rest",
-      "schema_hash": "dea6f17dc0ce5d32089b16f94e263c64842f5202cf9b0454aa74259750c3d024",
+      "schema_hash": "2ed6ed03b7670442bbe1aef88ae1917fd85dc13555f27432bb324aa575723f21",
       "version": 1
     },
     {
       "name": "life_appraise",
-      "description": "评价真实语义及独立情绪、需要、人物关系，复用现有来源校验。",
+      "description": "评价真实语义、情绪、需要或人物关系。普通中性评价可只交 sources,interpretation；无关系影响不填 relation_impacts。不猜版本；关系影响须 relation_protocol:2,subject_actor_id 和读取所得 based_on_relationship_version；based_on_state_version 须取读回的 state_version，不用日志序号。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -2105,6 +2114,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -2629,12 +2641,12 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_intent",
-      "schema_hash": "7cf8bf9bf0fd710685abc37845afd16e286c18480853f938212c483b661f18e7",
+      "schema_hash": "42101206d3dedde49eada347f66c75d7a6297e54f7ad3e4a709aa2f3b75d5fe0",
       "version": 1
     },
     {
       "name": "life_remember",
-      "description": "按真实来源保存到现有记忆、人物画像和叮嘱服务。",
+      "description": "按真实来源保存记忆或叮嘱。人物的称呼/长期偏好用 kind:person_profile,actor_id,field:address|preference,topic_key,text,origin:explicit_statement,sources,base_revision:0；更正先读当前版本。可用 handled_input_ids 一并确认已理解输入。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -2658,6 +2670,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -3288,7 +3303,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_remember",
-      "schema_hash": "2a683df4d38b30768f3b7527658a3b4fea91f97d008e9dacda375cff6178314a",
+      "schema_hash": "4c7ceb4012218df9ba0bed1f6d5e86de9680e1d44c27c119d9ce7109c9954b06",
       "version": 1
     },
     {
@@ -3317,6 +3332,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -3808,7 +3826,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_media",
-      "schema_hash": "50f5ebbb4a12fd9b2230f45ee3175709426676eaf6218833fc70a02f65e1beca",
+      "schema_hash": "dc7607303993290d3a56fec60c345b235efdefa9b99bcb70c42151ab9855774c",
       "version": 1
     },
     {
@@ -3837,6 +3855,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -4285,7 +4306,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_consult",
-      "schema_hash": "888b754fba56181d8c0f195e95c185c6ff67d05543165b52ba07227f066a9c12",
+      "schema_hash": "0619d9cd4c37bffc23853754c61534572e66ed25fde7f0177feda39cd74de67b",
       "version": 1
     },
     {
@@ -4314,6 +4335,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -4997,7 +5021,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_change_self",
-      "schema_hash": "245aa2391277ce7689151788f25aebc712696fc07647d864761e9673f8ad2f96",
+      "schema_hash": "04e6b651fb80a29f5fa6f45faea06ec029c917f08d6825b51c0912d6a0b6eda4",
       "version": 1
     },
     {
@@ -5026,6 +5050,9 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "handled_batch_ref": {
+                "type": "string"
               },
               "appraisal": {
                 "type": "object",
@@ -5595,7 +5622,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_simulation",
-      "schema_hash": "ab7fd90199f7e0bb784eb90d7881218f9d3cdbfd6d576395bc09f5b86198b637",
+      "schema_hash": "822f948686c421d46a27e23bfae4de0060fcc4c434269b9e1d3cd4b098b793b1",
       "version": 1
     }
   ]

@@ -4,6 +4,12 @@
 
 小鱼通过 NapCat 接收 QQ 私聊、群聊，由 DSH 主角色理解消息和执行工具；本项目负责人物与场景范围、记忆、驱动力、持续任务、媒体发送和运行管理。所有场景使用一份人格，按真实用户画像、关系和场景调整表达。
 
+工具上下文会直接列出可确认的输入编号，理解后可随下一次发言或休息一并确认。专项覆盖摘要只带当前受众的未解决项和已处理计数，明细通过 `life_read(kind:simulation,view:input_coverage)` 分页读取。历史压缩按完整工具往返处理已解决的输入错误，每个运行中的轮次最多尝试一次；原始记录、未读输入检查和未知操作保护仍保留。
+
+完整模型请求装配后，会展示这次真正已读输入的固定批次。理解整批后可随发言或休息提交 `handled_batch_ref`，只理解部分时仍用逐条编号；后来到达的消息继续保留，停止和发送保护照常执行。工作前应答按具体来源的真实送达核对，内部唤醒不要求重复告知。相互独立的只读检查优先合并执行，正常私聊表达、进度反馈和有先后依赖的操作继续保留。
+
+QQ 图片优先从已配置媒体目录内的平台缓存取回；公共 QQ CDN 使用保留证书校验的直连下载，避免无效系统代理阻断图片。`life_read(kind:media,asset_id)` 重新投递原图，主人本机截图可通过 `kind:media,action:import,path` 导入并查看；两条路径均将实际像素送入同一模型会话，继续校验来源、受众和遗忘状态。
+
 本 README 说明当前实现和使用方式。详细交付范围见 [实施状态报告](docs/life-implementation-status.md)。设计文档中的候选方案和旧阶段记录不等于已经上线。
 
 ## 当前功能与限制
@@ -57,7 +63,7 @@
 1. 准备 Windows、Python 3.11+ 和虚拟环境，安装 `requirements.txt`。
 2. 复制 `config.example.toml` 为 `config.toml`，填写真实 `owner`、模型接口/凭据、允许的好友和群、NapCat 连接及 DSH 路径。
 3. 复制 `persona.example.md` 为 `persona.md`，设置一份统一人格，保持 `unified_persona = true`。
-4. 安装 Node 和 NapCat，构建配套 DSH。定制源码已包含在 `vendor/dsh-bridge-work`，新机按 [DSH 构建说明](docs/dsh-build.md) 安装依赖并构建 Host。旧机仍使用原旁边目录，不自动切换。
+4. 安装 Node 和 NapCat，构建配套 DSH。定制源码已包含在 `vendor/dsh-bridge-work`，新机按 [DSH 构建说明](docs/dsh-build.md) 安装依赖并构建 Host。真实配置中的 `dsh_root` 须指向 `vendor/dsh-bridge-work`；Git 拉取不会修改本机 `config.toml`。
 5. 语音、生图、本地向量模型、音色素材及相关运行环境按需配置。向量依赖单列在 `requirements-embedding.txt`，不要把普通聊天接口当作向量接口。
 6. 启动并扫码，先确认宿主、QQ、认知服务分别就绪，再观察普通聊天。
 

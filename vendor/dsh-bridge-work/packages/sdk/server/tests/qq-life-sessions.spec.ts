@@ -71,7 +71,7 @@ async function fixture(beforeAdmission?: () => Promise<void>, script?: Construct
   ctx.llm.registerAdapter(['mock'], adapter)
   const request = vi.fn(async (method: string, params: object): Promise<Record<string, unknown>> => {
     if (compact && 'kind' in params && params.kind === 'static_context') return { ok: true,stable_text: 'Current test persona.',
-      tool_contracts: hostContracts,presentation_scope: 'scope-v1' }
+      tool_contracts: hostContracts,presentation_scope: 'scope-v1',default_tools: ['pwsh','job_output','job_kill'] }
     if (compact && 'kind' in params && params.kind === 'context') return { ok: true,stable_text: 'Current test persona.',text: 'Current facts.',
       resource_policy: contextPolicy,context_plan: contextPlan }
     return method === 'qq_life/life/read' ? { ok: true, text: 'You are the test role.', continuity_protocol: 1, continuity_enabled: continuity }
@@ -94,6 +94,65 @@ const input = { session_id: 'main', generation: 1, input_id: 'input-1',
   source: 'user_report', content: 'hello', source_event_ids: ['input-1'], mode: 'steer' }
 
 describe('complete bot request preparation', () => {
+  it('presents a logged input batch after request assembly through the Loader composition',async () => {
+    const f=await fixture(undefined,[(options) => {
+      expect(JSON.stringify(options.messages)).toContain('ib:complete-input')
+      return toolCallResponse('say-batch','life_say',{ proposal: {
+        text: 'I understood this batch.',handled_batch_ref: 'ib:complete-input',end_turn: true,
+      } })
+    }],false,true,true,false,false,true)
+    const fallback=f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method,params) => {
+      if ('kind' in params && params.kind==='context_validate') return { ok: true,
+        input_batch: { ref: 'ib:complete-input',input_ids: ['input-1'],turn: 1,step: 1 } }
+      return fallback(method,params)
+    })
+    try {
+      await f.sessions.handle('input',input)
+      const agent=f.ctx.agents.get(SessionId('main'))!
+      await agent.whenIdle()
+      expect(f.adapter.requests).toHaveLength(1)
+      expect(agent.session.snapshotEvents().filter(event=>event.type==='turn/end').map(event=>event.data.reason)).toEqual([{ kind: 'completed' }])
+      expect(JSON.stringify(agent.session.snapshotEvents())).toContain('ib:complete-input')
+      expect(agent.session.snapshotEvents().filter(event=>event.type==='tool/result')
+        .map(event=>event.data.message)).toEqual([expect.objectContaining({ isError: false })])
+      expect(f.request.mock.calls.some(([,p]) => 'kind' in p && p.kind==='life.say'
+        && 'proposal' in p && (p.proposal as Record<string,unknown>).handled_batch_ref==='ib:complete-input')).toBe(true)
+    } finally { await f.close() }
+  })
+
+  it('shows host-selected native defaults immediately and still checks execution with the host', async () => {
+    for (const allowed of [false,true]) {
+      let executions=0
+      const f=await fixture(undefined,[(options) => {
+        expect(options.tools!.map(tool => tool.name)).toEqual(expect.arrayContaining(['pwsh','job_output','job_kill']))
+        expect(options.tools!.some(tool => tool.name==='life_media')).toBe(false)
+        return toolCallResponse('shell','pwsh',{})
+      },(options) => {
+        expect(options.tools).toEqual(f.adapter.requests[0]!.tools)
+        return toolCallResponse('rest','life_rest',{ proposal: {} })
+      }],false,true,true,false,false,true)
+      for (const name of ['pwsh','job_output','job_kill']) f.ctx.effect(() => f.ctx.tools.register(defineTool({
+        name,description: 'Local execution probe.',parameters: {},
+        output: { schema: { type: 'string' },render: (_args,value) => [{ type: 'text',text: value }] },
+        execute: async () => { executions++;return 'probe' },
+      })))
+      const fallback=f.request.getMockImplementation()!
+      f.request.mockImplementation(async (method,params) => {
+        if ('kind' in params && params.kind==='before_tool' && 'tool' in params && params.tool==='pwsh') return { ok: allowed,code: 'scope_mismatch' }
+        return fallback(method,params)
+      })
+      try {
+        await f.sessions.handle('input',input)
+        await f.ctx.agents.get(SessionId('main'))!.whenIdle()
+        expect(executions).toBe(allowed ? 1 : 0)
+        expect(f.adapter.requests).toHaveLength(2)
+        expect(f.request.mock.calls.some(([,params]) => 'kind' in params && params.kind==='before_tool')).toBe(true)
+        expect(f.request.mock.calls.some(([,params]) => 'kind' in params && params.kind==='life.read')).toBe(false)
+      } finally { await f.close() }
+    }
+  })
+
   it('sends structured base tools and ends a final say without an extra rest request', async () => {
     const f = await fixture(undefined,undefined,false,true,true,false,false,true)
     try {

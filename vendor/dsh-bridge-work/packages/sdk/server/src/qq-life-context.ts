@@ -19,9 +19,10 @@ interface Policy {
 interface Plan {
   stamp: string; presentation_scope: string; mode: string; protected_input_ids: string[]
   pinned_asset_ids: string[]; protect_task_images: boolean
+  resolved_input_error_turn: number
   optional_context?: { source_text: string; replacement_text: string }
 }
-interface Prepared { policy: Policy; plan: Plan; currentStart: number; imageStart: number }
+interface Prepared { policy: Policy; plan: Plan; currentStart: number; imageStart: number; lastHandoffTurn: number }
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid context policy record')
@@ -73,6 +74,8 @@ export class QqLifeContext {
       || !Array.isArray(plan.protected_input_ids) || !plan.protected_input_ids.every(item => typeof item === 'string')
       || !Array.isArray(plan.pinned_asset_ids) || !plan.pinned_asset_ids.every(item => typeof item === 'string')
       || typeof plan.protect_task_images !== 'boolean') throw new Error('invalid context source plan')
+    const resolvedTurn=plan.resolved_input_error_turn ?? 0
+    if (typeof resolvedTurn!=='number' || !Number.isSafeInteger(resolvedTurn) || resolvedTurn<0) throw new Error('invalid resolved input turn')
     const previous = this.plans.get(agent)
     let optional: Plan['optional_context']
     if (plan.optional_context !== undefined) {
@@ -80,7 +83,8 @@ export class QqLifeContext {
       if (typeof value.source_text!=='string' || typeof value.replacement_text!=='string') throw new Error('invalid optional context projection')
       optional={ source_text: value.source_text,replacement_text: value.replacement_text }
     }
-    this.plans.set(agent, { currentStart: Number(agent.session.seq),imageStart: previous?.currentStart ?? Number(agent.session.seq),policy: {
+    this.plans.set(agent, { currentStart: Number(agent.session.seq),imageStart: previous?.currentStart ?? Number(agent.session.seq),
+      lastHandoffTurn: previous?.lastHandoffTurn ?? 0,policy: {
       chat_input_target_tokens: Number(policy.chat_input_target_tokens),task_input_target_tokens: Number(policy.task_input_target_tokens),
       pressure_ratio: policy.pressure_ratio,recent_history_target_tokens: Number(policy.recent_history_target_tokens),
       handoff_target_tokens: Number(policy.handoff_target_tokens),
@@ -88,7 +92,8 @@ export class QqLifeContext {
       reference_image_batches: Number(policy.reference_image_batches),
     }, plan: { stamp: plan.stamp,presentation_scope: plan.presentation_scope,mode: String(plan.mode),
       protected_input_ids: plan.protected_input_ids as string[],pinned_asset_ids: plan.pinned_asset_ids as string[],
-      protect_task_images: plan.protect_task_images,...optional===undefined ? {} : { optional_context: optional } } })
+      protect_task_images: plan.protect_task_images,resolved_input_error_turn: resolvedTurn,
+      ...optional===undefined ? {} : { optional_context: optional } } })
   }
 
   private reduceOptional(agent: Agent,plan: Plan): void {
@@ -123,6 +128,33 @@ export class QqLifeContext {
       if (!event) throw new Error('missing context surface event')
       return event
     })
+  }
+
+  private inputBatch(agent: Agent,turn: number,step: number,value: unknown): void {
+    const marker='当前输入批次（本次请求已读）：\n'
+    let batch: Record<string, unknown> | undefined
+    if (value!==undefined && value!==null) {
+      batch=record(value)
+      if (typeof batch.ref!=='string' || !Array.isArray(batch.input_ids) || batch.input_ids.length===0
+        || !batch.input_ids.every(id=>typeof id==='string') || batch.turn!==turn || batch.step!==step) {
+        throw new Error('invalid current input batch')
+      }
+    }
+    for (const event of this.surface(agent)) {
+      if (event.type!=='user/message' || event.data.source.kind!=='qq-life-projection'
+        || !event.data.content.some(block=>block.type==='text' && block.text.startsWith(marker))) continue
+      agent.session.append('compaction/prune',{ shadowedRange: { start: event.seq,end: event.seq },
+        shadowedSeqs: [event.seq],shadowedTokenCount: this.ctx.tokenMeter.estimateMessage(event.data) })
+      agent.session.append('user/message',createUserMessage({
+        content: [],source: { kind: 'qq-life-projection' },
+      }),{ surfaceOp: { op: 'replace',startSeq: event.seq,endSeq: event.seq },sourceEventSeqs: [event.seq] })
+    }
+    if (batch) agent.session.append('user/message',createUserMessage({
+      content: [{ type: 'text',text: marker+JSON.stringify(batch)
+        +'\n理解整批后，在下一次 life_say/life_rest（含 notice）中提交 handled_batch_ref:ref；'
+        +'只处理部分时用 handled_input_ids。此引用不包含后来到达或未读的消息。' }],
+      source: { kind: 'qq-life-projection' },
+    }),{ surfaceOp: 'append' })
   }
 
   private deduplicate(agent: Agent, turn: number, step: number, plan: Plan): void {
@@ -189,7 +221,12 @@ export class QqLifeContext {
   }
 
   private handoffRange(agent: Agent, plan: Plan, currentStart: number, recentTokens: number): { start: SessionSeq; end: SessionSeq; tokens: number } | undefined {
-    const events = this.surface(agent), priced = new Map(this.ctx.tokenMeter.measure(agent.session).nodes.map(node => [node.seq,node.tokens]))
+    const events = this.surface(agent)
+    const priced = new Map(this.ctx.tokenMeter.measure(agent.session).nodes.map(node => [node.seq,node.tokens]))
+    const callNames=new Map(events.flatMap((event) => {
+      const message=agent.session.deriveEventMessage(event)
+      return message?.role==='assistant' ? message.content.flatMap(block => block.type==='tool-call' ? [[block.id,block.name] as const] : []) : []
+    }))
     let retained = 0, tail = events.length
     while (tail > 0 && retained < recentTokens) { tail--; retained += priced.get(events[tail]!.seq) ?? 0 }
     let start: number | undefined, best: { start: SessionSeq; end: SessionSeq; tokens: number } | undefined, tokens = 0
@@ -202,7 +239,14 @@ export class QqLifeContext {
       if (message?.content.some(block => block.type === 'image' && !block.offloaded)) protectedNode = true
       if (event.type === 'tool/result') {
         const body = message?.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') ?? ''
-        if (event.data.message.isError || /"status"\s*:\s*"(?:unknown|dispatched|dispatching|stopping)"/.test(body)) protectedNode = true
+        let resolvedInputError=false
+        if (event.data.message.isError && event.data.turn<=plan.resolved_input_error_turn
+          && ['life_say','life_rest','life_remember','life_intent','life_appraise','life_simulation',
+            'life_media','life_consult','life_change_self'].includes(callNames.get(event.data.message.toolCallId) ?? '')) {
+          try { resolvedInputError=record(JSON.parse(body.replace(/^Error:\s*/,''))).code==='input_pending' } catch { /* Non-host errors stay protected. */ }
+        }
+        if (event.data.message.isError && !resolvedInputError
+          || /"status"\s*:\s*"(?:unknown|dispatched|dispatching|stopping)"/.test(body)) protectedNode = true
       }
       if (protectedNode) { start = undefined; tokens = 0; continue }
       if (start === undefined) {
@@ -217,7 +261,7 @@ export class QqLifeContext {
     return best
   }
 
-  /** Prepare the logged surface with at most one handoff, preserving cancellation.
+  /** Prepare the logged surface with at most one handoff attempt per live turn, preserving cancellation.
    * @param payload - complete logged request position.
    */
   async prepare(payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }): Promise<void> {
@@ -244,10 +288,11 @@ export class QqLifeContext {
       this.reduceOptional(agent,plan)
       measured=meter.measure(session)
     }
-    if (measured.totalTokens > target) {
+    if (measured.totalTokens > target && prepared.lastHandoffTurn!==turn) {
       const range = this.handoffRange(agent,plan,currentStart,policy.recent_history_target_tokens)
       const compaction = this.ctx.get('compaction')
-      if (range && range.tokens > policy.handoff_target_tokens && compaction) {
+      if (range && range.tokens > Math.max(policy.handoff_target_tokens*2,policy.recent_history_target_tokens) && compaction) {
+        prepared.lastHandoffTurn=turn
         let handedOff=false
         try {
           await compaction.compactRegion(range.start,range.end,agent,signal)
@@ -256,7 +301,9 @@ export class QqLifeContext {
           signal.throwIfAborted()
           this.ctx.logger.warn(`qq-life handoff unavailable; original protected context retained: ${String(error)}`)
         }
-        if (handedOff) this.afterHandoff?.(agent,plan.mode)
+        if (handedOff) {
+          this.afterHandoff?.(agent,plan.mode)
+        }
         measured = meter.measure(session)
       }
     }
@@ -264,6 +311,8 @@ export class QqLifeContext {
     const valid = await this.host(agent,{ kind: 'context_validate', stamp: plan.stamp })
     signal.throwIfAborted()
     if (valid.ok !== true) throw new LlmError('Sources changed during request preparation; yield to the scheduler and rebuild current facts.','stale_context',{ status: 409 })
+    this.inputBatch(agent,turn,step,valid.input_batch)
+    measured=meter.measure(session)
     if (capacity !== undefined && measured.totalTokens > capacity) {
       throw new LlmError(`Required input exceeds physical capacity: estimated=${measured.totalTokens}, capacity=${capacity}, output=${output}. Read original sources with life_read(kind:life_source|observation,ref/event_id,cursor) in bounded pages; protected inputs were retained.`, 'context_capacity_blocked', { status: 400 })
     }

@@ -58,7 +58,7 @@ APPRAISAL=obj(dict(sources=STRINGS,source_event_ids=STRINGS,interpretation=S,mea
         interaction_ref=S,resolution_ref=S,satisfaction_ref=S),open=True)),
     resolves_cause_ids=STRINGS,quoted_or_hypothetical=B,negated=B,user_need=S,target=S,affected_need_ids=STRINGS))
 PROFILE_REVIEWS=array(obj(dict(actor_id=S,sources=STRINGS,reason=S),('actor_id','sources','reason')))
-COMMON=dict(sources=STRINGS,source_event_ids=STRINGS,handled_input_ids=STRINGS,
+COMMON=dict(sources=STRINGS,source_event_ids=STRINGS,handled_input_ids=STRINGS,handled_batch_ref=S,
     appraisal=APPRAISAL,activity_changes=array(ACTIVITY))
 
 
@@ -125,12 +125,12 @@ def contracts():
             evidence_ref=S,evidence_text=S,run_id=S,outcome=string('completed','aborted'),candidate_id=S,episode_id=S),('action','experience_protocol','experience_domain','base_revision')),
     }
     summaries={
-        'life_read':'读取当前状态、来源、历史及能力目录；精确 ref + schema_hash + load:true 加载工具。',
-        'life_say':'向当前对话发送自然表达；最后一条显式 end_turn:true。未知发送先对账。',
-        'life_rest':'保存私人想法并结束当前轮；沿用已有随机空闲间隔。',
-        'life_remember':'按真实来源保存到现有记忆、人物画像和叮嘱服务。',
+        'life_read':'读取状态、来源和能力。图片用 kind:media,asset_id；主人本机截图用 kind:media,action:import,path。成功后原图进入同一会话供视觉查看。精确 ref+schema_hash+load:true 加载工具。',
+        'life_say':'向当前对话发送自然表达。理解当前输入批次后同次提交 handled_batch_ref（含 notice），也可逐条用 handled_input_ids；不必另加 resolve。最后一条显式 end_turn:true。未知发送先对账。',
+        'life_rest':'结束当前轮。理解当前输入批次后同次提交 handled_batch_ref，也可逐条用 handled_input_ids；未读输入不能确认。沿用已有随机空闲间隔。',
+        'life_remember':'按真实来源保存记忆或叮嘱。人物的称呼/长期偏好用 kind:person_profile,actor_id,field:address|preference,topic_key,text,origin:explicit_statement,sources,base_revision:0；更正先读当前版本。可用 handled_input_ids 一并确认已理解输入。',
         'life_intent':'保存或更新当前打算；等待与停止须按当前版本执行。',
-        'life_appraise':'评价真实语义及独立情绪、需要、人物关系，复用现有来源校验。',
+        'life_appraise':'评价真实语义、情绪、需要或人物关系。普通中性评价可只交 sources,interpretation；无关系影响不填 relation_impacts。不猜版本；关系影响须 relation_protocol:2,subject_actor_id 和读取所得 based_on_relationship_version；based_on_state_version 须取读回的 state_version，不用日志序号。',
         'life_media':'异步生成媒体；生成、检查和送达分别确认。',
         'life_consult':'异步咨询 Codex；未知结果须核对原 request_id。',
         'life_change_self':'按原发布流程修改人格、方法、代码或插件，核对生效回执。',

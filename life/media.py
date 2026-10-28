@@ -15,6 +15,7 @@ import re
 import html
 from pathlib import Path
 import urllib.request
+from urllib.parse import urlsplit
 
 from .agent_session import SessionFailure, canonical
 from .text import stable_id
@@ -187,7 +188,11 @@ class MediaService:
         if value.startswith('base64://'):
             data = base64.b64decode(value[9:],validate=True)
         elif value.startswith(('https://','http://')):
-            with urllib.request.urlopen(value,timeout=30) as response:
+            # QQ's public CDN can be read directly without inheriting a dead
+            # Windows system proxy; HTTPS certificate verification stays on.
+            fetch=(urllib.request.build_opener(urllib.request.ProxyHandler({})).open
+                if urlsplit(value).hostname=='multimedia.nt.qq.com.cn' else urllib.request.urlopen)
+            with fetch(value,timeout=30) as response:
                 data = response.read(self.max_bytes+1)
         else:
             path = Path(value.removeprefix('file:///')).resolve()
@@ -209,7 +214,19 @@ class MediaService:
             try:
                 source = json.loads(asset['source_ref'])
                 value = source.get('url') or source.get('file')
-                if self.platform and not str(value or '').startswith(('http://','https://','base64://','file:///')):
+                cached=None
+                if self.platform and asset['kind']=='image' and source.get('file'):
+                    try:
+                        response=await self.platform('get_image',dict(file=source['file']))
+                        if response.get('retcode')==0:
+                            resolved=response.get('data') or {}
+                            candidate=resolved.get('file_path') or resolved.get('file')
+                            if candidate and (str(candidate).startswith('file:///') or Path(str(candidate)).is_absolute()):
+                                try:cached=await asyncio.to_thread(self._read,candidate)
+                                except (OSError,SessionFailure):pass
+                            value=resolved.get('url') or value
+                    except (OSError,TimeoutError):pass
+                if cached is None and self.platform and not str(value or '').startswith(('http://','https://','base64://','file:///')):
                     action = {'image':'get_image','audio':'get_record'}.get(asset['kind'],'get_file')
                     params = {('file_id' if action=='get_file' else 'file'):source.get('file_id') or source.get('file')}
                     if asset['kind']=='audio':
@@ -219,7 +236,7 @@ class MediaService:
                         raise SessionFailure('unavailable','平台未能解析媒体标识',response=response)
                     resolved = response.get('data') or {}
                     value = resolved.get('url') or resolved.get('file') or resolved.get('file_path')
-                data = await asyncio.to_thread(self._read,value)
+                data = cached if cached is not None else await asyncio.to_thread(self._read,value)
                 mime = mimetypes.guess_type(str(value))[0] or 'application/octet-stream'
                 if asset['kind']=='image':
                     from PIL import Image

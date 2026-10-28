@@ -276,12 +276,19 @@ export class QqLifeSessions {
       this.resources!.present({ ...dispatch.exec, name: dispatch.name, callId: dispatch.subCallId }, await next(), dispatch.isError)))
     this.disposers.push(this.ctx.on('system-prompt/assemble', async (assembly, context, next) => {
       const agent = context.agent
+      let defaultTools: string[] = []
       if (agent && this.owner(agent)) {
         const reply = await this.callback(agent, 'qq_life/life/read', { kind: 'static_context' })
         if (reply.ok === false) throw new QqLifeSessionError(String(reply.code), String(reply.message))
         this.configureReadMode(agent, reply)
         await this.configureContinuity(agent, reply.continuity_protocol === 1 && reply.continuity_enabled === true)
         await this.configureContracts(agent, reply)
+        if (reply.default_tools !== undefined) {
+          if (!Array.isArray(reply.default_tools) || !reply.default_tools.every(name => typeof name === 'string')) {
+            throw new QqLifeSessionError('protocol_mismatch', 'Default tool names must be strings')
+          }
+          defaultTools = reply.default_tools
+        }
         const text = String(reply.stable_text ?? '')
         this.stableContext.set(String(agent.session.id), text)
         const section = assembly.sections.find(value => value.name === 'qq-role-rules')
@@ -294,6 +301,8 @@ export class QqLifeSessions {
         const base = new Set(['life_read','life_say','life_rest','life_remember','life_intent','life_appraise'])
         if (this.owner(agent)?.child) {
           base.clear();base.add('life_read')
+        } else {
+          for (const name of defaultTools) base.add(name)
         }
         const schemas = this.ctx.tools.schemas(agent)
         for (const [name, hash] of state.loaded) {

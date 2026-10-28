@@ -181,7 +181,7 @@ Git 有 `phone.py`、`qqgui.py`，但 adb、ADBKeyboard、模拟器和手机登�
 
 1. 修改真实 `config.toml` 中 `dsh_root`、`dsh_home`、`dsh_node`、`dsh_pnpm_entry`、`dsh_tmp`、`bili_plugin`。
 2. 核对 `persona`、`life_db`、`consult_config`，保留角色身份及实际数据，不换成模板。
-3. 修改媒体 provider 的 `environment.python`、`image_server`、`image_model_dir`、`voice_engine_root`、`voice_model_dir`，以及 `local_embedding.model_path`。
+3. 修改媒体 provider 的 `environment.python`、`image_server`、`image_model_dir`、`voice_engine_root`、`voice_model_dir`，以及 `local_embedding.model_path`。`media_local_roots` 按新机 QQ 实际媒体缓存目录调整，不能沿用旧账号的缓存路径。
 4. 修改音色 manifest 的 reference/sample 路径，保留实际音频内容与摘要；核对旧资产路径。
 5. 核对 DSH sdk 的 package/link、patch、profile 归属路径和专用 home；只改机器相关路径，不清除会话 ID。
 6. 核对咨询配置、INIT 文档及 skills 引用路径。最后处理环境变量覆盖，防止导入配置被旧变量盖掉。

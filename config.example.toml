@@ -41,6 +41,8 @@ handoff_seconds = 10
 # Chat waits 2-5 seconds; long/structured text is pasted whole after 4 seconds.
 typing_chars_per_second = 3
 paste_threshold = 300
+# Optional: this machine's QQ media cache roots, as returned by get_image.
+# Replace account-specific paths when moving to another computer.
 media_local_roots = []
 media_max_mb = 64
 asr_model = "small"
