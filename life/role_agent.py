@@ -697,6 +697,9 @@ class RoleAgent:
                 simulation_control = kind=='life.simulation' and proposal.get('action') in {'appraise_input','stop','exit','episode.end','pause','ack','permission.respond'}
                 if kind not in {'life.read','life.appraise'} and not media_control and not simulation_control and self.sessions.pending(root['session_id']):
                     raise self.sessions.pending_failure(root['session_id'])
+                if not media_control and not simulation_control:
+                    from .work_progress import require
+                    require(self,scope,root,kind.replace('.','_'),dict(proposal=proposal))
                 if proposal.get('appraisal'):
                     embedded_receipt = self.appraise(scope, proposal['appraisal'], root,call_key=':'.join(key)+':embedded')
                 if kind=='life.say' and proposal.get('wait_for_reply') is not None:
@@ -1381,12 +1384,15 @@ class RoleAgent:
         ready = [item['input_id'] for item in pending if item['can_acknowledge']]
         unread = [item['input_id'] for item in pending if not item['can_acknowledge']]
         notice = self.unacknowledged_work_inputs(scope,root)
-        action = ('wait_for_input' if unread else 'life_say' if notice else
+        from .work_progress import state
+        progress=state(self,scope,root)
+        action = ('wait_for_input' if unread else 'life_say' if notice or progress['due'] else
                   'life_intent' if ready else None)
         proposal = (dict(purpose='notice',end_turn=False,handled_input_ids=ready,sources=notice)
                     if action=='life_say' else dict(action='resolve',handled_input_ids=ready)
                     if action=='life_intent' else None)
-        return dict(ready=not pending and not notice,unread_input_ids=unread,
+        return dict(ready=not pending and not notice and not progress['due'],unread_input_ids=unread,
+                    work_progress=progress,
                     acknowledgeable_input_ids=ready,notice_input_ids=notice,
                     next_tool=action,proposal_fields=proposal,
                     instruction='先理解输入。需要 notice 时自行填写简短 text，单独调用 life_say；确认送达后继续工作。不要与 pwsh 并发，也不要重复撞门。')
@@ -1429,6 +1435,8 @@ class RoleAgent:
         from .initiative import CONTROL
         if name not in CONTROL:
             self.require_work_acknowledgement(scope,root)
+        from .work_progress import require
+        require(self,scope,root,name,call.get('arguments') or {})
         op = stable_id('roleop', call['session_id'], call['call_id'])
         binding = self.sessions.require(call['session_id'])
         if name=='subagent' and not binding['intent_ref']:

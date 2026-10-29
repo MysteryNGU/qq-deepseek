@@ -24,6 +24,9 @@ class ResourcePolicy:
     memory_context_target_tokens: int = 2400
     continuity_context_target_tokens: int = 800
     autonomous_no_progress_limit: int = 3
+    work_progress_tool_limit: int = 6
+    work_progress_seconds: int = 90
+    work_repeat_limit: int = 3
     motivation_cooldown_seconds: int = 900
     chat_input_target_tokens: int = 32000
     task_input_target_tokens: int = 48000
