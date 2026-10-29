@@ -175,7 +175,7 @@ describe('durable request projections',() => {
     } finally { await f.close() }
   })
 
-  it.each(['resolved','pending','unknown'])('compacts only certified resolved input errors (%s) and bounds handoffs per live turn',async (state) => {
+  it.each(['resolved','pending','unknown'])('compacts only certified resolved shell admission errors (%s)',async (state) => {
     const f=await harness(),s=f.agent.session
     try {
       await f.ctx.plugin(BasicCompactionEngine,{ auto: false,maxTokens: 40 })
@@ -186,7 +186,7 @@ describe('durable request projections',() => {
       add('Earlier settled A ');add('Earlier settled B ')
       const id=ToolCallId('old-failed-call')
       s.append('assistant/message',{ turn: 1,step: 1,stream: [],message: createAssistantMessage({
-        source: { provider: 'mock',model: 'mock' },content: [{ type: 'tool-call',id,name: 'life_say',arguments: '{}' }] }) },{ surfaceOp: 'append' })
+        source: { provider: 'mock',model: 'mock' },content: [{ type: 'tool-call',id,name: 'pwsh',arguments: '{}' }] }) },{ surfaceOp: 'append' })
       const failed=s.append('tool/result',{ turn: 1,step: 1,message: createToolResultMessage({ callId: id,isError: true,
         content: [{ type: 'text',text: JSON.stringify({ ok: false,code: state==='unknown' ? 'outcome_unknown' : 'input_pending',message: 'preserve until resolved' }) }] }) },{ surfaceOp: 'append' })
       s.append('step/end',{ turn: 1,step: 1 });s.append('turn/end',{ turn: 1,reason: { kind: 'completed' } })
@@ -195,7 +195,8 @@ describe('durable request projections',() => {
       s.append('request/header',{ header: { config: { provider: 'mock',model: 'mock' } },reason: 'initial' })
       const context_plan={ ...plan,resolved_input_error_turn: state==='pending' ? 0 : 1 }
       f.control.configure(f.agent,{ resource_policy: policy,context_plan })
-      add('CURRENT_REQUIRED_WORDS ')
+      s.append('user/message',createUserMessage({ content: [{ type: 'text',text: 'CURRENT_REQUIRED_WORDS '.repeat(400) }],
+        source: { kind: 'qq-life',inputId: 'current',origin: 'user_report' } }),{ surfaceOp: 'append' })
       await f.control.prepare({ agent: f.agent,turn: 2,step: 1,signal: new AbortController().signal })
       expect(compact).toHaveBeenCalledTimes(1)
       const [start,end]=compact.mock.calls[0]!
@@ -203,9 +204,31 @@ describe('durable request projections',() => {
       expect(s.surface.nodes.includes(failed.seq)).toBe(state!=='resolved')
       f.control.configure(f.agent,{ resource_policy: policy,context_plan })
       await f.control.prepare({ agent: f.agent,turn: 2,step: 2,signal: new AbortController().signal })
-      expect(compact).toHaveBeenCalledTimes(1)
+      expect(compact.mock.calls.length).toBeLessThanOrEqual(2)
       expect(JSON.stringify(s.deriveMessages())).toContain('CURRENT_REQUIRED_WORDS')
       expect(s.snapshotEvents().some(event=>event.seq===failed.seq)).toBe(true)
+    } finally { await f.close() }
+  })
+
+  it('compacts newly accumulated history again within the same long turn',async () => {
+    const f=await harness(),s=f.agent.session
+    try {
+      f.ctx.llm.registerAdapter(['mock'],new MockAdapter([textResponse('first summary'),textResponse('second summary')]))
+      await f.ctx.plugin(BasicCompactionEngine,{ auto: false,maxTokens: 40 })
+      const compact=vi.spyOn(f.ctx.compaction,'compactRegion')
+      s.append('turn/start',{ turn: 1 })
+      s.append('request/header',{ header: { config: { provider: 'mock',model: 'mock' } },reason: 'initial' })
+      for (let step=1;step<=2;step++) {
+        for (const label of ['A','B','tail']) s.append('user/message',createUserMessage({
+          content: [{ type: 'text',text: `settled-${step}-${label} `.repeat(400) }],source: { kind: 'user' } }),{ surfaceOp: 'append' })
+        s.append('step/start',{ turn: 1,step })
+        f.control.configure(f.agent,{ resource_policy: policy,context_plan: plan })
+        const before=f.ctx.tokenMeter.measure(s).totalTokens
+        await f.control.prepare({ agent: f.agent,turn: 1,step,signal: new AbortController().signal })
+        expect(compact).toHaveBeenCalledTimes(step)
+        expect(f.ctx.tokenMeter.measure(s).totalTokens).toBeLessThan(before)
+        s.append('step/end',{ turn: 1,step })
+      }
     } finally { await f.close() }
   })
 })

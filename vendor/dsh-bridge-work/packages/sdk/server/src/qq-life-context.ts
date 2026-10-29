@@ -22,7 +22,7 @@ interface Plan {
   resolved_input_error_turn: number
   optional_context?: { source_text: string; replacement_text: string }
 }
-interface Prepared { policy: Policy; plan: Plan; currentStart: number; imageStart: number; lastHandoffTurn: number }
+interface Prepared { policy: Policy; plan: Plan; currentStart: number; imageStart: number; lastHandoffRequest: string; lastFailedRange: string }
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid context policy record')
@@ -84,7 +84,7 @@ export class QqLifeContext {
       optional={ source_text: value.source_text,replacement_text: value.replacement_text }
     }
     this.plans.set(agent, { currentStart: Number(agent.session.seq),imageStart: previous?.currentStart ?? Number(agent.session.seq),
-      lastHandoffTurn: previous?.lastHandoffTurn ?? 0,policy: {
+      lastHandoffRequest: previous?.lastHandoffRequest ?? '',lastFailedRange: previous?.lastFailedRange ?? '',policy: {
       chat_input_target_tokens: Number(policy.chat_input_target_tokens),task_input_target_tokens: Number(policy.task_input_target_tokens),
       pressure_ratio: policy.pressure_ratio,recent_history_target_tokens: Number(policy.recent_history_target_tokens),
       handoff_target_tokens: Number(policy.handoff_target_tokens),
@@ -241,9 +241,11 @@ export class QqLifeContext {
         const body = message?.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') ?? ''
         let resolvedInputError=false
         if (event.data.message.isError && event.data.turn<=plan.resolved_input_error_turn
-          && ['life_say','life_rest','life_remember','life_intent','life_appraise','life_simulation',
-            'life_media','life_consult','life_change_self'].includes(callNames.get(event.data.message.toolCallId) ?? '')) {
-          try { resolvedInputError=record(JSON.parse(body.replace(/^Error:\s*/,''))).code==='input_pending' } catch { /* Non-host errors stay protected. */ }
+          && callNames.has(event.data.message.toolCallId)) {
+          try {
+            const failure=record(JSON.parse(body.replace(/^Error:\s*/,'')))
+            resolvedInputError=failure.ok===false && ['input_pending','acknowledgement_required'].includes(String(failure.code))
+          } catch { /* Non-host errors stay protected. */ }
         }
         if (event.data.message.isError && !resolvedInputError
           || /"status"\s*:\s*"(?:unknown|dispatched|dispatching|stopping)"/.test(body)) protectedNode = true
@@ -261,7 +263,7 @@ export class QqLifeContext {
     return best
   }
 
-  /** Prepare the logged surface with at most one handoff attempt per live turn, preserving cancellation.
+  /** Prepare the logged surface with at most one handoff per request; unchanged failed ranges are not retried.
    * @param payload - complete logged request position.
    */
   async prepare(payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }): Promise<void> {
@@ -288,17 +290,20 @@ export class QqLifeContext {
       this.reduceOptional(agent,plan)
       measured=meter.measure(session)
     }
-    if (measured.totalTokens > target && prepared.lastHandoffTurn!==turn) {
+    const requestKey=`${turn}:${step}`
+    if (measured.totalTokens > target && prepared.lastHandoffRequest!==requestKey) {
       const range = this.handoffRange(agent,plan,currentStart,policy.recent_history_target_tokens)
       const compaction = this.ctx.get('compaction')
-      if (range && range.tokens > Math.max(policy.handoff_target_tokens*2,policy.recent_history_target_tokens) && compaction) {
-        prepared.lastHandoffTurn=turn
+      const rangeKey=range ? `${range.start}:${range.end}` : ''
+      if (range && rangeKey!==prepared.lastFailedRange && range.tokens > Math.max(policy.handoff_target_tokens*2,policy.recent_history_target_tokens) && compaction) {
+        prepared.lastHandoffRequest=requestKey
         let handedOff=false
         try {
           await compaction.compactRegion(range.start,range.end,agent,signal)
           handedOff=true
         } catch (error) {
           signal.throwIfAborted()
+          prepared.lastFailedRange=rangeKey
           this.ctx.logger.warn(`qq-life handoff unavailable; original protected context retained: ${String(error)}`)
         }
         if (handedOff) {

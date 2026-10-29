@@ -597,10 +597,12 @@ class RoleAgent:
                     return dict(ok=True,items=items,version=digest(items))
                 return dict(ok=True,**self.capabilities.methods.read(scope,call,ref=call.get('ref'),expected_hash=call.get('hash')))
             if kind=='static_context':
+                await self.replay(root['session_id'])
+                self.fence(call)
                 from .tool_contracts import catalog
                 return dict(ok=True,stable_text=self.stable_context(scope,call),
                             tool_contracts=catalog(work=call.get('caller')=='delegate' or self.interaction_mode.state(scope)['mode']=='tools') if self.compact_tool_protocol==1 else None,
-                            default_tools=['pwsh','job_output','job_kill'] if scope.conversation_id=='qq:private:'+str(self.cfg.owner)
+                            default_tools=(['pwsh'] if self.work_admission(scope,root)['ready'] else [])+['job_output','job_kill'] if scope.conversation_id=='qq:private:'+str(self.cfg.owner)
                                 and self.interaction_mode.state(scope)['mode']=='tools' else [],
                             presentation_scope=self.presentation_scope(root,scope),
                             experience_protocol=self.experience_protocol,
@@ -619,6 +621,8 @@ class RoleAgent:
                 stamp=self.context_stamp(root,scope)
                 valid=call.get('stamp')==stamp
                 batch=self.sessions.input_batch(root['session_id']) if valid and sid==root['session_id'] else None
+                if batch:
+                    batch=dict(batch,work_admission=self.work_admission(scope,root))
                 return dict(ok=valid,stamp=stamp,code='stale_context',input_batch=batch)
             if kind == 'context':
                 text = self.context(root,scope,call)
@@ -898,6 +902,8 @@ class RoleAgent:
         ended=self.repo._one("SELECT payload FROM agent_events WHERE session_id=? AND json_extract(payload,'$.type')='turn/end' ORDER BY seq DESC LIMIT 1",
             (binding['session_id'],))
         resolved_through=json.loads(ended['payload'])['data']['turn'] if ended else 0
+        if self.work_admission(scope,binding)['ready']:
+            resolved_through=self.turn_number(binding['session_id'])
         for item in self.sessions.pending(binding['session_id']):
             resolved_through=min(resolved_through,max(0,(item['claimed_turn'] or 1)-1))
         return dict(stamp=self.context_stamp(binding,scope),presentation_scope=self.presentation_scope(binding,scope),
@@ -990,6 +996,7 @@ class RoleAgent:
                 unified_persona=files.unified,persona_source=files.select(private,scope.participant_id,group).relative_to(self.root).as_posix()),
             motivations=self.motivations.view(scope),
             interaction_mode=self.interaction_mode.state(scope),
+            work_admission=self.work_admission(scope,binding),
             contact_policy=self.contact_policy.state(scope) if not group else None,
             person_review_due=self.people.due(scope,binding),
             continuous_activity=self.activities.bound(scope,binding),
@@ -1349,24 +1356,46 @@ class RoleAgent:
                 return error.receipt()
             raise
 
-    def require_work_acknowledgement(self, scope, root):
+    def unacknowledged_work_inputs(self, scope, root):
         if not getattr(self.cfg,'acknowledge_before_work',False):
-            return
+            return []
         # Only actual user inputs in this model turn create an acknowledgement
         # obligation. Autonomous wakes and delegated work do not invent one.
         turn = self.turn_number(root['session_id'])
         inputs = self.repo._all("SELECT i.input_id FROM agent_inputs i JOIN events e ON e.id=i.input_id "
             "WHERE i.session_id=? AND i.claimed_turn IS ? AND e.source_kind='user_report' "
             "AND e.redacted_at IS NULL ORDER BY i.ordinal",(root['session_id'],turn))
+        missing = []
         for item in inputs:
             confirmed=self.repo._one("SELECT 1 FROM deliveries d,json_each(d.sources) src "
                 "WHERE d.scope_id=? AND d.status='confirmed' AND d.forget_epoch=? AND src.value=? "
                 "AND NOT EXISTS(SELECT 1 FROM deliveries other WHERE other.turn_id=d.turn_id AND other.status!='confirmed') LIMIT 1",
                 (scope.scope_id,self.repo.forget_epoch(scope.scope_id),item['input_id']))
             if not confirmed:
-                raise SessionFailure('acknowledgement_required',
-                    '先用 life.say 简短应答本次请求，purpose=notice、end_turn=false；收到真实发送回执后继续执行，不等待用户再确认',
-                    input_id=item['input_id'])
+                missing.append(item['input_id'])
+        return missing
+
+    def work_admission(self, scope, root):
+        pending = self.sessions.pending_view(root['session_id'])
+        ready = [item['input_id'] for item in pending if item['can_acknowledge']]
+        unread = [item['input_id'] for item in pending if not item['can_acknowledge']]
+        notice = self.unacknowledged_work_inputs(scope,root)
+        action = ('wait_for_input' if unread else 'life_say' if notice else
+                  'life_intent' if ready else None)
+        proposal = (dict(purpose='notice',end_turn=False,handled_input_ids=ready,sources=notice)
+                    if action=='life_say' else dict(action='resolve',handled_input_ids=ready)
+                    if action=='life_intent' else None)
+        return dict(ready=not pending and not notice,unread_input_ids=unread,
+                    acknowledgeable_input_ids=ready,notice_input_ids=notice,
+                    next_tool=action,proposal_fields=proposal,
+                    instruction='先理解输入。需要 notice 时自行填写简短 text，单独调用 life_say；确认送达后继续工作。不要与 pwsh 并发，也不要重复撞门。')
+
+    def require_work_acknowledgement(self, scope, root):
+        missing = self.unacknowledged_work_inputs(scope,root)
+        if missing:
+            raise SessionFailure('acknowledgement_required',
+                '命令尚未执行。先单独 life_say(proposal:{text:简短应答,purpose:notice,end_turn:false,sources:'+canonical(missing)+'})；确认真实送达后继续，不重试 pwsh，不等待用户再次授权。',
+                input_id=missing[0],work_admission=self.work_admission(scope,root))
 
     def _before_tool(self, root, scope, call):
         name = call['tool']

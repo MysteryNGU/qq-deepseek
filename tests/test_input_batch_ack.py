@@ -85,5 +85,50 @@ class InputBatchAckTests(unittest.IsolatedAsyncioTestCase):
         await self.f.expressions(self.f.scope,'unrelated',dict(text='another topic'),[])
         with self.assertRaises(SessionFailure):self.role.require_work_acknowledgement(self.f.scope,self.f.binding)
 
+    async def test_admission_guides_one_notice_and_restores_shell_without_ending_turn(self):
+        self.f.cfg.acknowledge_before_work=True
+        self.step(1);self.consume(self.f.event)
+        self.role.intent(self.f.scope,dict(action='set_mode',mode='tools'),self.f.binding)
+        self.f.expressions.transport=self.send
+        admission=self.role.work_admission(self.f.scope,self.f.binding)
+        self.assertEqual(admission['next_tool'],'life_say')
+        static=await self.call('static_context',{})
+        self.assertNotIn('pwsh',static['default_tools'])
+        result=await self.call('life.say',dict(admission['proposal_fields'],text='I will check it now.'),'notice')
+        self.assertTrue(result['sent_confirmed'],result)
+        self.assertFalse(result['turn_complete'])
+        self.assertTrue(self.role.work_admission(self.f.scope,self.f.binding)['ready'])
+        self.assertIn('pwsh',(await self.call('static_context',{}))['default_tools'])
+        self.assertEqual(len(self.f.sent),1)
+
+    def test_internal_input_needs_resolution_but_no_notice(self):
+        self.f.cfg.acknowledge_before_work=True
+        self.step(1)
+        wake,_=self.f.life.ingest(self.f.scope,'runtime_wake','inference','continue task')
+        self.consume(wake)
+        admission=self.role.work_admission(self.f.scope,self.f.binding)
+        self.assertEqual(admission['next_tool'],'life_intent')
+        self.role.sessions.resolve(self.sid,admission['proposal_fields'])
+        self.assertTrue(self.role.work_admission(self.f.scope,self.f.binding)['ready'])
+
+    def test_unread_stop_cannot_be_acknowledged_by_admission(self):
+        self.step(1);self.consume(self.f.event)
+        stop=self.event('stop');self.role.sessions.enqueue(self.f.binding,stop)
+        admission=self.role.work_admission(self.f.scope,self.f.binding)
+        self.assertEqual(admission['next_tool'],'wait_for_input')
+        self.assertIsNone(admission['proposal_fields'])
+        self.assertIn(stop.id,admission['unread_input_ids'])
+
+    async def test_final_request_batch_projects_fresh_admission_after_consumption(self):
+        self.f.cfg.acknowledge_before_work=True
+        self.step(1)
+        self.role.sessions.enqueue(self.f.binding,self.f.event)
+        self.assertEqual(self.role.work_admission(self.f.scope,self.f.binding)['next_tool'],'wait_for_input')
+        self.consume(self.f.event)
+        result=await self.role.callback(dict(kind='context_validate',session_id=self.sid,root_session_id=self.sid,
+            stamp=self.role.context_stamp(self.f.binding,self.f.scope)))
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(result['input_batch']['work_admission']['next_tool'],'life_say')
+
 
 if __name__=='__main__':unittest.main()
