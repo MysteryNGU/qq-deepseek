@@ -142,6 +142,22 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(preview['items']),5)
         self.assertIn('thought',{item['kind'] for item in preview['items']})
 
+    def test_context_previews_structured_checkpoints_without_mutating_records(self):
+        goal='继续研究水彩画'
+        values=[{'summary':'留白与构图'*40,'method_refs':['method-1']},
+                ['构图','色彩'],42,True,None,'已有的文字检查点'*40]
+        for value in values:
+            with self.subTest(checkpoint_type=type(value).__name__):
+                task=self.f.role.tasks.ensure(self.f.scope,'legacy-interest',goal,
+                    kind='ongoing',checkpoint=value)
+                preview,_=self.c.context(self.f.scope,self.f.binding,{})
+                item=next(p for p in preview['items'] if p['ref']==task['ref'])
+                raw=value or goal
+                expected=raw if isinstance(raw,str) else canonical(raw)
+                self.assertEqual(item['text'],expected[:120])
+                self.assertLessEqual(preview['optional_estimated_tokens'],self.f.role.resources.memory_context_target_tokens)
+                self.assertEqual(self.f.role.tasks.get(task['ref'],self.f.scope.scope_id)['checkpoint'],value)
+
     def test_C08_tool_result_is_not_goal_success(self):
         self.f.role.before_tool(self.f.binding,self.f.scope,dict(tool='read_file',call_id='read',
             session_id=self.f.binding['session_id'],arguments=dict(path='synthetic')))
