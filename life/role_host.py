@@ -205,7 +205,9 @@ class RoleHost:
             return
         text = ''.join(str(p.get('data',{}).get('text','')) for p in onebot_segments(raw.get('message',[])) if p.get('type')=='text')
         owner = int(raw['user_id'])==self.cfg.owner and raw.get('message_type')!='group'
-        if owner and text.strip() in {'/重启','/状态','/清空记忆'}:
+        from .interaction_mode import MODE_COMMANDS
+        plain = all(p.get('type')=='text' for p in onebot_segments(raw.get('message',[])))
+        if owner and (text.strip() in {'/重启','/状态','/清空记忆'} or plain and text.strip() in MODE_COMMANDS):
             await self.command(text.strip(),raw)
             return
         event,created = accept_onebot(self.life,raw)
@@ -232,7 +234,23 @@ class RoleHost:
         event,created = accept_onebot(self.life,raw)
         if not created:
             return
-        if text=='/状态':
+        from .interaction_mode import MODE_COMMANDS
+        if text in MODE_COMMANDS:
+            selection = MODE_COMMANDS[text]
+            state = (self.role.interaction_mode.state(event.scope) if selection=='status' else
+                     self.role.interaction_mode.user_select(event.scope,selection))
+            if selection=='chat':
+                stopped = await self.role.interaction_mode.stop_work(event.scope)
+            body = {
+                'tools': '工具状态已开启，我会保持到你结束；原先暂停的任务不会自动恢复。',
+                'chat': '回到日常陪伴了。未完成的工作已暂停，并已请求停止在途操作；你重新开启前，我不会自行进入工具状态。',
+                'auto': '恢复自动切换：平时日常陪伴，需要实际操作时我自己进入工具状态，事情处理完或暂停后回来。已暂停的任务仍保留。',
+                'status': '当前：'+('日常陪伴' if state['mode']=='chat' else '工具状态')+'；切换方式：'+
+                          {'auto':'自动','chat':'你选定日常','tools':'你选定工具'}[state['policy']]+'。',
+            }[selection]
+            if selection=='chat' and not stopped:
+                body += ' 部分后台停止请求尚未确认；新工作调用已被阻止，已经执行的操作不会自动撤销。'
+        elif text=='/状态':
             body = '运行中；认知：DSH；数据库：life.db。'
         elif text=='/清空记忆':
             binding = self.role.sessions.binding(event.scope)

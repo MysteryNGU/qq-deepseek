@@ -71,7 +71,7 @@ class People:
         turn=self.role.turn_number(root['session_id'])
         rows=self.repo._all("SELECT p.event_id,p.actor_id FROM person_encounters p JOIN agent_inputs i ON i.input_id=p.event_id "
             "JOIN events e ON e.id=p.event_id WHERE p.scope_id=? AND p.state='pending' AND e.redacted_at IS NULL "
-            "AND i.session_id=? AND (i.claimed_turn IS ? OR i.handled=0) ORDER BY i.ordinal LIMIT 24",(scope.scope_id,root['session_id'],turn))
+            "AND i.session_id=? AND (i.claimed_turn IS ? OR i.handled=0 OR p.reason='deferred_tool_mode') ORDER BY i.ordinal LIMIT 24",(scope.scope_id,root['session_id'],turn))
         ctx=self.life.life_access.bind(scope,session_id=root['session_id'],generation=root['generation'])
         result=[]
         for row in rows:
@@ -101,6 +101,12 @@ class People:
 
     def finish(self,scope,root,p):
         if not getattr(self.role.cfg,'profile_review_enabled',False):return
+        if self.role.interaction_mode.state(scope)['mode']=='tools':
+            # Preserve unreviewed encounters for the next companion turn.
+            for item in self.due(scope,root):
+                self.repo._exec("UPDATE person_encounters SET reason='deferred_tool_mode' WHERE event_id=? AND state='pending'",
+                    (item['source_ref'],))
+            return
         proposals=p.get('profile_reviews',[])
         if not isinstance(proposals,list) or len(proposals)>24 or any(not isinstance(v,dict) for v in proposals):
             raise SessionFailure('invalid_profile_review','profile_reviews 最多 24 项')

@@ -94,6 +94,7 @@ python -m venv .venv
 - [需求基线](docs/life-continuity-requirements.md) · [历史需求参考](docs/historical-requirements.md)
 - [概要设计](docs/life-overview-design.md) · [详细设计](docs/life-detailed-design.md)
 - [记忆维护说明](docs/memory-operations.md) · [语音延迟说明](docs/speech-latency.md)
+- [记忆与主动陪伴增强设计](docs/companion-enhancements.md)：事实提取/修订、按问题召回与诊断、自发联系节奏及连续道别处理。
 
 需要时执行离线回归：
 

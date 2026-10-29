@@ -126,13 +126,16 @@ class LifeRecall:
         return await asyncio.to_thread(self.search,ctx,query,query_vector=vector,**options)
 
     def search(self, ctx, query='', *, mode='auto', budget=2400, limit=10, cursor=None,
-               actor_refs=(), entity_refs=(), time_range=None, exact_refs=(), query_vector=None, exclude=()):
+               actor_refs=(), entity_refs=(), time_range=None, exact_refs=(), query_vector=None, exclude=(),
+               intent='auto', diagnostics=False):
         if (not isinstance(query, str) or len(query) > 2000 or mode not in {'auto', 'text', 'semantic', 'related'}
                 or type(budget) is not int or not 0 <= budget <= 32000
                 or type(limit) is not int or not 1 <= limit <= 40):
             raise RecallError('invalid_input')
+        if intent not in {'auto', 'facts', 'recent', 'history'} or type(diagnostics) is not bool:
+            raise RecallError('invalid_input')
         self.access.require_binding(ctx)
-        signature = sha(encode([query, mode, list(actor_refs), list(entity_refs), time_range, list(exact_refs), list(exclude)]))
+        signature = sha(encode([query, mode, list(actor_refs), list(entity_refs), time_range, list(exact_refs), list(exclude), intent, diagnostics]))
         fence = self.catalog.fence()
         coverage = dict(text='ready', semantic='unavailable', related='ready')
         if cursor:
@@ -141,6 +144,7 @@ class LifeRecall:
                 raise RecallError('stale_cursor')
             ranked, versions, coverage, high_water = saved['ranked'], saved['versions'], saved['coverage'], saved['high_water']
             previous_coverage = set(saved.get('covered',[]))
+            reasons = saved.get('reasons', {})
         else:
             previous_coverage = set()
             high_water = self.repo._one('SELECT COALESCE(MAX(rowid),0) AS n FROM life_resources WHERE agent_id=?', (ctx.agent_id,))['n']
@@ -166,15 +170,27 @@ class LifeRecall:
             routes = [text_route, semantic, related] if mode == 'auto' else (
                 [related, text_route] if mode == 'related' else [semantic, text_route] if mode == 'semantic' else [text_route])
             scores = {}
-            for route in routes:
+            reasons = {}
+            route_names = ['text', 'semantic', 'related'] if mode == 'auto' else (
+                ['related', 'text'] if mode == 'related' else ['semantic', 'text'] if mode == 'semantic' else ['text'])
+            for route_name, route in zip(route_names, routes):
                 for rank, ref in enumerate(route, 1):
                     scores[ref] = scores.get(ref, 0)+1/(self.index.config.rrf_k+rank)
+                    reasons.setdefault(ref, []).append(route_name)
+            def rank_key(ref):
+                resource = by_id[ref]
+                fact = self.repo.get_memory(resource['native_id']) if resource['kind'] == 'memory' else None
+                preferred = bool(intent == 'facts' and fact and fact.kind == 'fact' and fact.status == 'active')
+                return (-int(preferred), -resource['occurred_at'] if intent == 'recent' else -scores[ref],
+                        -scores[ref], -resource['occurred_at'], ref)
             exact = []
             for ref in exact_refs:
                 resource = self.catalog.resolve(ref)
                 if resource and resource['resource_id'] in by_id:
                     exact.append(resource['resource_id'])
-            ranked = list(dict.fromkeys(exact + sorted(scores, key=lambda ref: (-scores[ref], -by_id[ref]['occurred_at'], ref))))
+            ranked = list(dict.fromkeys(exact + sorted(scores, key=rank_key)))
+            for ref in exact:
+                reasons.setdefault(ref, []).append('exact')
             ranked = [ref for ref in ranked if ref not in exclude and by_id[ref]['native_id'] not in exclude]
             versions = {ref: by_id[ref]['source_version'] for ref in ranked}
         items, remaining, covered = [], [], set(previous_coverage)
@@ -184,7 +200,9 @@ class LifeRecall:
             # explicitly declares that source covered (not merely in its range).
             if ref in covered and not exact_refs:
                 continue
-            item = self._item(resource, body)
+            item = self._item(resource, body, ctx)
+            if diagnostics:
+                item['match_routes'] = reasons.get(ref, [])
             if estimate_tokens(dict(items=items+[item], coverage=coverage)) > budget:
                 # A long leading source must not make every page empty.
                 # Return the intact reference/status instead of a misleading
@@ -208,8 +226,13 @@ class LifeRecall:
             pending = [ref for ref in remaining if ref not in covered]
             next_cursor = self._cursor(ctx,'recall',query=signature,ranked=pending,
                 versions={r:versions[r] for r in pending},coverage=coverage,high_water=high_water,
-                covered=sorted(covered),index_version=[self.index.model_key,self.index.chunker_version]) if pending else None
+                covered=sorted(covered),reasons={r:reasons.get(r, []) for r in pending},
+                index_version=[self.index.model_key,self.index.chunker_version]) if pending else None
             result=dict(items=items,coverage=coverage,next_cursor=next_cursor,has_more=bool(pending),budget_truncated=bool(pending))
+            if diagnostics:
+                result['diagnostics'] = dict(intent=intent, returned=len(items), remaining=len(pending),
+                    visibility='current_audience_only', empty_reason='no_visible_match' if not ranked else None,
+                    history='superseded_records_require_exact_source_read')
             result['estimated_tokens']=estimate_tokens(result)+20
             return result
         result=packet()
@@ -229,11 +252,11 @@ class LifeRecall:
             raise RecallError('budget_requires_page')
         return result
 
-    def _item(self, resource, body):
+    def _item(self, resource, body, ctx=None):
         ref = resource['resource_id']
         native = self.catalog._native(resource['kind'], resource['native_id'])
         original=self.catalog.body(resource)
-        return dict(resource_ref=ref, source_version=resource['source_version'], resource_kind=resource['kind'],source_kind=native.source_kind,
+        result = dict(resource_ref=ref, source_version=resource['source_version'], resource_kind=resource['kind'],source_kind=native.source_kind,
                     learning=self.catalog.learning_view(resource),
                     attribution=self.catalog.attribution(resource),
                     actor_refs=['actor:qq:'+native.actor_id] if resource['kind'] == 'event' and native.source_kind=='user_report' and native.actor_id.isdigit() and native.scope.conversation_id.startswith('qq:') else [],
@@ -243,6 +266,16 @@ class LifeRecall:
                     evidence_refs=[e['parent_id'] for e in self.catalog.parents(ref)
                         if e['relation'] != 'published_from'], claim_kind=native.source_kind,
                     read_ref=ref, content_hash=sha(original), status=resource['status'], authority='memory_material')
+        if resource['kind'] == 'memory' and native.kind == 'fact':
+            result['fact'] = dict(actor_id=native.subject_id, topic_key=native.predicate,
+                                  value=native.normalized_value, status=native.status)
+            if ctx and native.supersedes_id:
+                try:
+                    previous, _ = self.access.load(ctx, native.supersedes_id, history=True, track=False)
+                    result['fact']['previous_ref'] = previous['resource_id']
+                except RecallError:
+                    pass
+        return result
 
     def read(self, ctx, ref, *, cursor=None, max_tokens=4000, max_bytes=24000):
         if type(max_tokens) is not int or not 128 <= max_tokens <= 32000 or type(max_bytes) is not int or not 512 <= max_bytes <= 192000:

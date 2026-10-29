@@ -21,9 +21,10 @@ class ContextEfficiencyTests(unittest.IsolatedAsyncioTestCase):
         return self.role.people.save(scope,dict(actor_id=actor,field=field,topic_key=topic,text=text,
             origin='explicit_statement',sources=[event.id],base_revision=0),binding,'profile-'+event.id)
 
-    async def test_native_defaults_are_selected_for_owner_private_chat_only(self):
+    async def test_native_defaults_are_selected_for_owner_private_work_only(self):
         for conversation,expected in [('qq:private:1',['pwsh','job_output','job_kill']),('qq:private:2',[]),('qq:group:90',[])]:
             scope=self.life.scope(conversation,'1')
+            self.role.interaction_mode.select(scope,'tools')
             binding=self.role.sessions.binding(scope)
             result=await self.role.callback(dict(kind='static_context',root_session_id=binding['session_id'],
                 session_id=binding['session_id']))

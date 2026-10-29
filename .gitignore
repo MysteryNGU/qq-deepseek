@@ -88,3 +88,4 @@ ZenlessZoneZero-Auto/
 *.key
 *.p12
 *.pfx
+/.test-deps/

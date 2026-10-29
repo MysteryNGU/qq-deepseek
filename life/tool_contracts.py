@@ -5,6 +5,7 @@ task revisions, waiting, delivery and spending) still run after field validation
 Open provider-owned option maps are intentional; their provider validates them.
 """
 from functools import lru_cache
+from copy import deepcopy
 from jsonschema import Draft7Validator
 
 from .agent_session import SessionFailure,digest
@@ -58,6 +59,12 @@ APPRAISAL=obj(dict(sources=STRINGS,source_event_ids=STRINGS,interpretation=S,mea
         interaction_ref=S,resolution_ref=S,satisfaction_ref=S),open=True)),
     resolves_cause_ids=STRINGS,quoted_or_hypothetical=B,negated=B,user_need=S,target=S,affected_need_ids=STRINGS))
 PROFILE_REVIEWS=array(obj(dict(actor_id=S,sources=STRINGS,reason=S),('actor_id','sources','reason')))
+MOTIVATION=obj(dict(ref=S,base_revision=I,decision=string('act','defer','decline'),reason=S,after_seconds=N),
+    ('ref','base_revision','decision','reason'))
+CONTACT_BASIS=dict(oneOf=[
+    obj(dict(kind=string('followup','shared_experience','anniversary'),sources=STRINGS),('kind','sources')),
+    obj(dict(kind=string('missing_you'),dimension=string('relatedness','intimacy'),cycle_id=I),
+        ('kind','dimension','cycle_id'))])
 COMMON=dict(sources=STRINGS,source_event_ids=STRINGS,handled_input_ids=STRINGS,handled_batch_ref=S,
     appraisal=APPRAISAL,activity_changes=array(ACTIVITY))
 
@@ -67,7 +74,8 @@ def contracts():
     read_fields=dict(kind=string('self','relationship','relationship_semantics','intents','reminders','appraisals',
         'self_changes','skill','usage','observation','message','voices','media','media_jobs','media_collection',
         'motivations','person_profile','role_protocol','simulation','experience_review','recall','life_source',
-        'memory_index','continuity','capabilities','media_capabilities','memory_batch'),
+        'memory_index','continuity','capabilities','media_capabilities','memory_batch','contact_policy','interaction_mode'),
+        intent=string('auto','facts','recent','history'),diagnostics=B,
         category=string('tools','methods','media'),query=S,ref=S,cursor=CURSOR,limit=I,actor_id=S,offset=I,
         version=S,field=string('schema'),load=B,schema_hash=S,provider_id=S,name=S,event_id=S,result_ref=S,
         mode=S,status=S,max_tokens=I,start_line=I,offset_chars=I,before_lines=I,after_lines=I,limit_matches=I,
@@ -82,13 +90,18 @@ def contracts():
         'life_read':obj(dict(COMMON,**read_fields),('kind',)),
         'life_say':obj(dict(COMMON,profile_reviews=PROFILE_REVIEWS,text=S,parts=array(part),mode=string('auto','single','artifact'),
             purpose=string('final','notice'),end_turn=B,new_message=B,wait_for_reply=WAIT,
+            contact_basis=CONTACT_BASIS,motivation_decisions=array(MOTIVATION),activity_blocker=S,
             experience_run_ref=S,experience_control_revision=I,experience_request_ref=S,experience_initiation_ref=S,continuity_refs=STRINGS)),
         'life_rest':obj(dict(COMMON,profile_reviews=PROFILE_REVIEWS,thought=S,reason=S,keep_thought=B,thought_cues=STRINGS,
+            motivation_decisions=array(MOTIVATION),activity_blocker=S,
             continuity_refs=STRINGS,reflection_outcome=string('unchanged','new_thought','action','unspecified'),
             wake_after_seconds=N,next_attention=obj(dict(mode=string('adaptive','after','event','none'),
                 after_seconds=N,intent_ref=S,reason=S),('mode',)))),
         'life_appraise':APPRAISAL,
-        'life_intent':obj(dict(COMMON,action=string('save','resolve','wait','pause','cancel','resume','done','merge','transfer'),
+        'life_intent':obj(dict(COMMON,action=string('save','resolve','wait','pause','cancel','resume','done','merge','transfer','set_mode'),
+            mode=string('chat','tools'),
+            execution_mode=string('manual','continuous'),result_sources=STRINGS,
+            motivation=MOTIVATION,
             ref=S,base_revision=I,target_ref=S,target_base_revision=I,goal=S,checkpoint=CHECKPOINT,
             kind=string('once','ongoing'),origin=string('user','self'),topic_key=S,parent_ref=S,
             end_direction=B,bind=B,interest=OPTIONS,question=S,actor_id=S,wake_after_seconds=N,wake_reason=S)),
@@ -100,6 +113,8 @@ def contracts():
             base_revision=I,base_note_ref=S,relation_kind=S,coverage_digest=S,claims=array(obj(dict(text=S,
                 kind=string('observed','reported','interpreted','hypothetical'),evidence_refs=STRINGS),('text','kind','evidence_refs'))),
             omitted_refs=STRINGS,unresolved_refs=STRINGS,ordinary_fragments=array(OPTIONS),
+            stable_facts=array(obj(dict(actor_id=S,topic_key=S,quote=S,evidence_refs=STRINGS,
+                operation=string('observe','correct','change')),('actor_id','topic_key','quote','evidence_refs'))),
             reviewed_input_ids=STRINGS,profile_version=S,reason=S,expires=N,asset_id=S,label=S,tags=STRINGS)),
         'life_media':obj(dict(COMMON,action=string('submit','status','cancel'),kind=string('image','speech'),
             job_id=S,prompt=S,text=S,width=I,height=I,seed=I,reference_asset_ids=STRINGS,
@@ -129,7 +144,7 @@ def contracts():
         'life_say':'向当前对话发送自然表达。理解当前输入批次后同次提交 handled_batch_ref（含 notice），也可逐条用 handled_input_ids；不必另加 resolve。最后一条显式 end_turn:true。未知发送先对账。',
         'life_rest':'结束当前轮。理解当前输入批次后同次提交 handled_batch_ref，也可逐条用 handled_input_ids；未读输入不能确认。沿用已有随机空闲间隔。',
         'life_remember':'按真实来源保存记忆或叮嘱。人物的称呼/长期偏好用 kind:person_profile,actor_id,field:address|preference,topic_key,text,origin:explicit_statement,sources,base_revision:0；更正先读当前版本。可用 handled_input_ids 一并确认已理解输入。',
-        'life_intent':'保存或更新当前打算；等待与停止须按当前版本执行。',
+        'life_intent':'保存或更新当前打算；等待与停止须按当前版本执行。action:set_mode,mode:tools|chat 切换工作与日常，无需创建任务，不能覆盖主人选定的模式。',
         'life_appraise':'评价真实语义、情绪、需要或人物关系。普通中性评价可只交 sources,interpretation；无关系影响不填 relation_impacts。不猜版本；关系影响须 relation_protocol:2,subject_actor_id 和读取所得 based_on_relationship_version；based_on_state_version 须取读回的 state_version，不用日志序号。',
         'life_media':'异步生成媒体；生成、检查和送达分别确认。',
         'life_consult':'异步咨询 Codex；未知结果须核对原 request_id。',
@@ -141,8 +156,30 @@ def contracts():
         for name,schema in schemas.items()}
 
 
-def catalog():
-    return dict(version=digest(contracts()),items=list(contracts().values()))
+def catalog(*,work=False):
+    definitions=contracts()
+    if work:
+        definitions=deepcopy(definitions)
+        for name,item in definitions.items():
+            schema=item['parameters']['properties']['proposal']
+            for key in list(schema['properties']):
+                if key in {'appraisal','profile_reviews','motivation_decisions','contact_basis'} or key.startswith('experience_'):
+                    schema['properties'].pop(key)
+                    if key in schema['required']:schema['required'].remove(key)
+            if name in {'life_appraise','life_simulation'}:
+                schema=obj()
+                item['parameters']['properties']['proposal']=schema
+                item['description']='日常状态能力；工作期间无需调用，主角色可用 life_intent(action:set_mode,mode:chat) 切回。'
+            elif name=='life_remember':
+                fields={'sources','handled_input_ids','handled_batch_ref','kind','text','topic_key','applicability','intent_ref','always_load'}
+                schema['properties']={k:v for k,v in schema['properties'].items() if k in fields}
+                schema['properties']['kind']=string('experience','preference','reminder')
+                item['description']='按真实来源保存任务经验或明确约定；默认仅当前任务适用。'
+            elif name=='life_read':
+                schema['properties']['kind']['enum']=[k for k in schema['properties']['kind']['enum'] if k not in
+                    {'relationship','relationship_semantics','appraisals','motivations','person_profile','simulation','experience_review','contact_policy'}]
+            item['schema_hash']=digest(dict(name=name,parameters=schema))
+    return dict(version=digest(definitions),items=list(definitions.values()))
 
 
 @lru_cache(maxsize=16)
@@ -167,7 +204,8 @@ def validate_arguments(name,arguments):
     if name=='life_say' and not proposal.get('text') and not proposal.get('parts'):required=['text 或 parts']
     if name=='life_read' and proposal.get('load'):
         required=['ref','schema_hash']
-    if name=='life_intent' and proposal.get('action','save') not in {'save','resolve'}:required=['ref','base_revision']
+    if name=='life_intent' and proposal.get('action','save') not in {'save','resolve','set_mode'}:required=['ref','base_revision']
+    if name=='life_intent' and proposal.get('action')=='set_mode':required=['mode']
     if name=='life_media' and proposal.get('action','submit') in {'status','cancel'}:required=['job_id']
     if name=='life_change_self':
         required=['target']

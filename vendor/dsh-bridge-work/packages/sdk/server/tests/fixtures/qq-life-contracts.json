@@ -1,5 +1,5 @@
 {
-  "version": "aa61412f91d318ad5d95f645eedd89980ec2b01cf0899c9bc03aea387b17095e",
+  "version": "0edb9c89932eab550e6af3df893c4bd88c20c47b54a77c0577535d6946454030",
   "items": [
     {
       "name": "life_read",
@@ -452,8 +452,22 @@
                   "continuity",
                   "capabilities",
                   "media_capabilities",
-                  "memory_batch"
+                  "memory_batch",
+                  "contact_policy",
+                  "interaction_mode"
                 ]
+              },
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "facts",
+                  "recent",
+                  "history"
+                ]
+              },
+              "diagnostics": {
+                "type": "boolean"
               },
               "category": {
                 "type": "string",
@@ -638,7 +652,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_read",
-      "schema_hash": "94ad164f05ff6875d48d017535eae19d91e5b9ad2f1f841018ff550f6c3bf691",
+      "schema_hash": "2117afb9d388a91ed06e010905bc00e56f1ce7a594b1670426e741930c423680",
       "version": 1
     },
     {
@@ -1216,6 +1230,99 @@
                 ],
                 "additionalProperties": false
               },
+              "contact_basis": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "followup",
+                          "shared_experience",
+                          "anniversary"
+                        ]
+                      },
+                      "sources": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "sources"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "missing_you"
+                        ]
+                      },
+                      "dimension": {
+                        "type": "string",
+                        "enum": [
+                          "relatedness",
+                          "intimacy"
+                        ]
+                      },
+                      "cycle_id": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "dimension",
+                      "cycle_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "motivation_decisions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "act",
+                        "defer",
+                        "decline"
+                      ]
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "after_seconds": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "base_revision",
+                    "decision",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "activity_blocker": {
+                "type": "string"
+              },
               "experience_run_ref": {
                 "type": "string"
               },
@@ -1245,7 +1352,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_say",
-      "schema_hash": "b45d85d367fc8d0ae2bb8624bd004b9c733a89426a904f667f9313929d0a2e7c",
+      "schema_hash": "0d1bedeffc17e22856a7a99f83d3271e5cffd62975a058475afbc97484e24a47",
       "version": 1
     },
     {
@@ -1711,6 +1818,44 @@
                   "type": "string"
                 }
               },
+              "motivation_decisions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ref": {
+                      "type": "string"
+                    },
+                    "base_revision": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "act",
+                        "defer",
+                        "decline"
+                      ]
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "after_seconds": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "base_revision",
+                    "decision",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "activity_blocker": {
+                "type": "string"
+              },
               "continuity_refs": {
                 "type": "array",
                 "items": {
@@ -1767,7 +1912,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_rest",
-      "schema_hash": "2ed6ed03b7670442bbe1aef88ae1917fd85dc13555f27432bb324aa575723f21",
+      "schema_hash": "b4fa4dd278ce3df4dcbca8b11584165a56a1cd38e63e32f7dc071e934b37304f",
       "version": 1
     },
     {
@@ -2090,7 +2235,7 @@
     },
     {
       "name": "life_intent",
-      "description": "保存或更新当前打算；等待与停止须按当前版本执行。",
+      "description": "保存或更新当前打算；等待与停止须按当前版本执行。action:set_mode,mode:tools|chat 切换工作与日常，无需创建任务，不能覆盖主人选定的模式。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -2521,8 +2666,61 @@
                   "resume",
                   "done",
                   "merge",
-                  "transfer"
+                  "transfer",
+                  "set_mode"
                 ]
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "chat",
+                  "tools"
+                ]
+              },
+              "execution_mode": {
+                "type": "string",
+                "enum": [
+                  "manual",
+                  "continuous"
+                ]
+              },
+              "result_sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "motivation": {
+                "type": "object",
+                "properties": {
+                  "ref": {
+                    "type": "string"
+                  },
+                  "base_revision": {
+                    "type": "integer"
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "act",
+                      "defer",
+                      "decline"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "after_seconds": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "ref",
+                  "base_revision",
+                  "decision",
+                  "reason"
+                ],
+                "additionalProperties": false
               },
               "ref": {
                 "type": "string"
@@ -2641,7 +2839,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_intent",
-      "schema_hash": "42101206d3dedde49eada347f66c75d7a6297e54f7ad3e4a709aa2f3b75d5fe0",
+      "schema_hash": "e3b585d25f7bee16f0bddf0a676c15e2abed8fff82e0998852382533f93383b1",
       "version": 1
     },
     {
@@ -3265,6 +3463,44 @@
                   "additionalProperties": true
                 }
               },
+              "stable_facts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "actor_id": {
+                      "type": "string"
+                    },
+                    "topic_key": {
+                      "type": "string"
+                    },
+                    "quote": {
+                      "type": "string"
+                    },
+                    "evidence_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "operation": {
+                      "type": "string",
+                      "enum": [
+                        "observe",
+                        "correct",
+                        "change"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "actor_id",
+                    "topic_key",
+                    "quote",
+                    "evidence_refs"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "reviewed_input_ids": {
                 "type": "array",
                 "items": {
@@ -3303,7 +3539,7 @@
         "additionalProperties": false
       },
       "schema_ref": "tool:dsh:life_remember",
-      "schema_hash": "4c7ceb4012218df9ba0bed1f6d5e86de9680e1d44c27c119d9ce7109c9954b06",
+      "schema_hash": "bad533bfc75224611ac3609e70b686615285d7e1e6ea3142b2f6b0e9d316cc10",
       "version": 1
     },
     {

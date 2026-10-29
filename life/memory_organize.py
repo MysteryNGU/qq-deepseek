@@ -132,6 +132,20 @@ class MemoryOrganize:
                 lines.append('['+claim['kind']+'] '+claim['text'])
             if included | omitted != sources:
                 raise RecallError('incomplete_coverage')
+            from .stable_facts import StableFacts
+            fact_proposals = proposal.get('stable_facts', [])
+            facts = []
+            if not isinstance(fact_proposals, list) or len(fact_proposals) > 8:
+                facts.append(dict(saved=False, reason='invalid_facts'))
+            else:
+                extractor = StableFacts(self.catalog, self.access)
+                for index, fact in enumerate(fact_proposals):
+                    try:
+                        with self.repo.tx():
+                            facts.extend(extractor.commit(ctx, [fact], included))
+                    except RecallError as error:
+                        # Optional extraction must not strand a valid summary.
+                        facts.append(dict(index=index, saved=False, reason=error.code))
             topic = payload.get('topic_ref') or lease.id
             pointer_key = 'memory_summary_current:'+ctx.agent_id+':'+payload['kind']+':'+topic
             pointer = self.repo._one('SELECT v FROM meta WHERE k=?', (pointer_key,))
@@ -162,7 +176,8 @@ class MemoryOrganize:
             self.repo._exec('INSERT INTO meta VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v',
                 (pointer_key, encode(dict(revision=current['revision']+1, memory_id=identity))))
             receipt = dict(resource_ref=resource['resource_id'], memory_id=identity,
-                           revision=current['revision']+1, checksum=checksum, complete_for_range=metadata['complete_for_range'])
+                           revision=current['revision']+1, checksum=checksum, complete_for_range=metadata['complete_for_range'],
+                           stable_facts=facts)
             self.repo._exec('INSERT INTO meta VALUES(?,?)', (receipt_key, encode(receipt)))
             self.jobs.finish(lease, checkpoint=dict(resource_ref=resource['resource_id']))
             return receipt

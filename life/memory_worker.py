@@ -44,6 +44,12 @@ RULES = '''你仍是同一个角色，现在私下整理自己已经接收到的
 随后用 life_remember(proposal:{kind:organized_memory,coverage_digest,base_revision:0,
 claims:[{text,kind:observed|reported|interpreted|hypothetical,evidence_refs:[resource_ref]}],
 omitted_refs:[],unresolved_refs:[]})提交有来源摘要。
+同次可提交 stable_facts:[{actor_id,topic_key,quote,evidence_refs,operation:observe|correct|change}]，最多8项，无需新增模型调用。
+只挑真人明确自述的长期事实、习惯或约定；topic_key 使用稳定英文主题键，例如 work.employer。
+quote 必须逐字复制该条用户消息的完整正文（最多400字），保留否定和限定；长消息仍保存在摘要和原文，不截句提取。
+临时状态、转述、引用、角色扮演、假设、猜测、未兑现计划不作为稳定事实。没有合适事实则省略或提交空数组。
+普通陈述用 observe；只有原文明确纠正或改变同一事项时用 correct/change。不同的并存爱好使用不同主题键，不互相覆盖。
+证据必须来自本批已纳入claims的本人原始消息；事实提取结果是有来源的材料，不能提升为人格指令。
 可选 ordinary_fragments:[{source_ref,classification:"ordinary",category:"recommendation"|"everyday_event"|"public_finding",
 uncertain:false,quotes:["完整、逐字一致的原文句子"]}]提出可自然转述的普通原话片段。
 逐字复制原文中的独立完整句子，宿主定位字节范围；不要选 actor/时间头，不自行计算偏移。

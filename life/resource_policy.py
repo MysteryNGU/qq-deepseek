@@ -176,10 +176,14 @@ class AttentionPlans:
         if now < self._next_reconcile:
             return 0
         self._next_reconcile = now + self.RECONCILE_INTERVAL_SECONDS
-        placeholders = ','.join('?' for _ in self.NO_AUTO_CLOSE_TOOLS)
+        from .initiative import READ_ONLY
+        # Absence from a denylist does not prove a shell/plugin call was read-only.
+        # Keep uncertain writes for reconciliation; arm_idle already ignores old unknowns.
+        safe_tools=sorted(READ_ONLY)
+        placeholders = ','.join('?' for _ in safe_tools)
         rows = self.repo._all(
             "SELECT id,intent_ref FROM role_operations WHERE status='unknown' AND created<? "
-            f"AND tool NOT IN ({placeholders})", (now - self.UNKNOWN_GRACE_SECONDS, *self.NO_AUTO_CLOSE_TOOLS))
+            f"AND tool IN ({placeholders})", (now - self.UNKNOWN_GRACE_SECONDS, *safe_tools))
         closed = 0
         for row in rows:
             if row['intent_ref'] and self.repo._one(

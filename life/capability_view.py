@@ -235,6 +235,10 @@ class CapabilityView:
             raise SessionFailure('invalid_input','load 必须是布尔值')
         if p.get('load') and (not p.get('ref') or p.get('field') or p.get('cursor') or not p.get('schema_hash')):
             raise SessionFailure('invalid_input','加载需要精确 ref 和 schema_hash，不与分页混用')
+        if (p.get('load') and self.role.interaction_mode.state(scope)['policy']=='chat'
+                and p.get('ref') not in {'tool:dsh:'+name for name in
+                    ('life_read','life_say','life_rest','life_remember','life_appraise','life_intent','life_simulation')}):
+            raise SessionFailure('mode_locked','主人选定日常状态，暂不加载工作工具；日常交流与内部状态仍可使用')
         if set(p)-allowed or (p.get('ref') is not None and (not isinstance(p['ref'],str) or not p['ref'])):
             raise SessionFailure('invalid_input','目录含未知参数或无效 ref')
         if p.get('provider_id') is not None and (not isinstance(p['provider_id'],str) or not p['provider_id']):

@@ -7,13 +7,16 @@ from .text import stable_id
 
 
 ACTIONS={
-    'exploration':['提出一个具体问题并查证','探索一个已有兴趣'],
-    'competence':['练习一项技能','解决一个可验证的小问题'],
-    'relatedness':['分享合适的普通经历','关心联系人；未回复时不追问'],
-    'intimacy':['非露骨地表达关心或陪伴意愿；尊重拒绝'],
+    'exploration':['提出一个具体问题并查证','探索一个已有兴趣','了解一种自己尚不熟悉的能力，并做一个小实验'],
+    'competence':['练习一项技能','解决一个可验证的小问题',
+        '从真实失败或反馈中选择一项不足，改进自己的方法或表达并验证效果',
+        '学习并实际试用一项有用的新能力，将验证过的经验沉淀成可复用方法',
+        '为自己的工具或代码选择一个具体改进，按现有自改流程验证并核对生效结果'],
+    'relatedness':['因为想念而找主人说说话，不必找话题借口','分享合适的普通经历','关心联系人；未回复时不追问'],
+    'intimacy':['自然表达想念和亲近、陪伴意愿；尊重拒绝'],
     'libido':['选择非露骨的陪伴或约会邀请','独处休整；冲动不表示对方同意'],
     'coherence':['推进承诺','核对未完成事项与真实结果'],
-    'self_direction':['选择自己的兴趣活动','重新安排可自主决定的计划'],
+    'self_direction':['选择自己的兴趣活动','重新安排可自主决定的计划','自己选择一个成长方向，先完成一个小目标，不必等待他人交办'],
     'resource_reserve':['安排休息','减少同时执行的事项'],
 }
 
@@ -172,7 +175,7 @@ class Motivation:
             self.role.schedule(scope,task['ref'],1,'继续执行已选择的动机行动，并核对结果。',kind='task_due')
         return dict(ref=ref,decision=decision,revision=row['revision']+1,execution='pending' if task else 'not_started')
 
-    def finish(self,scope,root,p):
+    def finish(self,scope,root,p,*,contact_basis=None):
         proposals=p.get('motivation_decisions',[])
         if not isinstance(proposals,list) or len(proposals)>8:
             raise SessionFailure('invalid_input','motivation_decisions 最多八项')
@@ -184,28 +187,42 @@ class Motivation:
         rows=self.repo._all('SELECT e.payload FROM agent_inputs i JOIN events e ON e.id=i.input_id WHERE i.session_id=? AND i.claimed_turn IS ?',
             (root['session_id'],turn))
         required={ref for r in rows for ref in json.loads(r['payload']).get('motivation_refs',[])}
-        if required:
-            pending=[dict(ref=r['id'],revision=r['revision'],dimension=r['dimension']) for r in self.rows(scope) if r['status']=='pending' and r['id'] in required]
+        if required and self.role.interaction_mode.state(scope)['mode']=='chat':
+            pending=[dict(ref=r['id'],revision=r['revision'],dimension=r['dimension']) for r in self.rows(scope)
+                if r['status']=='pending' and r['id'] in required and not (contact_basis
+                    and contact_basis.get('kind')=='missing_you' and r['dimension']==contact_basis.get('dimension')
+                    and r['cycle_id']==contact_basis.get('cycle_id'))]
             if pending:raise SessionFailure('motivation_decision_required','本轮动机尚无行动或延期决定；不要用新念头代替决定',candidates=pending)
         task_refs={w.get('intent_ref') for r in rows for w in json.loads(r['payload']).get('wake_plans',[]) if w.get('kind')=='task_due'}
-        for candidate in self.rows(scope):
-            if candidate['status']!='selected' or candidate['intent_ref'] not in task_refs:continue
-            task=self.role.tasks.get(candidate['intent_ref'],scope.scope_id)
+        selected={r['intent_ref']:r for r in self.rows(scope) if r['status']=='selected'}
+        for ref in task_refs:
+            candidate=selected.get(ref)
+            task=self.role.tasks.get(ref,scope.scope_id) if ref else None
             if not task or self.role.tasks.blocker(task['ref'],scope.scope_id):continue
             if self.repo._one("SELECT 1 FROM role_operations WHERE scope_id=? AND intent_ref=? AND status IN ('dispatched','unknown')",(scope.scope_id,task['ref'])):
                 continue  # The existing result/reconciliation path owns this wait.
+            if self.repo._one("SELECT 1 FROM work_jobs WHERE scope_id=? AND root_id=? AND kind='local_media' "
+                    "AND status IN ('pending','running','waiting')",(scope.scope_id,ref)):
+                continue  # Media uses its own durable queue rather than role_operations.
             started=self.repo._one('SELECT MIN(e.received_at) n FROM agent_inputs i JOIN events e ON e.id=i.input_id WHERE i.session_id=? AND i.claimed_turn IS ?',
                 (root['session_id'],turn))['n']
             progress=self.repo._one("SELECT 1 FROM role_operations WHERE scope_id=? AND intent_ref=? AND status='succeeded' AND created>=?",
                 (scope.scope_id,task['ref'],started or self.life.clock()))
+            progress=progress or self.repo._one("SELECT 1 FROM work_jobs WHERE scope_id=? AND root_id=? AND kind='local_media' "
+                "AND status='completed' AND updated>=?",(scope.scope_id,ref,started or self.life.clock()))
+            activity=task.get('activity',{})
+            progress=progress or activity.get('delivery_progress',0)>(activity.get('progress') or [0,0])[0]
             if progress:
                 self.role.schedule(scope,task['ref'],1,'本轮已有执行结果；继续下一步，或核对结果后完成/暂停该任务。',kind='task_due')
                 continue
             blocker=p.get('activity_blocker','')
             if not isinstance(blocker,str) or not blocker.strip() or len(blocker)>240:
-                raise SessionFailure('motivation_progress_required','已选择的动机任务尚无实际执行；请推进，或用 activity_blocker 说明具体阻碍，或显式等待/暂停任务')
-            attempts=candidate['attempts']+1
+                raise SessionFailure('motivation_progress_required' if candidate else 'task_progress_required',
+                    '本轮已到期任务尚无实际执行；请推进，或用 activity_blocker 说明具体阻碍，或显式等待/暂停任务',intent_ref=ref)
+            attempts=(candidate['attempts'] if candidate else task.get('wake_blocker_attempts',0))+1
             delay=self.role.resources.idle_delay(0)
-            self.repo._exec('UPDATE motivation_decisions SET reason=?,attempts=?,next_due=? WHERE id=?',
-                (blocker,attempts,self.life.clock()+delay,candidate['id']))
+            if candidate:
+                self.repo._exec('UPDATE motivation_decisions SET reason=?,attempts=?,next_due=? WHERE id=?',
+                    (blocker,attempts,self.life.clock()+delay,candidate['id']))
+            self.role.tasks.ensure(scope,ref,None,wake_blocker=blocker,wake_blocker_attempts=attempts)
             self.role.schedule(scope,task['ref'],delay,'复核已记录的行动阻碍；条件未变则继续延期，不能声称已执行。',kind='task_due')

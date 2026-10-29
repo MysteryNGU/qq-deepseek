@@ -40,6 +40,38 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             self_id=999,user_id=user,message_id=100+user,time=time or int(self.host.accept_after)+1,
             message=[dict(type='text',data=dict(text='hello'))])
 
+    async def test_owner_controls_modes_without_model_interpretation(self):
+        self.host.bridge.session_control = lambda *args,**kwargs: dict(state='cancel_requested')
+        scope = self.host.life.scope('qq:private:1','1')
+        for n,(text,mode,policy) in enumerate([
+                ('开启工具状态','tools','tools'),('结束工具状态','chat','chat'),('/自动模式','chat','auto')]):
+            raw = self.raw();raw['message_id']=800+n
+            raw['message']=[dict(type='text',data=dict(text=text))]
+            await self.host.receive(raw)
+            state = self.host.role.interaction_mode.state(scope)
+            self.assertEqual((state['mode'],state['policy']),(mode,policy))
+        self.ingest.assert_not_awaited()
+        self.assertEqual(len(self.sent),3)
+
+    async def test_mode_command_never_uses_nonowner_group_or_embedded_text(self):
+        for n,raw in enumerate([self.raw(user=2),self.raw(group=True),self.raw(),self.raw()]):
+            raw['message_id']=900+n
+            raw['message']=[dict(type='text',data=dict(text='/工具模式' if n<3 else '他说“开启工具状态”'))]
+            if n==2:raw['message'].append(dict(type='image',data=dict(url='https://example.invalid/a.png')))
+            await self.host.receive(raw)
+        self.assertEqual(self.ingest.await_count,4)
+        scope=self.host.life.scope('qq:private:1','1')
+        self.assertEqual(self.host.role.interaction_mode.state(scope)['policy'],'auto')
+
+    async def test_stop_failure_keeps_chat_fence_and_reports_uncertainty(self):
+        def unavailable(*args,**kwargs):raise RuntimeError('offline')
+        self.host.bridge.session_control=unavailable
+        raw=self.raw();raw['message']=[dict(type='text',data=dict(text='/聊天模式'))]
+        await self.host.receive(raw)
+        scope=self.host.life.scope('qq:private:1','1')
+        self.assertEqual(self.host.role.interaction_mode.state(scope)['policy'],'chat')
+        self.assertIn('尚未确认',str(self.sent))
+
     async def test_settings_restart_waits_for_active_turn_and_records_idle_receipt(self):
         self.host.started_role=True
         folder=self.host.root/'data/settings';folder.mkdir(parents=True)
