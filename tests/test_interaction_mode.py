@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock,patch
 
 from life.agent_session import SessionFailure
 from life.interaction_mode import InteractionMode
@@ -17,6 +18,27 @@ class InteractionModeTests(unittest.IsolatedAsyncioTestCase):
 
     def tool(self, name='read', sid=None):
         return dict(tool=name, call_id='work', session_id=sid or self.f.binding['session_id'], arguments={})
+
+    async def test_static_context_during_resume_does_not_reenter_session_opening(self):
+        self.role.compact_tool_protocol = self.role.capability_protocol = 1
+        self.mode.select(self.scope,'tools')
+        self.role.sessions.enqueue(self.f.binding,self.f.event)
+        # Session opening is awaiting this callback, so a nested replay cannot
+        # finish. Real request/tool checks must still see the pending input.
+        replay=AsyncMock(side_effect=RuntimeError('session opening awaits static_context'))
+        with patch.object(self.role,'replay',replay):
+            reply=await self.role.callback(dict(kind='static_context',
+                root_session_id=self.f.binding['session_id'],session_id=self.f.binding['session_id']))
+        self.assertTrue(reply['ok'],reply)
+        replay.assert_not_awaited()
+        self.assertNotIn('pwsh',reply['default_tools'])
+        self.assertEqual(self.role.work_admission(self.scope,self.f.binding)['next_tool'],'wait_for_input')
+        with patch.object(self.role,'replay',AsyncMock()) as replay:
+            validation=await self.role.callback(dict(kind='context_validate',
+                root_session_id=self.f.binding['session_id'],session_id=self.f.binding['session_id'],
+                stamp=self.role.context_stamp(self.f.binding,self.scope)))
+        self.assertTrue(validation['ok'],validation)
+        replay.assert_awaited_once_with(self.f.binding['session_id'])
 
     async def test_chat_prompt_and_default_tools_change_with_state(self):
         self.role.compact_tool_protocol = self.role.capability_protocol = 1

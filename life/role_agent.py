@@ -597,7 +597,10 @@ class RoleAgent:
                     return dict(ok=True,items=items,version=digest(items))
                 return dict(ok=True,**self.capabilities.methods.read(scope,call,ref=call.get('ref'),expected_hash=call.get('hash')))
             if kind=='static_context':
-                await self.replay(root['session_id'])
+                # DSH requests this while opening/resuming an Agent. Replaying
+                # here re-enters that same opening through session/events and
+                # deadlocks both sides. Request context and work admission still
+                # replay before their authoritative checks below.
                 self.fence(call)
                 from .tool_contracts import catalog
                 return dict(ok=True,stable_text=self.stable_context(scope,call),
