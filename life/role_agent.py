@@ -920,8 +920,8 @@ class RoleAgent:
             kept=[item for item in items if item['field'] in {'boundary','address'}]
             packet['person_profiles'][actor]=kept
             if len(kept)<len(items):packet['profile_details']['more_available'][actor]=True
-        packet['observations']=[dict(event_id=v['event_id'],tool=v['tool'],read_kind='observation')
-            for v in packet.get('observations',[])]
+        packet['observations']=[dict(event_id=v.get('event_id'),tool=v.get('tool'),read_kind='observation')
+            for v in packet.get('observations',[]) if v.get('event_id')]
         if 'continuity' in packet:
             packet['continuity']['items']=[dict(kind=i['kind'],ref=i['ref'],read_kind='continuity')
                 for i in packet['continuity'].get('items',[])]
@@ -1070,7 +1070,8 @@ class RoleAgent:
             # Identity, versions, pending input, promises and unresolved effects
             # are mandatory; do not truncate a serialized snapshot to fit.
             packet['memory'] = dict(read_kind='recall',query=query[:120],reason='按需检索；当前必需材料较多')
-            packet['observations'] = [dict(event_id=v['event_id'],tool=v['tool'],read_kind='observation') for v in packet['observations']]
+            packet['observations'] = [dict(event_id=v.get('event_id'),tool=v.get('tool'),read_kind='observation')
+                                      for v in packet['observations'] if v.get('event_id')]
             if 'continuity' in packet:
                 packet['continuity']['items'] = [dict(kind=i['kind'],ref=i['ref'],read_kind='continuity')
                                                   for i in packet['continuity'].get('items',[])]

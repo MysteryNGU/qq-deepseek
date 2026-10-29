@@ -44,8 +44,8 @@ def build(role, binding, scope, call):
             "WHERE scope_id=? AND created>=? AND status IN ('dispatched','unknown') ORDER BY created DESC LIMIT 12",(scope.scope_id,floor))],
         uncertain_deliveries=[dict(r) for r in repo._all("SELECT id,status FROM deliveries WHERE scope_id=? "
             "AND created>=? AND status IN ('unknown','dispatching','deferred','failed') ORDER BY created DESC LIMIT 12",(scope.scope_id,floor))],
-        observations=[dict(event_id=r['id'],read_kind='observation') for r in repo._all(
-            "SELECT id FROM events WHERE agent_id=? AND conversation_id=? AND kind='tool_result' "
+        observations=[dict(event_id=r['id'],tool=json.loads(r['payload']).get('tool'),read_kind='observation') for r in repo._all(
+            "SELECT id,payload FROM events WHERE agent_id=? AND conversation_id=? AND kind='tool_result' "
             "AND redacted_at IS NULL AND received_at>=? ORDER BY ingest_seq DESC LIMIT 3",(*scope.private_key,floor))],
         memory=dict(read_kind='recall',reason='按当前任务按需读取来源'),
         runtime=dict(project=str(role.root) if private else '本机 Bot 项目',
