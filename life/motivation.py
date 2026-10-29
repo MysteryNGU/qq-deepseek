@@ -140,7 +140,7 @@ class Motivation:
         if self.repo._one('SELECT 1 FROM meta WHERE k=?',('attention_explicit:'+scope.scope_id,)):
             return
         # Refresh local candidates only. The persisted idle timer admits them
-        # together at the next 10–60 minute wake, never on a separate fast loop.
+        # together at the next configured idle wake, never on a separate fast loop.
         self.scan(scope,now)
 
     def decide(self,scope,p,task=None):
