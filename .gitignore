@@ -52,6 +52,7 @@ self.md
 audit/
 /skills/*
 !/skills/咨询Codex.md
+!/skills/video-storyboard.md
 /scripts/*
 !/scripts/codex_consult.py
 !/scripts/diagnose_memory_pause.py

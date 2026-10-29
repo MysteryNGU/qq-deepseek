@@ -95,6 +95,7 @@ python -m venv .venv
 - [概要设计](docs/life-overview-design.md) · [详细设计](docs/life-detailed-design.md)
 - [记忆维护说明](docs/memory-operations.md) · [语音延迟说明](docs/speech-latency.md)
 - [记忆与主动陪伴增强设计](docs/companion-enhancements.md)：事实提取/修订、按问题召回与诊断、自发联系节奏及连续道别处理。
+- [视频分镜插件接入](docs/video-storyboard.md)：原生工具按需加载、QQ 视频解析、固定版本安装和真机视觉验收。
 
 需要时执行离线回归：
 

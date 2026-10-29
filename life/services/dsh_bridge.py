@@ -213,6 +213,11 @@ class DshBridge:
         env = os.environ.copy()
         env["DSH_HOME"] = str(self.home)
         env["QQ_LIFE_HOME"] = str(self.home)
+        # Native plugins may have an optional dsh-tools peer. Supply this
+        # deployment's compiled contract as their fallback module location.
+        tools_entry = self.dsh_root / 'packages/core/tools/lib/index.js'
+        if tools_entry.is_file():
+            env.setdefault('DSH_TOOLS_PATH', str(tools_entry))
         env["NO_COLOR"] = "1"
         # Bot 自己的专用 worker：沙箱档位由 Bot 的同意门把关，这里不再二次询问；
         # 桥仍然默认拒绝审批回调，只有接了审批人（set_approver）才放行。

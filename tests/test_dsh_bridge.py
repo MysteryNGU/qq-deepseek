@@ -104,6 +104,20 @@ class BridgeTestCase(unittest.TestCase):
         bridge.ensure_profile()
         self.assertEqual(json.loads(patch.read_text('utf-8')),[])
 
+    def test_native_plugin_tools_fallback_uses_this_deployment(self):
+        from unittest.mock import patch
+        bridge=self.new_bridge()
+        entry=bridge.dsh_root/'packages/core/tools/lib/index.js'
+        entry.parent.mkdir(parents=True)
+        entry.write_text('// fixture',encoding='utf-8')
+        with patch.dict(os.environ,{},clear=True):
+            self.assertEqual(bridge._env()['DSH_TOOLS_PATH'],str(entry))
+        with patch.dict(os.environ,{'DSH_TOOLS_PATH':'explicit-custom-entry'}):
+            self.assertEqual(bridge._env()['DSH_TOOLS_PATH'],'explicit-custom-entry')
+        entry.unlink()
+        with patch.dict(os.environ,{},clear=True):
+            self.assertNotIn('DSH_TOOLS_PATH',bridge._env())
+
     def test_compaction_uses_configured_budgets_without_replacing_plugin_overrides(self):
         self.cfg.resource_policy=dict(compaction_threshold_percent=5,compaction_retain_tokens=12000,
                                       compaction_headroom_tokens=6000,handoff_target_tokens=3000)
