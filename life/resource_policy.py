@@ -72,9 +72,17 @@ def estimate_tokens(value):
 
 class AttentionPlans:
     KINDS = {'idle_probe','self_scheduled','task_due','delegate_result','tool_result','recovery','experience','motivation'}
+    # 结果未知的操作只在核对窗口内阻挡新的空闲序列。超过时限的孤儿仍会出现在
+    # 本轮上下文的 uncertain_operations 里供核对，但不再永久冻结空闲计时器。
+    UNKNOWN_GRACE_SECONDS = 6 * 3600
+    RECONCILE_INTERVAL_SECONDS = 300
+    # 有外部副作用的工具，结果未知时不自动归并：宁可留着待核对，也不重放。
+    NO_AUTO_CLOSE_TOOLS = ('life_say','life_media','life_consult','life_intent','life_remember',
+                           'life_appraise','life_skill','life_dsh_change')
 
     def __init__(self,role,policy):
         self.role,self.repo,self.policy = role,role.repo,policy
+        self._next_reconcile = 0
         with self.repo.tx():
             migrate = not self.repo._one("SELECT 1 FROM meta WHERE k='attention_plan_schema'")
             columns = {r['name'] for r in self.repo._all('PRAGMA table_info(role_wakes)')}
@@ -149,15 +157,47 @@ class AttentionPlans:
             self.repo._exec('DELETE FROM meta WHERE k=?',('idle_after_sequence:'+scope.scope_id,));return None
         last=self.repo._one("SELECT payload FROM agent_events WHERE session_id=? AND json_extract(payload,'$.type') IN ('turn/start','turn/end') ORDER BY seq DESC LIMIT 1",(binding['session_id'],))
         if self.role.sessions.pending(binding['session_id']) or last and json.loads(last['payload'])['type']=='turn/start':return None
-        if self.repo._one("SELECT 1 FROM role_operations WHERE scope_id=? AND status IN ('dispatched','unknown')",(scope.scope_id,)):return None
+        if self.repo._one("SELECT 1 FROM role_operations WHERE scope_id=? AND (status='dispatched' OR (status='unknown' AND created>=?))",
+                          (scope.scope_id,time.time()-self.UNKNOWN_GRACE_SECONDS)):return None
         if self.repo._one("SELECT 1 FROM role_wakes WHERE scope_id=? AND kind!='idle_probe' AND state IN ('pending','dispatching','waiting_resource')",(scope.scope_id,)):return None
         delay=self.policy.idle_delay(0)
         key=self.schedule(scope,None,delay,'空闲回顾：检查动机和未完成事项，选择具体行动或说明暂不行动的原因。',kind='idle_probe')
         self.repo._exec('DELETE FROM meta WHERE k=?',('idle_after_sequence:'+scope.scope_id,))
         return dict(mode='adaptive',plan_id=key,after_seconds=delay)
 
+    def reconcile_stale_operations(self, now=None):
+        """Close out operations whose outcome never came back.
+
+        A stale unknown row is not safer than a closed one: nothing can replay
+        it, but it keeps every unsettled-operation gate latched forever. Tools
+        with external effects are never auto-closed that way.
+        """
+        now = time.time() if now is None else now
+        if now < self._next_reconcile:
+            return 0
+        self._next_reconcile = now + self.RECONCILE_INTERVAL_SECONDS
+        placeholders = ','.join('?' for _ in self.NO_AUTO_CLOSE_TOOLS)
+        rows = self.repo._all(
+            "SELECT id,intent_ref FROM role_operations WHERE status='unknown' AND created<? "
+            f"AND tool NOT IN ({placeholders})", (now - self.UNKNOWN_GRACE_SECONDS, *self.NO_AUTO_CLOSE_TOOLS))
+        closed = 0
+        for row in rows:
+            if row['intent_ref'] and self.repo._one(
+                    "SELECT 1 FROM role_wakes WHERE intent_ref=? AND state IN ('pending','dispatching','waiting_resource')",
+                    (row['intent_ref'],)):
+                continue
+            with self.repo.tx():
+                cursor = self.repo._exec(
+                    "UPDATE role_operations SET status='failed',result=? WHERE id=? AND status='unknown'",
+                    (canonical(dict(error=dict(code='STALE_RECONCILED',name='StaleOutcomeError'),
+                                    message=dict(content=[dict(type='text',
+                                        text='核对窗口内没有回执：按未确认关闭，原请求不重放')]))), row['id']))
+            closed += int(cursor.rowcount > 0)
+        return closed
+
     def settle_sequences(self):
         from .contracts import Scope
+        self.reconcile_stale_operations()
         with self.repo.tx():
             for row in self.repo._all("SELECT s.scope_json FROM agent_sessions s JOIN meta m ON m.k='idle_after_sequence:'||s.scope_id WHERE s.status='current' AND s.parent_session_id IS NULL"):
                 self.arm_idle(Scope(**json.loads(row['scope_json'])))
