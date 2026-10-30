@@ -14,6 +14,10 @@ from life.supervisor import HostSupervisor
 
 def main():
     root = Path(__file__).resolve().parent
+    if (root/'data/characters/primary-retired.json').is_file():
+        from life.settings_web import ensure_server
+        ensure_server(root)
+        return 0
     logs = root/'data/logs'
     logs.mkdir(parents=True,exist_ok=True)
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(name)s %(message)s',

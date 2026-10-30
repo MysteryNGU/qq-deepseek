@@ -157,5 +157,30 @@ class SettingsHttpTests(SettingsTests):
         self.login();self.assertEqual(self.request('/api/logout',{})[0],200)
         self.assertEqual(self.request('/api/settings')[0],401)
 
+    def test_character_api_requires_auth_and_csrf(self):
+        self.assertEqual(self.request('/api/characters')[0],401)
+        self.login()
+        self.assertEqual(self.request('/api/characters',{}, {'X-CSRF-Token':'wrong'})[0],403)
+
+    def test_character_create_scoped_settings_and_independent_controls(self):
+        from unittest.mock import Mock
+        self.login()
+        for identity,qq,port in (('firefly',101,3101),('kafka',102,3102)):
+            body=dict(id=identity,name=identity,bot_qq=qq,owner=1,ws_url=f'ws://127.0.0.1:{port}',
+                      ws_token='private-qq-token',persona='# '+identity+'\n## 我怎么说话\n自然交流。')
+            self.assertEqual(self.request('/api/characters',body)[0],201)
+        code,data,_=self.request('/api/characters');self.assertEqual(code,200)
+        self.assertEqual(len(data['characters']),2);self.assertNotIn('private-qq-token',json.dumps(data))
+        code,settings,_=self.request('/api/characters/firefly/settings');self.assertEqual(code,200)
+        result=self.request('/api/characters/firefly/save',dict(document='config',base_revision=settings['revision'],changes=dict(model='new-model')))
+        self.assertEqual(result[0],200)
+        self.assertEqual(self.server.characters.store('firefly').raw()['model'],'new-model')
+        self.assertNotEqual(self.server.characters.store('kafka').raw()['model'],'new-model')
+        self.server.characters.runner_factory=lambda _:Mock(tick=lambda:'observed')
+        self.assertEqual(self.request('/api/characters/firefly/start',{})[0],202)
+        self.assertEqual(self.request('/api/characters/kafka/start',{})[0],202)
+        self.assertEqual(self.request('/api/characters/firefly/stop',{})[0],202)
+        self.assertIn('kafka',self.server.characters.runners)
+
 
 if __name__=='__main__':unittest.main()

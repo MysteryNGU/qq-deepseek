@@ -26,6 +26,12 @@ class SettingsServer(ThreadingHTTPServer):
             atomic_write(self.store.folder/'login.txt',password+'\n')
         self.auth=json.loads(credential.read_text('utf-8'))
         super().__init__(('127.0.0.1',port),SettingsHandler)
+        from .character_manager import CharacterManager
+        self.characters=CharacterManager(root)
+
+    def server_close(self):
+        if hasattr(self,'characters'):self.characters.close()
+        super().server_close()
 
     @staticmethod
     def password_hash(password,salt):return hashlib.pbkdf2_hmac('sha256',password.encode(),salt.encode(),240000).hex()
@@ -72,9 +78,9 @@ class SettingsHandler(BaseHTTPRequestHandler):
             except (ValueError,UnicodeError):raise SettingsError('invalid_json','JSON 格式不正确')
             if not isinstance(body,dict):raise SettingsError('invalid_json','需要一个 JSON 对象')
         else:body={}
-        if not post and path in {'/','/app.js','/style.css'}:
-            name={'/':'index.html','/app.js':'app.js','/style.css':'style.css'}[path]
-            content={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}[path]
+        if not post and path in {'/','/app.js','/characters.js','/style.css'}:
+            name={'/':'index.html','/app.js':'app.js','/characters.js':'characters.js','/style.css':'style.css'}[path]
+            content={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/characters.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}[path]
             return self.respond(200,(self.server.static/name).read_bytes(),content)
         if post and path=='/api/login':
             password=body.get('password')
@@ -91,6 +97,18 @@ class SettingsHandler(BaseHTTPRequestHandler):
         if not session:raise SettingsError('unauthorized','请先登录',401)
         if post and not hmac.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']):raise SettingsError('csrf_denied','会话校验失败，请刷新页面',403)
         if not post and path=='/api/session':return self.respond(200,dict(csrf=session['csrf']))
+        if path=='/api/characters':
+            return self.respond(201,self.server.characters.create(body)) if post else self.respond(200,self.server.characters.snapshot())
+        parts=path.strip('/').split('/')
+        if len(parts)>=3 and parts[:2]==['api','characters']:
+            identity=parts[2];manager=self.server.characters
+            if len(parts)==3 and post:return self.respond(200,manager.update(identity,body))
+            if len(parts)==4:
+                operation=parts[3]
+                if not post and operation=='settings':return self.respond(200,manager.store(identity).snapshot())
+                if not post and operation=='status':return self.respond(200,manager.store(identity).status())
+                if post and operation=='save':return self.respond(200,manager.save_settings(identity,body))
+                if post and operation in {'start','stop','restart'}:return self.respond(202,manager.action(identity,operation))
         if not post and path=='/api/settings':return self.respond(200,self.server.store.snapshot())
         if not post and path=='/api/status':return self.respond(200,self.server.store.status())
         if post and path=='/api/save':return self.respond(200,self.server.store.save(body.get('document'),body.get('base_revision'),body.get('changes')))

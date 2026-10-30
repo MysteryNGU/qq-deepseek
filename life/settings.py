@@ -17,7 +17,7 @@ from .role_config import Config,load_config
 MASK='••••••••'
 SECRET=re.compile(r'(?:^|_)(?:api_?key|(?<!per_)token|password|secret|authorization|cookie)$',re.I)
 CATEGORIES={
-    'name':'基础与连接','owner':'基础与连接','friends':'基础与连接','known_people':'基础与连接','allow_groups':'基础与连接',
+    'name':'基础与连接','bot_qq':'基础与连接','owner':'基础与连接','friends':'基础与连接','known_people':'基础与连接','allow_groups':'基础与连接',
     'allow_all_private':'基础与连接','ws_url':'基础与连接','ws_token':'基础与连接',
     'group_at_only':'基础与连接','group_initiative':'基础与连接',
     'api_key':'模型与工具','base_url':'模型与工具','model':'模型与工具','public_tools':'模型与工具','consult_config':'模型与工具',
@@ -31,7 +31,7 @@ CATEGORIES={
     'activity':'行为与节奏','profile_backfill':'记忆与人物',
     'media_library':'表达与语音',
 }
-LABELS=dict(name='显示名称',owner='主人 QQ',friends='允许私聊的好友',known_people='联系人名称与 QQ',allow_groups='允许的群聊',
+LABELS=dict(name='显示名称',bot_qq='人物 QQ（0 表示不核验）',owner='主人 QQ',friends='允许私聊的好友',known_people='联系人名称与 QQ',allow_groups='允许的群聊',
     activity='连续活动',profile_backfill='历史人物画像复核',
     media_library='表情与图片收藏',
     allow_all_private='接收所有私聊',group_at_only='群消息仅在被艾特时唤醒',

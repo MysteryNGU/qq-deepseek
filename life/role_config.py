@@ -20,6 +20,7 @@ class Config:
     profile_backfill: dict = field(default_factory=dict)
     media_library: dict = field(default_factory=dict)
     ws_url: str = 'ws://127.0.0.1:3001'
+    bot_qq: int = 0  # Optional expected OneBot account; managed characters require it.
     ws_token: str = ''
     api_key: str = ''
     base_url: str = 'https://api.deepseek.com'
@@ -118,6 +119,8 @@ def load_config(path: Path):
     cfg.local_media = LocalMediaConfig.parse(cfg.local_media).__dict__.copy()
     cfg.api_key = os.environ.get('DEEPSEEK_API_KEY',cfg.api_key)
     cfg.ws_url = os.environ.get('QQ_WS_URL',cfg.ws_url)
+    if type(cfg.bot_qq) is not int or cfg.bot_qq < 0:
+        raise ValueError('invalid_bot_qq')
     if not cfg.owner:
         raise ValueError('owner_required')
     if cfg.handoff_seconds<=0 or cfg.media_max_mb<=0:

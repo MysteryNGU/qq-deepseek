@@ -73,6 +73,7 @@ class RoleHost:
         self.life.persona.activate(self.root/cfg.persona)
         self.bridge = bridge or DshBridge(cfg,self.root)
         self.ws = None
+        self._account_verified = not getattr(cfg,'bot_qq',0)
         self._rpc = {}
         saved=self.life.repo._one('SELECT v FROM meta WHERE k=?',('onebot_network:'+self.life.agent_id,))
         self.qq_network=json.loads(saved['v']) if saved else dict(blocked_until=0,reason=None)
@@ -96,7 +97,7 @@ class RoleHost:
         self.expressions = Expressions(self.life,self.media,self.voices,transport or self.call,
             typing_cps=cfg.typing_chars_per_second,paste_threshold=cfg.paste_threshold)
         self.role = RoleAgent(self.life,self.bridge,cfg,self.root,self.send,self.media,self.voices)
-        self.role.experience_channel_ready=lambda:(self.ws is not None and self.role_ready.is_set()
+        self.role.experience_channel_ready=lambda:(self.ws is not None and self._account_verified and self.role_ready.is_set()
             and self.qq_network.get('blocked_until',0)<=time.time())
         from .local_media import LocalMedia
         self.local_media = LocalMedia(self.life,self.media,self.voices,cfg,self.root,notify=self.role.ingest)
@@ -106,6 +107,8 @@ class RoleHost:
         self._health_baseline = self.life.repo._one('SELECT COUNT(*) AS n FROM life_calls')['n']
 
     async def send(self,scope,logical,proposal,sources):
+        if not getattr(self,'_account_verified',True):
+            raise DeliveryNotSent('qq_account_not_verified')
         result = await self.expressions(scope,logical,proposal,sources)
         if result.get('sent_confirmed'):
             text = proposal if isinstance(proposal,str) else proposal.get('text') or json.dumps(proposal.get('parts'),ensure_ascii=False)
@@ -123,6 +126,8 @@ class RoleHost:
         return result
 
     async def call(self,action,params):
+        if not getattr(self,'_account_verified',True):
+            raise DeliveryNotSent('qq_account_not_verified')
         from .delivery import SEND_ACTIONS
         from .onebot_receipt import failure_reason
         if action in SEND_ACTIONS:
@@ -199,6 +204,9 @@ class RoleHost:
         return actor==self.cfg.owner or actor in self.cfg.friends or self.cfg.allow_all_private
 
     async def receive(self,raw):
+        expected = getattr(self.cfg,'bot_qq',0)
+        if expected and (not self._account_verified or str(raw.get('self_id','')) != str(expected)):
+            return
         if raw.get('post_type')!='message' or not self.allowed(raw):
             return
         if float(raw.get('time') or 0)<int(self.accept_after):
@@ -312,7 +320,7 @@ class RoleHost:
                     temporary = path.with_suffix('.writing')
                     temporary.write_text(json.dumps(dict(token=os.environ.get('QQ_WORKER_TOKEN',''),pid=os.getpid(),
                         at=time.time(),completed_turns=max(0,completed-self._health_baseline),
-                        channel_connected=self.ws is not None,cognition_ready=self.role.running,
+                        channel_connected=self.ws is not None and self._account_verified,cognition_ready=self.role.running,
                         qq_network=self.qq_network,
                         spending=self.role.spending.snapshot(),
                         memory_index=self.life.memory_index.status(diagnostic=True),
@@ -353,6 +361,13 @@ class RoleHost:
                         log.info('QQ通道已%s','恢复连接' if failures else '连接')
                         failures,next_report = 0,0
                         reader = self.spawn(self.read(ws),'onebot-read',report=False)
+                        if getattr(self.cfg,'bot_qq',0):
+                            self._account_verified = False
+                            login = await self._call_raw('get_login_info',{})
+                            account = (login.get('data') or {}).get('user_id')
+                            if login.get('retcode') != 0 or str(account) != str(self.cfg.bot_qq):
+                                raise RuntimeError('qq_account_mismatch')
+                            self._account_verified = True
                         startup = self.spawn(self.startup(),'role-startup')
                         stopped = asyncio.create_task(self.stop.wait())
                         done,_ = await asyncio.wait([reader,startup,stopped],return_when=asyncio.FIRST_COMPLETED)
@@ -375,6 +390,7 @@ class RoleHost:
                         task.cancel()
                     await asyncio.gather(*waits,return_exceptions=True)
                     self.ws = None
+                    self._account_verified = not getattr(self.cfg,'bot_qq',0)
                     self.life.experience.system_pause('channel_unavailable')
                     for future in self._rpc.values():
                         if not future.done():

@@ -1,4 +1,4 @@
-"""Export configuration, memory and skills only, including secrets. Standard library only; no network."""
+"""Export private character configurations, memories and assets, including secrets; no network."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ TRANSIENT = {'worker-health.json', 'watchdog.json', 'server.json', 'restart.requ
              'restart.receipt.json', 'stop.requested', 'channel_retry.json'}
 DATA_SKIP = {'maintenance', 'tmp', 'cache', 'packages', 'models', 'napcat-setup',
              'media-feasibility', 'csv_export', 'request-samples', 'failures',
-             'codex-consult-verification', 'logs', 'test-results'}
+             'codex-consult-verification', 'logs', 'test-results','config-backups'}
 WEIGHTS = {'.gguf', '.ggml', '.safetensors', '.ckpt', '.onnx', '.pth', '.pt'}
 
 
@@ -62,6 +62,7 @@ class Exporter:
                 if (name in SKIP_DIRS or folder == path and name in skip_top
                         or child.is_symlink() or getattr(child, 'is_junction', lambda: False)()
                         or child.resolve() == self.destination
+                        or data and name in DATA_SKIP
                         or data and name.endswith('-integration')):
                     self.excluded.append(dict(path=str(child), reason='runtime_dependency_cache_or_link'))
                 else:kept.append(name)
@@ -76,7 +77,8 @@ class Exporter:
                 relative = child.relative_to(path).as_posix()
                 target = prefix+'/'+relative
                 # Do not automatically replay deployment or administrative commands on a new PC.
-                if data and (relative == 'life-control/controller.sqlite3' or relative.startswith('memory-admin/')):
+                if data and (relative.endswith('life-control/controller.sqlite3') or relative.startswith('memory-admin/')
+                             or '/memory-admin/' in relative):
                     target = 'recovery-only/'+target
                 self.add(child, target)
 
@@ -95,6 +97,8 @@ class Exporter:
 
     def collect(self):
         config = tomllib.loads((self.root/'config.toml').read_text('utf-8'))
+        registry=self.root/'data/characters/registry.json'
+        if registry.is_file():return self.collect_characters(config,registry)
         # Only configuration, memory and skills. Source and runtimes come from Git/installers.
         self.add(self.root/'config.toml', 'project/config.toml')
         for name in ('life-dynamics.json', 'self.md'):
@@ -133,17 +137,92 @@ class Exporter:
         envs(config)
         return {key:os.environ[key] for key in sorted(env_names) if key in os.environ}
 
+    def collect_characters(self,config,registry):
+        records=json.loads(registry.read_text('utf-8'))
+        if any(record.get('wanted') for record in records.values()):
+            raise RuntimeError('请先从人物管理停止所有人物，再导出。')
+        for name in ('config.toml','life-dynamics.json','self.md','qzone_post.py'):
+            self.add(self.root/name,'project/'+name)
+        for path in self.root.glob('.env*'):
+            if path.name!='.env.example':self.add(path,'project/'+path.name)
+        for name in ('personas','skills','scripts','diary'):
+            self.tree(self.root/name,'project/'+name)
+        for name in ('auth.json','login.txt'):
+            self.add(self.root/'data/settings'/name,'project/data/settings/'+name)
+        # Includes each isolated deployment snapshot, configuration, voice assets,
+        # SQLite memory, DSH histories, private methods and generated media.
+        self.tree(self.root/'data/characters','project/data/characters',data=True)
+        self.tree(self.root/'data/codex-consult','project/data/codex-consult',data=True)
+        self.tree(self.root/'data/media-feasibility/voice-presets',
+                  'project/data/media-feasibility/voice-presets')
+        self.configured(config.get('persona'),'default_persona')
+        for name in ('napcat-onekey/NapCat.52230.Shell/config','napcat/config'):
+            self.tree(self.root/name,'project/'+name)
+        env_names={'DEEPSEEK_API_KEY','QQ_WS_URL'}
+        seen=set()
+        configurations=[('defaults',self.root,config)]
+        for identity in records:
+            if not isinstance(identity,str) or not __import__('re').fullmatch(r'[a-z][a-z0-9_-]{0,39}',identity):
+                raise ValueError('invalid_character_id_in_registry')
+            folder=self.root/'data/characters'/identity
+            cfg=tomllib.loads((folder/'config.toml').read_text('utf-8'))
+            configurations.append((identity,folder,cfg))
+        for identity,folder,cfg in configurations:
+            for provider in cfg.get('local_media',{}).get('providers',[]):
+                self.manual.append(dict(character=identity,component=provider.get('provider_id'),
+                    environment=provider.get('environment',{}),config=provider.get('config',{}),
+                    model_version=provider.get('model_version'),
+                    action='reinstall_runtime_and_public_weights; adjust_local_paths'))
+            model=cfg.get('local_embedding',{}).get('model_path')
+            if model:self.manual.append(dict(character=identity,component='embedding_model',
+                path=str(resolve(folder,model)),action='install_with_scripts/install_local_embedding.py'))
+            plugin=cfg.get('bili_plugin')
+            if plugin:
+                path=resolve(folder,plugin)
+                if str(path) not in seen:
+                    seen.add(str(path));self.configured(str(path),'bili_plugin')
+            consultation=cfg.get('consult_config')
+            if consultation:
+                path=resolve(folder,consultation)
+                if path.is_file():
+                    project=json.loads(path.read_text('utf-8')).get('project')
+                    if project and str(project) not in seen:
+                        seen.add(str(project));self.configured(project,'consultation_project')
+            for value in cfg.get('embedding',{}).values():
+                if isinstance(value,str) and value and value in os.environ and value.endswith('_KEY'):
+                    env_names.add(value)
+        # Private extension code is small; large public runtimes and model files
+        # remain explicit external requirements, never silently claimed present.
+        engine=config.get('local_media',{}).get('providers',[])
+        for provider in engine:
+            if provider.get('provider_id')=='indextts':
+                location=provider.get('config',{}).get('voice_engine_root')
+                if not location:continue
+                source=resolve(self.root,location)
+                if source.is_dir():
+                    self.tree(source,'components/index-tts-source',skip_top=('checkpoints','archive'))
+        return {key:os.environ[key] for key in sorted(env_names) if key in os.environ}
+
     def write(self):
         # A running cognition service can change several stores between snapshots.
-        health = self.root/'data/life-control/worker-health.json'
-        if health.exists():
-            value = json.loads(health.read_text('utf-8'))
-            if time.time()-value.get('at', 0)<20 and value.get('cognition_ready'):
-                raise RuntimeError('Bot 正在处理生活数据，请先停止 Bot，再导出。导出工具不会终止进程。')
+        healths=[self.root/'data/life-control/worker-health.json',
+                 *(self.root/'data/characters').glob('*/data/life-control/worker-health.json')]
+        for health in healths:
+            if health.exists():
+                value = json.loads(health.read_text('utf-8'))
+                if time.time()-value.get('at', 0)<20 and value.get('cognition_ready'):
+                    alive=True
+                    if value.get('pid'):
+                        try:
+                            import psutil
+                            alive=psutil.pid_exists(int(value['pid']))
+                        except ImportError:pass
+                    if alive:raise RuntimeError('Bot 正在处理生活数据，请先停止 Bot，再导出。导出工具不会终止进程。')
         self.destination.mkdir(parents=True, exist_ok=True)
         env = self.collect()
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        target = self.destination/('xiaoyu-private-migration-'+stamp+'.zip')
+        multi=(self.root/'data/characters/registry.json').is_file()
+        target = self.destination/(('characters' if multi else 'xiaoyu')+'-private-migration-'+stamp+'.zip')
         partial = target.with_suffix('.zip.partial')
         entries = []
         print('Exporting', len(self.files), 'files; contents and credentials are not printed.', flush=True)
@@ -177,11 +256,13 @@ class Exporter:
             try:commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=self.root, text=True, stderr=subprocess.DEVNULL).strip()
             except (OSError, subprocess.CalledProcessError):commit = None
             manifest = dict(created=datetime.now().astimezone().isoformat(), commit=commit, root=str(self.root),
-                scope='configuration_memory_skills_only', entries=entries,
+                scope='multi_character_private_state_and_assets' if multi else 'configuration_memory_skills_only', entries=entries,
                 roots=self.roots, excluded=self.excluded, missing_optional=self.missing,
                 paths_to_review=self.manual, sqlite_snapshot=True, cross_store_atomic=False)
             archive.writestr('migration/manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2))
-            archive.writestr('迁移说明.txt', MIGRATION_GUIDE)
+            archive.writestr('迁移说明.txt', MULTI_MIGRATION_GUIDE if multi else MIGRATION_GUIDE)
+            if multi and (self.root/'docs/multi-character-migration.md').is_file():
+                archive.write(self.root/'docs/multi-character-migration.md','migration/新电脑执行说明.md')
         if self.verify:
             print('Verifying every archived file...', flush=True)
             with zipfile.ZipFile(partial) as archive:
@@ -219,6 +300,26 @@ SQLite 使用备份 API，已提交的 WAL 数据已合入备份。旧电脑应�
 本包未加密，含真实密钥和隐私，只通过自己的可信设备转移，不上传 Git。
 默认不做额外校验；QQ 登录可能需要重新扫码，媒体素材与运行环境另外准备。
 ''' 
+
+MULTI_MIGRATION_GUIDE = '''三人物私人迁移包
+
+包含原始小鱼、卡夫卡、流萤的独立配置、人格、现有记忆、模型会话、联系人名单、固定音色及已生成媒体。
+也包含本机管理页登录资料、NapCat 连接配置、私人 skills/scripts、所引用的 B站插件与咨询项目资料。
+归档中的 registry.json 已停止所有人物。旧电脑保持停止，新电脑先恢复环境和路径，再逐个启动。
+
+1. 从 GitHub 克隆 MysteryNGU/qq-deepseek，使用 migration/manifest.json 记录的提交。
+2. 阅读 migration/新电脑执行说明.md；project/ 合并到新项目根目录。
+3. external/config-assets/ 按 manifest.roots 的 setting/source/archive 映射恢复插件和咨询项目。
+4. 人物程序快照已随资料带入；模型文件、Python 虚拟环境、Node 依赖和 QQ/NapCat 程序不在包中。
+5. 按 Git 中的安装说明重建依赖，修正新用户名和盘符、Node、Codex、插件、向量与媒体模型路径。
+6. 默认保留三个人物编号和各自 SQLite/DSH 会话；不要重新创建人物或混合数据库。
+7. 管理页密码仍在 project/data/settings/login.txt。QQ 登录可能需要重新扫码。
+
+SQLite 使用一致性备份，WAL 已提交内容包含在 .db 文件里，不要再搬旧 -wal/-shm。
+recovery-only/ 仅供人工核对，不直接恢复发布控制器或行政操作队列。
+本包没有加密，含密钥、会话与隐私，只在自己的可信设备之间转移，不能提交 Git。
+不包含已退役、隔离的旧小鱼历史，也不包含 Codex 主账号全局登录凭据。
+'''
 
 
 

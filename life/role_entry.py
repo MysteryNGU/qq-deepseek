@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    if (ROOT/'data/characters/primary-retired.json').is_file():
+        print('旧人物已移除，请在 http://127.0.0.1:6100/ 管理和启动人物。')
+        return 0
     for stream in (sys.stdout,sys.stderr):
         if hasattr(stream,'reconfigure'):
             stream.reconfigure(encoding='utf-8')
