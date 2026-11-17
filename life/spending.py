@@ -18,11 +18,18 @@ CONTEXT_MAX=1_048_576
 OUTPUT_MAX=393_216
 
 
+# 预算模式：审计口径。off 不记账；bounded_estimate 已知就记、未知记 unknown_calls（绝不写 0）；
+# strict 要求每次调用都有完整账单，缺一次就拒绝派活。
+SPENDING_MODES=('off','strict','bounded_estimate')
+
+
 @dataclass(frozen=True)
 class SpendingPolicy:
     enabled: bool=False
     daily_target_fen: int=500
     daily_limit_fen: int=1000
+    # 显式写进配置就按它来；None 表示「沿用 enabled 的老语义」（True 即 strict）。
+    mode: str|None=None
 
     @classmethod
     def parse(cls,raw=None):
@@ -32,7 +39,17 @@ class SpendingPolicy:
         p=cls(**raw)
         if type(p.enabled) is not bool or any(type(v) is not int or v<0 for v in (p.daily_target_fen,p.daily_limit_fen)) or p.daily_target_fen>p.daily_limit_fen:
             raise ValueError('invalid_spending_policy')
+        # mode 写错必须当场报错：静默回落到 strict 会让她以为自己在 bounded_estimate 下工作。
+        if p.mode is not None and p.mode not in SPENDING_MODES:
+            raise ValueError('invalid_spending_policy_mode: %r（只能是 %s）'
+                             % (p.mode, '/'.join(SPENDING_MODES)))
         return p
+
+    def effective_mode(self):
+        """真实生效的模式：显式 mode 优先；enabled=True 且没写 mode 仍是 strict（不改用户选择）。"""
+        if not self.enabled:
+            return 'off'
+        return self.mode or 'strict'
 
 
 def reported_cost(record):
@@ -104,7 +121,10 @@ class Spending:
             price_version=PRICE_VERSION,scope='bot_owned_DSH_model_streams')
 
     def reserve(self,root,call):
-        if not self.policy.enabled:return dict(ok=True,enabled=False)
+        if not self.policy.enabled:
+            # 预算 off 表示「不设上限」，不是「不记账」：调用、来源、费用状态都要留下，
+            # 事后才可能对账。这里不做额度判断，只登记。
+            return self._record_unlimited(call)
         record=call.get('record')
         if not isinstance(record,dict) or not isinstance(record.get('call_key'),str):
             raise SessionFailure('invalid_input','费用预留缺少调用标识')
@@ -134,8 +154,70 @@ class Spending:
             self.repo._exec('INSERT INTO spending_calls VALUES(?,?,?,?,?,?,?)',(record['call_key'],call['session_id'],state['day'],required,None,'reserved',canonical(record)))
         return dict(ok=True,enabled=True,reserved_nano=required,price_version=PRICE_VERSION)
 
+    def _record_unlimited(self, call):
+        """off 模式下的记账：只登记，不拦截。
+
+        费用状态三选一：``known``（拿到真实 usage 且能按价目算）、``unknown``（拿不到）、
+        ``estimate``（只有估算，绝不冒充实测）。来源记在 payload 里，事后可查。
+        """
+        record = call.get('record') if isinstance(call, dict) else None
+        call_key = (record or {}).get('call_key') if isinstance(record, dict) else None
+        if not isinstance(call_key, str) or not call_key:
+            return dict(ok=True, enabled=False, recorded=False, reason='no_call_key')
+        day = datetime.fromtimestamp(time.time(), ZONE).date().isoformat()
+        payload = dict(record or {}, session_id=(call or {}).get('session_id'),
+                       origin=(record or {}).get('origin') or 'unlabelled',
+                       purpose=(record or {}).get('purpose') or '', started_at=time.time(),
+                       mode='off', price_version=PRICE_VERSION, metered=False)
+        with self.repo.tx():
+            self.repo._exec('INSERT OR IGNORE INTO spending_calls VALUES(?,?,?,?,?,?,?)',
+                            (call_key, str((call or {}).get('session_id') or 'off'),
+                             day, 0, None, 'unmetered', canonical(payload)))
+        return dict(ok=True, enabled=False, recorded=True, cost_state='unknown',
+                    note='预算 off：只记账不限额；用量未知记为 unknown，不当 0 元')
+
     def settle(self,call):
-        if not self.policy.enabled:return dict(ok=True,enabled=False)
+        if not self.policy.enabled:
+            # off 下仍然把「这次到底花了多少/知不知道」写回账本，状态与实测分开记。
+            record = (call or {}).get('record') or {}
+            call_key = record.get('call_key')
+            if not isinstance(call_key, str) or not call_key:
+                return dict(ok=True, enabled=False, recorded=False)
+            finished = record.get('finished_at') or time.time()
+            measured = reported_cost(dict(record, provider=record.get('provider'),
+                                          model=record.get('model'), usage=record.get('usage'),
+                                          started_at=record.get('started_at') or finished,
+                                          finished_at=finished))
+            state = 'known' if measured is not None else 'unknown'
+            with self.repo.tx():
+                row = self.repo._one('SELECT payload FROM spending_calls WHERE call_key=?',
+                                     (call_key,))
+                payload = dict(json.loads(row['payload']) if row else {},
+                               finished_at=finished, cost_state=state,
+                               measured_nano=measured, estimated_nano=None,
+                               usage=record.get('usage'))
+                self.repo._exec('INSERT OR IGNORE INTO spending_calls VALUES(?,?,?,?,?,?,?)',
+                                (call_key, str((call or {}).get('session_id') or 'off'),
+                                 datetime.fromtimestamp(finished, ZONE).date().isoformat(),
+                                 0, measured, 'unmetered', canonical(payload)))
+                self.repo._exec('UPDATE spending_calls SET charged=?, payload=? WHERE call_key=?',
+                                (measured, canonical(payload), call_key))
+            return dict(ok=True, enabled=False, known=measured is not None, cost_state=state)
+
+    def call_state(self, call_key):
+        """一次调用的对账视图：实测与估算分开，未知就是 None（不是 0）。"""
+        row = self.repo._one('SELECT * FROM spending_calls WHERE call_key=?', (call_key,))
+        if not row:
+            return None
+        payload = json.loads(row['payload'] or '{}')
+        return dict(call_key=call_key, state=row['state'], mode=payload.get('mode'),
+                    origin=payload.get('origin'), purpose=payload.get('purpose'),
+                    cost_state=payload.get('cost_state') or ('unknown' if row['charged'] is None
+                                                             else 'known'),
+                    measured_nano=row['charged'] if row['state'] != 'reserved' else None,
+                    estimated_nano=payload.get('estimated_nano'),
+                    usage=payload.get('usage'),
+                    note='measured 是实测（None=未知，不是 0）；estimated 只作参考，不参与对账')
         record=call.get('record',{})
         with self.repo.tx():
             row=self.repo._one('SELECT * FROM spending_calls WHERE call_key=?',(record.get('call_key'),))

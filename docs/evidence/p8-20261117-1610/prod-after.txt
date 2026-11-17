@@ -1,0 +1,4 @@
+/var/lib/companion/xiaoyu/data/life.db 371355648 1794902687
+/var/lib/companion/xiaoyu/data/life.db-wal 9022832 1794902691
+/var/lib/companion/xiaoyu/data/life.db-shm 32768 1794902687
+/var/lib/companion/xiaoyu/config.toml 14660 1794801984

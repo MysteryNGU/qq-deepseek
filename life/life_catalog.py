@@ -35,13 +35,26 @@ class LifeCatalog:
                    'substr(scope_id,1,?)=? ORDER BY scope_id', (len(self.agent_id)+1, self.agent_id+'|'))]
         return sha(encode([self.epoch('catalog'), self.epoch('policy'), epochs]))
 
+    def access_fence(self):
+        """Authority changes invalidate computation; unrelated new records do not."""
+        epochs=[tuple(r) for r in self.repo._all('SELECT scope_id,epoch FROM forget_epochs WHERE '
+            'substr(scope_id,1,?)=? ORDER BY scope_id',(len(self.agent_id)+1,self.agent_id+'|'))]
+        return sha(encode([self.epoch('policy'),epochs]))
+
     def ref(self, kind, native_id):
         return stable_id('life', self.agent_id, kind, native_id)
 
-    def resolve(self, ref):
+    def resolve(self, ref, _cache=None):
+        if _cache is not None:
+            cached = _cache.get(('resolve', ref))
+            if cached is not None:
+                return dict(cached)
         row = self.repo._one('SELECT * FROM life_resources WHERE resource_id=? AND agent_id=?', (ref, self.agent_id))
         if row:
-            return dict(row)
+            resolved = dict(row)
+            if _cache is not None:
+                _cache[('resolve', ref)] = dict(resolved)
+            return resolved
         for kind, getter in [('event', self.repo.get_event), ('memory', self.repo.get_memory)]:
             item = getter(str(ref))
             if item and item.scope.agent_id == self.agent_id:
@@ -138,8 +151,15 @@ class LifeCatalog:
                         'DO UPDATE SET parent_version=excluded.parent_version',
                         (child_ref, parent_ref, parent_version, relation))
 
-    def parents(self, ref):
-        return self.repo._all('SELECT * FROM life_source_edges WHERE child_id=?', (ref,))
+    def parents(self, ref, _cache=None):
+        if _cache is not None:
+            cached = _cache.get(('parents', ref))
+            if cached is not None:
+                return cached
+        rows = self.repo._all('SELECT * FROM life_source_edges WHERE child_id=?', (ref,))
+        if _cache is not None:
+            _cache[('parents', ref)] = rows
+        return rows
 
     def body(self, resource):
         item = self._native(resource['kind'], resource['native_id'])
@@ -147,7 +167,23 @@ class LifeCatalog:
             raise RecallError('not_available')
         return self._describe(resource['kind'], item)[0]
 
-    def live(self, resource, visiting=None, *, history=False):
+    def live(self, resource, visiting=None, *, history=False, _cache=None):
+        # Validation walks provenance once per scan. Without a scan-scoped memo
+        # a fan-in graph re-validates the same ancestors for every candidate,
+        # which turns one recall into tens of thousands of queries.
+        ref = resource['resource_id']
+        if visiting and ref in visiting:
+            # A cycle verdict is path dependent, so it must never be memoised.
+            return False
+        key = (ref, bool(history))
+        if _cache is not None and key in _cache:
+            return _cache[key]
+        verdict = self._live(resource, visiting, history=history, _cache=_cache)
+        if _cache is not None:
+            _cache[key] = verdict
+        return verdict
+
+    def _live(self, resource, visiting, *, history, _cache):
         visiting = set(visiting or ())
         ref = resource['resource_id']
         statuses={'active','disputed','superseded','candidate'} if history else {'active','disputed'}
@@ -159,7 +195,13 @@ class LifeCatalog:
         if not item or item.scope.agent_id != self.agent_id:
             return False
         from .memory_policy import reset_boundary
-        floor = reset_boundary(self.repo, item.scope)
+        floor_key = ('floor', item.scope.agent_id, item.scope.scope_id, item.scope.audience_policy_id)
+        if _cache is not None and floor_key in _cache:
+            floor = _cache[floor_key]
+        else:
+            floor = reset_boundary(self.repo, item.scope)
+            if _cache is not None:
+                _cache[floor_key] = floor
         if not history and resource['kind']=='memory' and floor and item.recorded_at < floor:
             return False
         if resource['kind']=='memory' and not history:
@@ -177,9 +219,9 @@ class LifeCatalog:
         origin = item.scope.scope_id+'|'+item.scope.audience_policy_id
         if sha(encode([body, status, expiry, origin, parents])) != resource['content_digest']:
             return False
-        for edge in self.parents(ref):
-            parent = self.resolve(edge['parent_id'])
-            if not parent or parent['source_version'] != edge['parent_version'] or not self.live(parent, visiting | {ref},history=history):
+        for edge in self.parents(ref, _cache=_cache):
+            parent = self.resolve(edge['parent_id'], _cache=_cache)
+            if not parent or parent['source_version'] != edge['parent_version'] or not self.live(parent, visiting | {ref},history=history,_cache=_cache):
                 return False
         return True
 

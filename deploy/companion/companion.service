@@ -1,0 +1,21 @@
+[Unit]
+Description=Persistent Xiaoyu Companion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=companion
+Group=companion
+WorkingDirectory=/opt/qq-deepseek
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Shanghai
+UMask=0077
+ExecStart=/opt/qq-deepseek/.venv-companion/bin/python /opt/qq-deepseek/companion.py --home /var/lib/companion/xiaoyu --serve --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

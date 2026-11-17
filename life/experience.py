@@ -267,6 +267,12 @@ class ExperienceSimulation:
                 if type(state[field]) is not int or not 0<=state[field]<2147483647:
                     raise ValueError(field)
             if state['scope'] is not None:
+                # Legacy records may carry extra keys. Unknown fields must not
+                # reset the whole scene state; keep only the declared ones.
+                allowed={f.name for f in fields(Scope)}
+                if not isinstance(state['scope'],dict):
+                    raise ValueError('scope')
+                state['scope']={key:value for key,value in state['scope'].items() if key in allowed}
                 Scope(**state['scope'])
             if type(state['stop_latched']) is not bool or not isinstance(state['fences'],dict):
                 raise ValueError('controls')
@@ -296,6 +302,36 @@ class ExperienceSimulation:
             state = initial(self.life.clock(), self.config)
             state.update(stop_latched=True, state_fault=True)
             return row['revision'], state
+
+    BINDING_KEYS = ('conversation_id', 'audience_policy_id', 'participant_id')
+
+    def same_binding(self, stored, scope):
+        """Same partner, even if the state was written by the previous core."""
+        if not isinstance(stored, dict):
+            return False
+        current = asdict(scope)
+        if stored == current:
+            return True
+        return all(stored.get(key) == current.get(key) for key in self.BINDING_KEYS)
+
+    def rebind_scope(self, scope):
+        """Rewrite a legacy scope dict that names the same partner.
+
+        The previous core stored its own agent id inside the binding; refusing
+        every scene because of that would strand real history. Anything that
+        changes the partner still fails.
+        """
+        revision, state = self._load()
+        stored = state.get('scope')
+        if not stored:
+            return dict(rebound=False, reason='unbound', revision=revision)
+        if stored == asdict(scope):
+            return dict(rebound=False, reason='already_bound', revision=revision)
+        if not self.same_binding(stored, scope):
+            return dict(rebound=False, reason='different_partner', revision=revision)
+        state['scope'] = asdict(scope)
+        self._save(state, revision)
+        return dict(rebound=True, revision=revision + 1, previous=stored)
 
     def _ensure(self):
         revision, state = self._load()
@@ -817,7 +853,7 @@ class ExperienceSimulation:
             if rev != p['base_revision'] and not (rev==1 and p['base_revision']==0):
                 raise SessionFailure('stale_context', '先读life.read(kind=simulation)后按当前版本重提', state_revision=rev)
             action = p['action']
-            if s['scope'] and s['scope']!=asdict(scope):
+            if s['scope'] and not self.same_binding(s['scope'], scope):
                 raise SessionFailure('scope_mismatch', '专项状态仅绑定一个私聊伴侣；先显式重置绑定')
             if action=='ack':
                 refs = p.get('transition_refs', [])

@@ -1,0 +1,1733 @@
+{
+  "version": 1,
+  "model": {
+    "name": "神宫白子 · 面饼0",
+    "model3_sha256": "a80190a64b2b428b19a32242b078ad0816a211d4bfb63f7c92bb0976ab4b3b88"
+  },
+  "notes": {
+    "scope": "Only original exported parameter curves. No clothing switches, root translation, vertex edits, or walking.",
+    "pickup": "picked-up and put-down are reactions to real drag events; they do not move the root or claim to implement grabbing.",
+    "timing": "Cubism motion3 linear segments. Blend at runtime to preserve live tracking and existing expressions.",
+    "expanded": "12 additional original-parameter expressions/gestures; staged for next release. No sitting, lying, jumping or rolling is claimed.",
+    "final_parameter_hook": "Eyeball/eyelid and authored arm reaction curves must be applied in beforeModelUpdate after SDK blink/physics and before Core.update. Post-render sampled vertices/pixels are the acceptance evidence.",
+    "wave": "The original covered arms support a small forearm/cuff greeting, not an overhead open-palm wave."
+  },
+  "motions": {
+    "nod": {
+      "label": "点头",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.0,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 1,
+          "TotalSegmentCount": 4,
+          "TotalPointCount": 5,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.22,
+              -8,
+              0,
+              0.42,
+              3,
+              0,
+              0.64,
+              -5,
+              0,
+              1,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "shake-head": {
+      "label": "摇头",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.25,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 1,
+          "TotalSegmentCount": 5,
+          "TotalPointCount": 6,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.22,
+              -12,
+              0,
+              0.47,
+              12,
+              0,
+              0.69,
+              -8,
+              0,
+              0.91,
+              7,
+              0,
+              1.25,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "look-left": {
+      "label": "向左看",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 2,
+          "TotalSegmentCount": 6,
+          "TotalPointCount": 8,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -18,
+              0,
+              1.05,
+              -18,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeBallX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.28,
+              -0.6,
+              0,
+              1.05,
+              -0.6,
+              0,
+              1.6,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "look-right": {
+      "label": "向右看",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 2,
+          "TotalSegmentCount": 6,
+          "TotalPointCount": 8,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              18,
+              0,
+              1.05,
+              18,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeBallX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.28,
+              0.6,
+              0,
+              1.05,
+              0.6,
+              0,
+              1.6,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "happy": {
+      "label": "开心",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.5,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 5,
+          "TotalSegmentCount": 15,
+          "TotalPointCount": 20,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLSmile",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.25,
+              0.8,
+              0,
+              1.05,
+              0.8,
+              0,
+              1.5,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeRSmile",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.25,
+              0.8,
+              0,
+              1.05,
+              0.8,
+              0,
+              1.5,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.25,
+              0.65,
+              0,
+              1.05,
+              0.65,
+              0,
+              1.5,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthOpenY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.25,
+              0.15,
+              0,
+              1.05,
+              0.15,
+              0,
+              1.5,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "Param91",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.3,
+              0.15,
+              0,
+              1.05,
+              0.15,
+              0,
+              1.5,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "surprised": {
+      "label": "惊讶",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.2,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 3,
+          "TotalSegmentCount": 9,
+          "TotalPointCount": 12,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.16,
+              -0.8,
+              0,
+              0.75,
+              -0.8,
+              0,
+              1.2,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthOpenY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.16,
+              0.65,
+              0,
+              0.75,
+              0.65,
+              0,
+              1.2,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.2,
+              -3,
+              0,
+              0.75,
+              -3,
+              0,
+              1.2,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "picked-up": {
+      "label": "被拎起时的反应",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 0.95,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 4,
+          "TotalSegmentCount": 12,
+          "TotalPointCount": 16,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleZ",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.18,
+              -9,
+              0,
+              0.55,
+              -6,
+              0,
+              0.95,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.18,
+              -6,
+              0,
+              0.55,
+              -4,
+              0,
+              0.95,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeBallY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.18,
+              -0.3,
+              0,
+              0.55,
+              -0.2,
+              0,
+              0.95,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthOpenY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.18,
+              0.25,
+              0,
+              0.55,
+              0.12,
+              0,
+              0.95,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "put-down": {
+      "label": "放下时的反应",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 0.85,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 2,
+          "TotalSegmentCount": 7,
+          "TotalPointCount": 9,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.12,
+          "FadeOutTime": 0.18
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.18,
+              5,
+              0,
+              0.38,
+              -3,
+              0,
+              0.58,
+              1,
+              0,
+              0.85,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleZ",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.2,
+              3,
+              0,
+              0.5,
+              -2,
+              0,
+              0.85,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "wink-left": {
+      "label": "左眼眨眼",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 0.8,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 3,
+          "TotalSegmentCount": 7,
+          "TotalPointCount": 10,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLOpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.18,
+              0,
+              0,
+              0.5,
+              0,
+              0,
+              0.8,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.2,
+              0.35,
+              0,
+              0.5,
+              0.35,
+              0,
+              0.8,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeROpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.8,
+              1
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "wink-right": {
+      "label": "右眼眨眼",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 0.8,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 3,
+          "TotalSegmentCount": 7,
+          "TotalPointCount": 10,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeROpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.18,
+              0,
+              0,
+              0.5,
+              0,
+              0,
+              0.8,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.2,
+              0.35,
+              0,
+              0.5,
+              0.35,
+              0,
+              0.8,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLOpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.8,
+              1
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "shy": {
+      "label": "害羞",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 7,
+          "TotalSegmentCount": 21,
+          "TotalPointCount": 28,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "Param91",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.45,
+              0,
+              1.2000000000000002,
+              0.45,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -5,
+              0,
+              1.2000000000000002,
+              -5,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleZ",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              5,
+              0,
+              1.2000000000000002,
+              5,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeBallX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.4,
+              0,
+              1.2000000000000002,
+              -0.4,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLOpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.65,
+              0,
+              1.2000000000000002,
+              0.65,
+              0,
+              1.6,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeROpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.65,
+              0,
+              1.2000000000000002,
+              0.65,
+              0,
+              1.6,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.2,
+              0,
+              1.2000000000000002,
+              0.2,
+              0,
+              1.6,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "angry": {
+      "label": "生气",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 5,
+          "TotalSegmentCount": 15,
+          "TotalPointCount": 20,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "Param92",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.7,
+              0,
+              1.2000000000000002,
+              0.7,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamBrowLForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.6,
+              0,
+              1.2000000000000002,
+              -0.6,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamBrowRForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.6,
+              0,
+              1.2000000000000002,
+              -0.6,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.55,
+              0,
+              1.2000000000000002,
+              -0.55,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthOpenY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.1,
+              0,
+              1.2000000000000002,
+              0.1,
+              0,
+              1.6,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "sad": {
+      "label": "难过",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 6,
+          "TotalSegmentCount": 18,
+          "TotalPointCount": 24,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamBrowLForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.65,
+              0,
+              1.2000000000000002,
+              0.65,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamBrowRForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.65,
+              0,
+              1.2000000000000002,
+              0.65,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.6,
+              0,
+              1.2000000000000002,
+              -0.6,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -5,
+              0,
+              1.2000000000000002,
+              -5,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLOpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.7,
+              0,
+              1.2000000000000002,
+              0.7,
+              0,
+              1.6,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeROpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.7,
+              0,
+              1.2000000000000002,
+              0.7,
+              0,
+              1.6,
+              1
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "sleepy": {
+      "label": "困倦",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 2,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 5,
+          "TotalSegmentCount": 15,
+          "TotalPointCount": 20,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLOpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.25,
+              0,
+              1.6,
+              0.25,
+              0,
+              2,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeROpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.25,
+              0,
+              1.6,
+              0.25,
+              0,
+              2,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -4,
+              0,
+              1.6,
+              -4,
+              0,
+              2,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleZ",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              4,
+              0,
+              1.6,
+              4,
+              0,
+              2,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.15,
+              0,
+              1.6,
+              -0.15,
+              0,
+              2,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "yawn": {
+      "label": "打哈欠",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.8,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 5,
+          "TotalSegmentCount": 15,
+          "TotalPointCount": 20,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLOpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.15,
+              0,
+              1,
+              0.15,
+              0,
+              1.8,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeROpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.15,
+              0,
+              1,
+              0.15,
+              0,
+              1.8,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthOpenY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.7,
+              0,
+              1,
+              0.7,
+              0,
+              1.8,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.9,
+              0,
+              1,
+              -0.9,
+              0,
+              1.8,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              4,
+              0,
+              1,
+              4,
+              0,
+              1.8,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "thinking": {
+      "label": "思考",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 5,
+          "TotalSegmentCount": 15,
+          "TotalPointCount": 20,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleZ",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              8,
+              0,
+              1.2000000000000002,
+              8,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              7,
+              0,
+              1.2000000000000002,
+              7,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeBallX",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.35,
+              0,
+              1.2000000000000002,
+              0.35,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeBallY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.35,
+              0,
+              1.2000000000000002,
+              0.35,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.2,
+              0,
+              1.2000000000000002,
+              -0.2,
+              0,
+              1.6,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "pout": {
+      "label": "嘟嘴",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 3,
+          "TotalSegmentCount": 9,
+          "TotalPointCount": 12,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "Param27",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.75,
+              0,
+              1.2000000000000002,
+              0.75,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthOpenY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.05,
+              0,
+              1.2000000000000002,
+              0.05,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleZ",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -4,
+              0,
+              1.2000000000000002,
+              -4,
+              0,
+              1.6,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "confused": {
+      "label": "疑惑",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.6,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 5,
+          "TotalSegmentCount": 15,
+          "TotalPointCount": 20,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleZ",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -10,
+              0,
+              1.2000000000000002,
+              -10,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamBrowLForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.55,
+              0,
+              1.2000000000000002,
+              0.55,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamBrowRForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.2,
+              0,
+              1.2000000000000002,
+              -0.2,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthOpenY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              0.15,
+              0,
+              1.2000000000000002,
+              0.15,
+              0,
+              1.6,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamMouthForm",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -0.3,
+              0,
+              1.2000000000000002,
+              -0.3,
+              0,
+              1.6,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "wave": {
+      "label": "轻摆手招呼",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.5,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 3,
+          "TotalSegmentCount": 15,
+          "TotalPointCount": 18,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "Param58",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.25,
+              -0.25,
+              0,
+              1.1,
+              -0.25,
+              0,
+              1.5,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "Param59",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.3,
+              0.5,
+              0,
+              0.5,
+              -0.25,
+              0,
+              0.7,
+              0.5,
+              0,
+              0.9,
+              -0.25,
+              0,
+              1.1,
+              0.5,
+              0,
+              1.5,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "Param60",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.3,
+              -0.15,
+              0,
+              0.5,
+              0.2,
+              0,
+              0.7,
+              -0.15,
+              0,
+              0.9,
+              0.2,
+              0,
+              1.1,
+              -0.15,
+              0,
+              1.5,
+              0
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    },
+    "bow": {
+      "label": "轻微鞠躬",
+      "motion": {
+        "Version": 3,
+        "Meta": {
+          "Duration": 1.8,
+          "Fps": 30.0,
+          "Loop": false,
+          "AreBeziersRestricted": true,
+          "CurveCount": 4,
+          "TotalSegmentCount": 12,
+          "TotalPointCount": 16,
+          "UserDataCount": 0,
+          "TotalUserDataSize": 0,
+          "FadeInTime": 0.15,
+          "FadeOutTime": 0.2
+        },
+        "Curves": [
+          {
+            "Target": "Parameter",
+            "Id": "ParamAngleY",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -12,
+              0,
+              1.4,
+              -12,
+              0,
+              1.8,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "Param51",
+            "Segments": [
+              0,
+              0,
+              0,
+              0.35,
+              -1.8,
+              0,
+              1.4,
+              -1.8,
+              0,
+              1.8,
+              0
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeLOpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.6,
+              0,
+              1.4,
+              0.6,
+              0,
+              1.8,
+              1
+            ]
+          },
+          {
+            "Target": "Parameter",
+            "Id": "ParamEyeROpen",
+            "Segments": [
+              0,
+              1,
+              0,
+              0.35,
+              0.6,
+              0,
+              1.4,
+              0.6,
+              0,
+              1.8,
+              1
+            ]
+          }
+        ],
+        "UserData": []
+      }
+    }
+  }
+}

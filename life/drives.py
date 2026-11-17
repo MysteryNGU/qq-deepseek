@@ -596,15 +596,17 @@ def advance_to(state: DriveStateSet, until: float, config: DriveConfig | None = 
 
 
 def view_at(state: DriveStateSet, now: float, config: DriveConfig | None = None,
-            *, context_factors: dict[str, float] | None = None) -> dict[str, dict[str, Any]]:
+            *, context_factors: dict[str, float] | None = None,
+            include_private: bool = False) -> dict[str, dict[str, Any]]:
     """只读视图：可以推进纯时间，但不结算满足、不执行调节、不写库。"""
     config = config or DriveConfig()
     advanced = advance_to(state, max(float(now), float(state.updated_at)), config,
                           online_seconds=0.0, context_factors=context_factors)
-    return drive_view(advanced, config)
+    return drive_view(advanced, config, include_private=include_private)
 
 
-def drive_view(state: DriveStateSet, config: DriveConfig | None = None) -> dict[str, dict[str, Any]]:
+def drive_view(state: DriveStateSet, config: DriveConfig | None = None, *,
+               include_private: bool = False) -> dict[str, dict[str, Any]]:
     config = config or DriveConfig()
     out: dict[str, dict[str, Any]] = {}
     for dim in DRIVE_DIMENSIONS:
@@ -632,6 +634,16 @@ def drive_view(state: DriveStateSet, config: DriveConfig | None = None) -> dict[
             "expression_threshold": float(c.expression_threshold),
             "high_threshold": float(c.high_threshold),
         }
+        if include_private:
+            # 占位说明：通用视图（界面/汇总）不得出现这些字段，只有角色自身认知
+            # 通过 include_private=True 读取本场爽度这一族状态。
+            out[dim].update({
+                "stimulation": round(float(getattr(d, "stimulation", 0.0) or 0.0), 6),
+                "stimulation_peak": round(float(getattr(d, "stimulation_peak", 0.0) or 0.0), 6),
+                "stimulation_at": float(getattr(d, "stimulation_at", 0.0) or 0.0),
+                "scene_climaxes": int(getattr(d, "scene_climaxes", 0) or 0),
+                "climax_threshold": float(getattr(c, "climax_threshold", 0.0) or 0.0),
+            })
     return out
 
 

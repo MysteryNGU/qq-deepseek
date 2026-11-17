@@ -1,0 +1,5 @@
+Stopping companion.service - Persistent Xiaoyu Companion...
+companion.service: Deactivated successfully.
+Stopped companion.service - Persistent Xiaoyu Companion.
+companion.service: Consumed 25.300s CPU time, 242.3M memory peak, 0B memory swap peak.
+Started companion.service - Persistent Xiaoyu Companion.

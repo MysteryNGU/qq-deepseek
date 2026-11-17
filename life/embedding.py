@@ -6,6 +6,7 @@ from dataclasses import dataclass, fields
 import json
 import os
 from urllib.parse import urlsplit
+from urllib.error import URLError
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 from .life_access import RecallError
@@ -102,7 +103,17 @@ class HttpEmbedding:
             raise RecallError('embedding_credentials_missing')
         fingerprint = sha(encode([input_digests, model_key, purpose, source_refs]))
         state_key = 'memory_embedding:'+self.life.agent_id+':'+call_key
-        fence = self.life.catalog.fence()
+        def computation_fence():
+            ctx=self.life.life_access.bind(self.life.scope('__memory_internal__'),mode='internal')
+            sources=[]
+            for ref in source_refs:
+                try:
+                    resource,_=self.life.life_access.load(ctx,ref,track=False)
+                except RecallError:
+                    raise RecallError('stale_source') from None
+                sources.append((resource['resource_id'],resource['source_version'],resource['content_digest']))
+            return sha(encode([self.life.catalog.access_fence(),sources]))
+        fence = computation_fence()
         with self.repo.tx():
             generation=0
             previous = self.repo._one('SELECT v FROM meta WHERE k=?', (state_key,))
@@ -110,7 +121,8 @@ class HttpEmbedding:
                 saved = json.loads(previous['v'])
                 if saved['fingerprint'] != fingerprint:
                     raise RecallError('idempotency_conflict')
-                if saved.get('fence') != fence:
+                refused=(saved.get('state')=='evicted' and saved.get('error')=='connection_refused')
+                if saved.get('fence') != fence and not refused:
                     raise RecallError('stale_source')
                 if saved['state']=='completed' and saved.get('result') and saved['expires']>self.life.clock():
                     return saved['result']
@@ -133,7 +145,7 @@ class HttpEmbedding:
             self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)', (state_key, encode(saved)))
         try:
             # Verify source epochs once more immediately before external I/O.
-            if self.life.catalog.fence() != fence:
+            if computation_fence() != fence:
                 raise RecallError('stale_source')
             for ref in source_refs:
                 self.life.life_access.load(self.life.life_access.bind(self.life.scope('__memory_internal__'), mode='internal'), ref)
@@ -154,7 +166,7 @@ class HttpEmbedding:
             with self.repo.tx():
                 # Billing is factual even when the source was forgotten mid-call.
                 current = self.repo._one('SELECT v FROM meta WHERE k=?', (state_key,))
-                if self.life.catalog.fence() != fence or not current:
+                if computation_fence() != fence or not current:
                     raise RecallError('stale_source')
                 saved.update(state='completed', result=result)
                 self.repo._exec('UPDATE meta SET v=? WHERE k=?', (encode(saved), state_key))
@@ -163,6 +175,17 @@ class HttpEmbedding:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            # Connection refusal proves no request reached the provider. Keep
+            # timeouts/ambiguous submitted requests unknown, but don't poison a
+            # query or index job forever while a local service is starting.
+            reason=error.reason if isinstance(error,URLError) else error
+            if isinstance(reason,ConnectionRefusedError):
+                self.spending.settle_external(billing_key,0)
+                with self.repo.tx():
+                    saved.update(state='evicted',error='connection_refused')
+                    saved.pop('result',None)
+                    self.repo._exec('UPDATE meta SET v=? WHERE k=?',(encode(saved),state_key))
+                raise RecallError('embedding_temporarily_unavailable') from None
             # Never save exception text: HTTP errors can include credentials or
             # reflected input. A submitted call stays unknown across restarts.
             with self.repo.tx():

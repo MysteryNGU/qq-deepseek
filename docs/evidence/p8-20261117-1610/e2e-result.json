@@ -1,0 +1,325 @@
+{
+  "summary": {
+    "total": 20,
+    "passed": 18,
+    "failed": 2,
+    "limited": 0,
+    "seconds": 18.6
+  },
+  "rows": [
+    {
+      "item": "F2-a 模型侧动作目录里有 kind=agent（DECISION 已扩展）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "note": "见 companion.py DECISION.actions.kind 枚举"
+      }
+    },
+    {
+      "item": "F2-b 决策入口受理了模型侧 action（不是直接调库）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "source": "evt_c4be84280f0901cd6123ee2f",
+        "found": {
+          "id": "companion-action_8f1db7238c49ff2ce6375288",
+          "agent": "xiaoyu",
+          "project_ref": "companion-project_ac463c6079e52e64c2757368",
+          "source": "evt_c4be84280f0901cd6123ee2f",
+          "action": "{\"kind\":\"agent\",\"op\":\"create\",\"project\":\"派一件小事\",\"goal\":\"列出工作目录里的文件\",\"arguments\":\"{\\\"op\\\": \\\"create\\\", \\\"goal\\\": \\\"列出工作目录里的文件\\\", \\\"node\\\": \\\"echo\\\", \\\"idempotency_key\\\": \\\"e2e-f2-1\\\"}\"}",
+          "status": "pending",
+          "result": null,
+          "created": 1794902676.565021,
+          "updated": 1794902676.5650215
+        },
+        "model_calls": 1
+      }
+    },
+    {
+      "item": "F2-c 待办里的动作就是模型给的那个 agent 动作",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "kind": "agent",
+        "op": "create",
+        "goal": "列出工作目录里的文件",
+        "status": "pending"
+      }
+    },
+    {
+      "item": "F2-d 模型派的 agent 活真正进台账了吗（companion_agent_tasks）",
+      "ok": false,
+      "limited": false,
+      "detail": {
+        "ledger_before": 0,
+        "rows": [],
+        "action_status": "pending",
+        "action_kind": "agent",
+        "worker_would_pick_it": false,
+        "calls": {
+          "dispatch": 0,
+          "create": 0
+        },
+        "where_it_stays": "companion_actions（待办）里的 kind=agent 行，没人把它换成台账里的一件子 agent"
+      }
+    },
+    {
+      "item": "F2-e 「决策流」这条路上台账入口一次都没被调用",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "calls": {
+          "dispatch": 0,
+          "create": 0
+        },
+        "meaning": "这不是幂等：这条路根本没把动作送到台账入口。另一边直接叫 executor.run（F2-f）反而能进去。"
+      }
+    },
+    {
+      "item": "F2-f executor.run(kind=agent, op=create) 真的分派到台账并返回 queued",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "status": "queued",
+        "agent_id": "companion-agent_5cf0cfd579f48bf42efaa2c0",
+        "task_ref": "companion-project_0d21fd1290d951f2bca4b213",
+        "operation_id": "agent-op_a734310c43aeabbed5ed7b10",
+        "ledger_after": 1,
+        "calls": {
+          "dispatch": 2,
+          "create": 1
+        }
+      }
+    },
+    {
+      "item": "F2-g 同一条链路读得回同一件（op=inspect）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "agent_id": "companion-agent_5cf0cfd579f48bf42efaa2c0",
+        "status": "queued"
+      }
+    },
+    {
+      "item": "F2-h 结果轮把回执带回了任务主线（TaskService 有记录）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "tasks": [
+          {
+            "ref": "companion-project_ac463c6079e52e64c2757368",
+            "scope_id": "xiaoyu|qq:private:763282103",
+            "conversation_id": "qq:private:763282103",
+            "goal": "派一件小事",
+            "status": "active",
+            "key": "派一件小事",
+            "origin": "self",
+            "next_step": "",
+            "review_at": null,
+            "next_step_set_at": null,
+            "close_reason": "",
+            "closed_at": null,
+            "revision": 1,
+            "companion": true,
+            "updated_at": 1794902676.5643325,
+            "origin_source_event_ids": [
+              "evt_c4be84280f0901cd6123ee2f"
+            ],
+            "source_event_ids": [
+              "evt_c4be84280f0901cd6123ee2f"
+            ],
+            "pause_owner": "",
+            "continuation": {
+              "updated": 1794902676.5651028,
+              "source_id": "evt_c4be84280f0901cd6123ee2f",
+              "state": "stopped",
+              "due_at": null
+            }
+          },
+          {
+            "ref": "companion-project_0d21fd1290d951f2bca4b213",
+            "scope_id": "xiaoyu|qq:private:763282103",
+            "conversation_id": "xiaoyu|qq:private:763282103",
+            "goal": "{\"stdout\": \"\\u76f4\\u63a5\\u8c03\\u6267\\u88",
+            "status": "active",
+            "key": "{\"stdout\": \"\\u76f4\\u63a5\\u8c03\\u6267\\u88",
+            "origin": "self",
+            "companion": true,
+            "agent": true
+          }
+        ]
+      }
+    },
+    {
+      "item": "F2-j 真后台循环把模型新派的 agent 活送进了台账（基线差集非空）",
+      "ok": false,
+      "limited": false,
+      "detail": {
+        "baseline": 1,
+        "fresh": [],
+        "action_status": "pending",
+        "note": "这一步跑的是真的 Companion._workers()"
+      }
+    },
+    {
+      "item": "F2-i 反证：执行器没接台账时明说「没发生」而不是假装成功",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "status": "failed",
+        "code": "agent_not_wired",
+        "output": "子 agent 台账还没有接上角色，这次没有发生任何事。"
+      }
+    },
+    {
+      "item": "B6-预算 off",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "expected": "queued",
+        "mode": "off",
+        "status": "queued",
+        "needs_setup": null,
+        "reason": "None",
+        "usage_known": false
+      }
+    },
+    {
+      "item": "B6-预算 bounded_estimate",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "expected": "queued",
+        "mode": "bounded_estimate",
+        "status": "queued",
+        "needs_setup": null,
+        "reason": "None",
+        "usage_known": false
+      }
+    },
+    {
+      "item": "B6-预算 strict",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "expected": "rejected",
+        "mode": "strict",
+        "status": "rejected",
+        "needs_setup": true,
+        "reason": "strict 需要每一次调用的完整逐次用量；这个后端不报用量。要么在配置里改成 bounded_estimate，要么接受用量记为未知——不会替你改成 strict 以外的模式。",
+        "usage_known": false
+      }
+    },
+    {
+      "item": "B6-预算 strict：未知用量没被写成 0",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "budget": {
+          "allowed": false,
+          "mode": "strict",
+          "limits": {},
+          "missing_limits": [
+            "usage"
+          ],
+          "enforceable": {
+            "concurrency": true,
+            "runtime_s": true,
+            "calls": false
+          },
+          "accounting": {
+            "mode": "complete_per_call",
+            "unknown_written_as_zero": false
+          },
+          "usage_known": false,
+          "reason": "strict 需要每一次调用的完整逐次用量；这个后端不报用量。要么在配置里改成 bounded_estimate，要么接受用量记为未知——不会替你改成 strict 以外的模式。",
+          "provider": "stub",
+          "needs_setup": true,
+          "status": "needs_setup"
+        }
+      }
+    },
+    {
+      "item": "B6-预算 enabled 无 mode（=strict，不静默降级）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "expected": "rejected",
+        "mode": "strict",
+        "status": "rejected",
+        "needs_setup": true,
+        "reason": "strict 需要每一次调用的完整逐次用量；这个后端不报用量。要么在配置里改成 bounded_estimate，要么接受用量记为未知——不会替你改成 strict 以外的模式。",
+        "usage_known": false
+      }
+    },
+    {
+      "item": "B6-预算 enabled 无 mode（=strict，不静默降级）：未知用量没被写成 0",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "budget": {
+          "allowed": false,
+          "mode": "strict",
+          "limits": {},
+          "missing_limits": [
+            "usage"
+          ],
+          "enforceable": {
+            "concurrency": true,
+            "runtime_s": true,
+            "calls": false
+          },
+          "accounting": {
+            "mode": "complete_per_call",
+            "unknown_written_as_zero": false
+          },
+          "usage_known": false,
+          "reason": "strict 需要每一次调用的完整逐次用量；这个后端不报用量。要么在配置里改成 bounded_estimate，要么接受用量记为未知——不会替你改成 strict 以外的模式。",
+          "provider": "stub",
+          "needs_setup": true,
+          "status": "needs_setup"
+        }
+      }
+    },
+    {
+      "item": "B6-未知用量记账：两边都没数 → None（不是 0）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "merged": null
+      }
+    },
+    {
+      "item": "B6-未知用量记账：一边有数 → 缺的字段是 None 且标 unknown",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "merged": {
+          "input_tokens": 10,
+          "output_tokens": 5,
+          "total_tokens": 15,
+          "cost": null,
+          "unknown": true,
+          "measured_side": "known"
+        }
+      }
+    },
+    {
+      "item": "B6-预算模式解析：enabled=True 无 mode 当 strict（不静默改用户选择）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "mode": "strict"
+      }
+    },
+    {
+      "item": "B6-awareness 与 agents 的预算口径一致",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "awareness": "strict",
+        "agents": "strict"
+      }
+    }
+  ]
+}

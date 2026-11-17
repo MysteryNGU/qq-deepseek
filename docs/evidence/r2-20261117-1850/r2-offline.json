@@ -1,0 +1,237 @@
+{
+  "summary": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0,
+    "limited": 0,
+    "seconds": 37.0,
+    "real": false
+  },
+  "rows": [
+    {
+      "section": "嵌套",
+      "item": "0→1→2 三层能建起来（上限 2 层是「还能再往下 2 层」）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "depths": [
+          0,
+          1,
+          2
+        ],
+        "max_depth": 2
+      }
+    },
+    {
+      "section": "嵌套",
+      "item": "入口①create：第 3 层被产品拒绝（nesting_limit）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "error": "AgentError: nesting_limit: 嵌套最多 2 层（再往下就是第 4 层）；把这件事放进上一层的目标里，或者等它结束再派。"
+      }
+    },
+    {
+      "section": "嵌套",
+      "item": "入口②send/转交：在第 2 层再派活被拒绝",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "error": "AgentError: nesting_limit: 它已经在第 2 层（上限 2），不能在这条链上再派活；把这件事放进当前这一层的目标里。"
+      }
+    },
+    {
+      "section": "嵌套",
+      "item": "入口③resume：在第 2 层续作被拒绝",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "error": "AgentError: nesting_limit: 它已经在第 2 层（上限 2），不能在这条链上再派活；把这件事放进当前这一层的目标里。"
+      }
+    },
+    {
+      "section": "嵌套",
+      "item": "对照：第 0 层仍能正常派活（拒绝有针对性）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "depth": 1
+      }
+    },
+    {
+      "section": "能力解耦",
+      "item": "无交付物任务用 goal 里的 result 作为自己的成功判据",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "status": "completed",
+        "verification": "passed",
+        "artifacts": [],
+        "outcome": "completed"
+      }
+    },
+    {
+      "section": "能力解耦",
+      "item": "能力目录在「有真实跑完的调用」后变 ready",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "before": "needs_setup",
+        "after": "ready",
+        "after_evidence": [
+          "companion_agent_tasks:companion-agent_6aa5b00769bde24c4e09dbae"
+        ]
+      }
+    },
+    {
+      "section": "能力解耦",
+      "item": "读能力目录不会把 verification 伪造成 passed",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "before": "pending",
+        "after": "pending",
+        "note": "能力 ready 与 verification=passed 是两件事"
+      }
+    },
+    {
+      "section": "能力解耦",
+      "item": "最近一次调用失败后能力回落，两者可独立变化",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "after_failure": "needs_setup",
+        "task_verification": "pending"
+      }
+    },
+    {
+      "section": "生命周期",
+      "item": "预算模式为 off（本轮授权口径）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "mode": "off"
+      }
+    },
+    {
+      "section": "生命周期",
+      "item": "并发上限 3 生效，第 4 件排队不失败",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "running": 3,
+        "fourth": "queued"
+      }
+    },
+    {
+      "section": "生命周期",
+      "item": "超时观察：wait 到时限仍未结束，如实报 pending（不谎报完成）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "state": "pending"
+      }
+    },
+    {
+      "section": "生命周期",
+      "item": "中止后落到终态（cancelled），不是永久 running",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "status": "cancelled",
+        "cancel_side_effects": []
+      }
+    },
+    {
+      "section": "生命周期",
+      "item": "同一件事不会重复执行：同幂等键返回同一件、终态不被重跑",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "first_status": "completed",
+        "same_agent": true,
+        "running_events": 1,
+        "resume_new_attempt": 2
+      }
+    },
+    {
+      "section": "生命周期",
+      "item": "重启收尾：running→interrupted 只一次，不重复宣布",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "first": [
+          "companion-agent_bd344e9c9ff3c7616986a864"
+        ],
+        "second": []
+      }
+    },
+    {
+      "section": "生命周期",
+      "item": "收尾后不会被重新入队（不会再跑一次）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "status": "interrupted",
+        "in_queue": false
+      }
+    },
+    {
+      "section": "记账",
+      "item": "off 模式下仍留有调用记录，未知用量记 null",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "usage": [
+          {
+            "id": "companion:681e1d2185b748e09120956812e1d163",
+            "agent": "xiaoyu",
+            "purpose": "executor",
+            "model": "deepseek-flash",
+            "usage": "null",
+            "seconds": null,
+            "created": 1794912197.8991463
+          },
+          {
+            "id": "companion:39cb316f0f4f4a16bc257704f9208796",
+            "agent": "xiaoyu",
+            "purpose": "dialogue",
+            "model": "deepseek-flash",
+            "usage": "{\"input_tokens\":17131,\"cached_input_tokens\":16640,\"output_tokens\":590,\"total_tokens\":17721}",
+            "seconds": 2.982,
+            "created": 1794911540.6184688
+          },
+          {
+            "id": "companion:de9fb8a97833445f9e361af6135a754d",
+            "agent": "xiaoyu",
+            "purpose": "dialogue",
+            "model": "deepseek-flash",
+            "usage": "{\"input_tokens\":16716,\"cached_input_tokens\":8192,\"output_tokens\":568,\"total_tokens\":17284}",
+            "seconds": 2.983,
+            "created": 1794911537.4934726
+          }
+        ],
+        "spending": [
+          {
+            "call_key": "memory-index_c8decaf0958a8d0ab6a23b12:batch:0",
+            "session_id": "memory:xiaoyu",
+            "day": "2026-11-17",
+            "reserved": 0,
+            "charged": 0,
+            "state": "settled",
+            "payload": "{\"finished_at\":1794912385.5492392,\"origin\":\"memory_embedding\",\"price_version\":\"local-cpu-zero-provider-fee-v1\",\"purpose\":\"memory_index\",\"source_refs\":[\"life_a909294c785362cae1b4a899\"],\"started_at\":1794912385.1330063}"
+          },
+          {
+            "call_key": "memory-index_d4c218a80a3fe25ac0d5549d:batch:0",
+            "session_id": "memory:xiaoyu",
+            "day": "2026-11-17",
+            "reserved": 0,
+            "charged": 0,
+            "state": "settled",
+            "payload": "{\"finished_at\":1794912379.7031205,\"origin\":\"memory_embedding\",\"price_version\":\"local-cpu-zero-provider-fee-v1\",\"purpose\":\"memory_index\",\"source_refs\":[\"life_f1d16e5f67a15be3a96587bf\"],\"started_at\":1794912379.4363005}"
+          }
+        ]
+      }
+    }
+  ]
+}

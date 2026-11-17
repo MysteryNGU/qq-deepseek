@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import json
 import re
 import struct
 
@@ -90,6 +91,7 @@ class MemoryIndex:
         scope = Scope(self.catalog.agent_id, '__memory_internal__')
         sources = {resource_ref: expected_version}
         return self.jobs.enqueue(scope, 'memory_index', dict(sources=sources, fence=self.catalog.fence(),
+            index_access_fence=self._access_fence(),
             model_key=self.model_key, chunker_version=self.chunker_version), key=key)
 
     def _unindexed(self):
@@ -137,18 +139,53 @@ class MemoryIndex:
             self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',(key,encode(progress)))
         return progress
 
+    def _access_fence(self):
+        return self.catalog.access_fence()
+
     def _validate(self, lease):
-        if not self.jobs.current(lease) or lease.payload['fence'] != self.catalog.fence():
+        fence_valid=(lease.payload.get('index_access_fence')==self._access_fence()
+                     if 'index_access_fence' in lease.payload else lease.payload['fence']==self.catalog.fence())
+        if not self.jobs.current(lease) or not fence_valid:
             raise RecallError('stale_source')
         for ref, version in lease.payload['sources'].items():
             r = self.catalog.resolve(ref)
             if not r or r['source_version'] != version or not self.catalog.live(r):
                 raise RecallError('stale_source')
+            ctx=self.access.bind(Scope(self.catalog.agent_id,'__memory_internal__'),mode='internal')
+            self.access.load(ctx,ref,version,track=False)
         if lease.payload['model_key'] != self.model_key or lease.payload['chunker_version'] != self.chunker_version:
             raise RecallError('stale_source')
 
     def claim_next(self, ttl=120):
         now = self.jobs.clock()
+        # Refresh legacy preflight failures only with no request ledger, or
+        # ledgers proving connection refusal. Unknown/submitted work is protected.
+        rows=self.repo._all("SELECT id,payload FROM work_jobs j WHERE scope_id=? AND kind='memory_index' "
+            "AND (status='pending' OR (status='paused' AND error='stale_source')) "
+            "AND json_extract(payload,'$.index_access_fence') IS NULL "
+            "AND json_extract(payload,'$.model_key')=? "
+            "AND NOT EXISTS (SELECT 1 FROM meta m WHERE substr(m.k,1,length(?||j.id||':batch:'))=?||j.id||':batch:' "
+            "AND (COALESCE(json_extract(m.v,'$.state'),'')!='evicted' OR COALESCE(json_extract(m.v,'$.error'),'')!='connection_refused')) LIMIT 100",
+            (self.catalog.agent_id+'|__memory_internal__',self.model_key,
+             'memory_embedding:'+self.catalog.agent_id+':','memory_embedding:'+self.catalog.agent_id+':'))
+        for row in rows:
+            prefix='memory_embedding:'+self.catalog.agent_id+':'+row['id']+':batch:'
+            if self.repo._one("SELECT 1 FROM meta WHERE substr(k,1,?)=? AND "
+                             "(COALESCE(json_extract(v,'$.state'),'')!='evicted' OR COALESCE(json_extract(v,'$.error'),'')!='connection_refused')",(len(prefix),prefix)):
+                continue
+            payload=json.loads(row['payload'])
+            ctx=self.access.bind(Scope(self.catalog.agent_id,'__memory_internal__'),mode='internal')
+            try:
+                for ref,version in payload.get('sources',{}).items():
+                    self.access.load(ctx,ref,version,track=False)
+            except RecallError:
+                with self.repo.tx():
+                    self.repo._exec("UPDATE work_jobs SET status='cancelled',error='preflight_source_unavailable' WHERE id=? AND status IN ('pending','paused')",(row['id'],))
+                continue
+            payload.update(fence=self.catalog.fence(),index_access_fence=self._access_fence())
+            with self.repo.tx():
+                self.repo._exec("UPDATE work_jobs SET payload=?,status='pending',due=?,error='' WHERE id=? AND status IN ('pending','paused')",
+                                (encode(payload),now,row['id']))
         row = self.repo._one("SELECT id FROM work_jobs WHERE scope_id=? AND kind='memory_index' AND due<=? "
             "AND (status='pending' OR (status='running' AND lease_until<?)) "
             "AND json_extract(payload,'$.model_key')=? AND json_extract(payload,'$.chunker_version')=? ORDER BY due,created LIMIT 1",

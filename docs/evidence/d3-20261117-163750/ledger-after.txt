@@ -1,0 +1,6 @@
+companion_agent_tasks 0
+companion_agent_events 0
+companion_usage 3079
+spending_calls 10787
+companion_actions 1140
+agent_kind_actions 0

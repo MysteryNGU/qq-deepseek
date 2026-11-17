@@ -74,13 +74,19 @@ class LifeRecall:
             payload['snapshot'] = identity
         return self._sign(payload)
 
-    def allowed(self, ctx, *, high_water=None, actor_refs=(), time_range=None, lexical_terms=None, exact=()):
+    def allowed(self, ctx, *, high_water=None, actor_refs=(), time_range=None, lexical_terms=None, exact=(), candidate_refs=None, _cache=None):
         self.access.require_binding(ctx)
+        # One scan memo per recall: candidates share ancestors, and re-validating
+        # them per candidate is what made a recall take minutes.
+        cache = {} if _cache is None else _cache
         query = 'SELECT rowid,* FROM life_resources WHERE agent_id=?'
         args = [ctx.agent_id]
         if high_water is not None:
             query += ' AND rowid<=?'
             args.append(high_water)
+        if candidate_refs is not None:
+            query += ' AND resource_id IN (SELECT value FROM json_each(?))'
+            args.append(json.dumps(list(candidate_refs)))
         if lexical_terms:
             clues = sorted(lexical_terms)[:96]
             sql = 'resource_id IN (SELECT resource_id FROM life_terms WHERE agent_id=? AND term IN ('+','.join('?' for _ in clues)+'))'
@@ -100,7 +106,7 @@ class LifeRecall:
                     # current searchable interpretation owns expiry/task fences.
                     continue
             try:
-                _,current_body=self.access.load(ctx, resource['resource_id'], resource['source_version'],track=False)
+                _,current_body=self.access.load(ctx, resource['resource_id'], resource['source_version'],track=False,_cache=cache)
             except RecallError:
                 continue
             if resource['kind']=='memory' and lexical_terms and resource['resource_id'] not in exact:
@@ -147,15 +153,29 @@ class LifeRecall:
             reasons = saved.get('reasons', {})
         else:
             previous_coverage = set()
+            scan_cache = {}
             high_water = self.repo._one('SELECT COALESCE(MAX(rowid),0) AS n FROM life_resources WHERE agent_id=?', (ctx.agent_id,))['n']
             qterms = set(terms(query))
             exact_ids = []
             for ref in exact_refs:
-                resource = self.catalog.resolve(ref)
+                resource = self.catalog.resolve(ref, _cache=scan_cache)
                 if resource:
                     exact_ids.append(resource['resource_id'])
+            candidate_refs=None
+            if query_vector is not None and qterms and not entity_refs and not actor_refs:
+                # Only these resources can participate in a text/vector route.
+                # This is candidate selection, never an authorization shortcut.
+                candidate_refs=set(exact_ids)
+                candidate_refs.update(r['resource_id'] for r in self.repo._all(
+                    "SELECT DISTINCT i.resource_id FROM life_semantic_index i JOIN life_resources r ON r.resource_id=i.resource_id "
+                    "AND r.source_version=i.source_version WHERE i.agent_id=? AND i.model_key=? AND i.chunker_version=? "
+                    "AND i.state='ready'",(ctx.agent_id,self.index.model_key,self.index.chunker_version)))
+                candidate_refs.update(r['resource_id'] for r in self.repo._all(
+                    'SELECT DISTINCT resource_id FROM life_terms WHERE agent_id=? AND term IN (SELECT value FROM json_each(?))',
+                    (ctx.agent_id,json.dumps(sorted(qterms)))))
             allowed = self.allowed(ctx, high_water=high_water, actor_refs=actor_refs, time_range=time_range,
-                lexical_terms=qterms if query_vector is None and not entity_refs and not actor_refs else None,exact=exact_ids)
+                lexical_terms=qterms if query_vector is None and not entity_refs and not actor_refs else None,exact=exact_ids,
+                candidate_refs=candidate_refs, _cache=scan_cache)
             by_id = {r['resource_id']: r for r in allowed}
             lexical = {}
             for resource in allowed:
@@ -166,6 +186,12 @@ class LifeRecall:
                     lexical[ref] = hits
             text_route = sorted(lexical, key=lambda ref: (-lexical[ref], -by_id[ref]['occurred_at'], ref))[:self.index.config.route_limit]
             semantic, coverage['semantic'] = self.index.search_vectors(allowed, query_vector)
+            if candidate_refs is not None and coverage['semantic']=='ready':
+                omitted=self.repo._one('SELECT 1 FROM life_resources WHERE agent_id=? AND rowid<=? '
+                    'AND resource_id NOT IN (SELECT value FROM json_each(?)) LIMIT 1',
+                    (ctx.agent_id,high_water,json.dumps(list(candidate_refs))))
+                if omitted:
+                    coverage['semantic']='partial'  # Omitted records are not certified covered.
             related = self.index.find_related(allowed, [*entity_refs, *actor_refs])
             routes = [text_route, semantic, related] if mode == 'auto' else (
                 [related, text_route] if mode == 'related' else [semantic, text_route] if mode == 'semantic' else [text_route])

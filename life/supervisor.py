@@ -92,7 +92,7 @@ class ProcessTree:
 
 
 class HostSupervisor:
-    def __init__(self, controller, config, *, startup_timeout=60):
+    def __init__(self, controller, config, *, startup_timeout=60, environment=None, quiet=False):
         self.controller = controller
         self.config = Path(config).resolve()
         self.startup_timeout = startup_timeout
@@ -106,6 +106,8 @@ class HostSupervisor:
         self._last_health = None
         self._channel_started = None
         self.health_failure = ''
+        self.environment = environment
+        self.quiet = quiet
 
     def start(self):
         if self.tree is not None:
@@ -116,9 +118,12 @@ class HostSupervisor:
         self._last_health = None
         self._channel_started = None
         self.health_path.unlink(missing_ok=True)
-        env = dict(os.environ, QQ_WORKER_TOKEN=self.token, QQ_WORKER_HEALTH=str(self.health_path))
+        env = dict(os.environ if self.environment is None else self.environment,
+                   QQ_WORKER_TOKEN=self.token, QQ_WORKER_HEALTH=str(self.health_path))
         self.tree = ProcessTree([sys.executable, "-B", str(self.controller.source / "bot.py"),
-                                 "--config", str(self.config)], cwd=self.controller.source, env=env)
+                                 "--config", str(self.config)], cwd=self.controller.source, env=env,
+                                 stdout_file=subprocess.DEVNULL if self.quiet else None,
+                                 stderr_file=subprocess.DEVNULL if self.quiet else None)
         self.started = time.monotonic()
         log.info('Bot 已启动 pid=%s',self.tree.process.pid)
 

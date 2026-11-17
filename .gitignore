@@ -90,3 +90,31 @@ ZenlessZoneZero-Auto/
 *.p12
 *.pfx
 /.test-deps/
+
+# AgentTeams 状态与审查服务器运行时（本地会话产物，不属于源码）
+/.agent-teams/
+/.review-server/
+
+# 本地快照/备份目录（从云端同步时的临时工作区）
+/.srv-life/
+/.srv-life-utf8/
+/local-backups/
+/xiaoyu-private-migration-*/
+/android-t24/
+
+# 云端同步/部署产生的临时备份文件
+*.bak
+*.bak-*
+*.t29-before*
+*.before*
+*.orig
+*.old
+
+# 云端运行时目录（toolchain/data/vendor/.acceptance 见上；此处补齐顶层独占项）
+/work/
+/DIRECT
+
+# 云端构建产物
+/output/
+/build/
+*.tar.gz

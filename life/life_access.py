@@ -79,10 +79,19 @@ class LifeAccess:
                     or json.loads(row['scope_json'])['agent_id']!=ctx.agent_id):
                 raise RecallError('not_available')
 
-    def allowed(self, ctx, resource, *, ancestry=False):
+    def allowed(self, ctx, resource, *, ancestry=False, _cache=None):
         self.require_binding(ctx)
         if not resource or resource['agent_id'] != ctx.agent_id:
             return False
+        key = ('allowed', resource['resource_id'], ctx.mode, ctx.audience_key, ctx.purpose, bool(ancestry))
+        if _cache is not None and key in _cache:
+            return _cache[key]
+        verdict = self._allowed(ctx, resource, ancestry=ancestry)
+        if _cache is not None:
+            _cache[key] = verdict
+        return verdict
+
+    def _allowed(self, ctx, resource, *, ancestry=False):
         forbidden = self.catalog.repo._one("SELECT 1 FROM life_acl WHERE resource_id=? AND purpose='internal_use' "
             "AND effect='deny' AND audience_key='*' AND (expires_at IS NULL OR expires_at>?)",
             (resource['resource_id'],self.catalog.clock()))
@@ -161,18 +170,18 @@ class LifeAccess:
                             pending.append(row['child_id'])
                 self.catalog._retire_readers(affected)
 
-    def load(self, ctx, ref, expected_version=None, *, track=True, history=False):
+    def load(self, ctx, ref, expected_version=None, *, track=True, history=False, _cache=None):
         self.require_binding(ctx)
-        resource = self.catalog.resolve(ref)
-        if not resource or not self.allowed(ctx, resource):
+        resource = self.catalog.resolve(ref, _cache=_cache)
+        if not resource or not self.allowed(ctx, resource, _cache=_cache):
             raise RecallError('not_available')
-        if not self.catalog.live(resource,history=history):
+        if not self.catalog.live(resource,history=history,_cache=_cache):
             raise RecallError('not_available')
         if expected_version is not None and resource['source_version'] != expected_version:
             raise RecallError('stale_source')
         # Ordinary derivation inherits the intersection. Published spans retain
         # validity dependencies but do not grant access to the parent archive.
-        if not self._dependencies(ctx, resource, set(),history=history):
+        if not self._dependencies(ctx, resource, set(),history=history,_cache=_cache):
             raise RecallError('not_available')
         if track and ctx.session_id:
             with self.catalog.repo.tx():
@@ -184,26 +193,36 @@ class LifeAccess:
                     self.catalog.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',(key,json.dumps(sorted(refs))))
         return resource, self.catalog.body(resource) if history else self.catalog.current_body(resource)
 
-    def _dependencies(self, ctx, resource, visiting, *, history=False):
+    def _dependencies(self, ctx, resource, visiting, *, history=False, _cache=None):
         ref = resource['resource_id']
         if ref in visiting:
             return False
+        key = ('dependencies', ref, bool(history), ctx.mode, ctx.audience_key)
+        if _cache is not None and key in _cache:
+            return _cache[key]
         visiting = visiting | {ref}
-        for edge in self.catalog.parents(ref):
-            parent = self.catalog.resolve(edge['parent_id'])
+        ok = True
+        for edge in self.catalog.parents(ref, _cache=_cache):
+            parent = self.catalog.resolve(edge['parent_id'], _cache=_cache)
             if (not parent or parent['source_version'] != edge['parent_version']
-                    or not self.catalog.live(parent,history=history)):
-                return False
+                    or not self.catalog.live(parent,history=history,_cache=_cache)):
+                ok = False
+                break
             if ctx.mode == 'internal':
-                if not self.allowed(ctx, parent) or not self._dependencies(ctx, parent, visiting,history=history):
-                    return False
+                if not self.allowed(ctx, parent, _cache=_cache) or not self._dependencies(ctx, parent, visiting,history=history,_cache=_cache):
+                    ok = False
+                    break
             elif edge['relation'] != 'published_from':
-                if not self.allowed(ctx, parent) or not self._dependencies(ctx, parent, visiting,history=history):
-                    return False
+                if not self.allowed(ctx, parent, _cache=_cache) or not self._dependencies(ctx, parent, visiting,history=history,_cache=_cache):
+                    ok = False
+                    break
             else:
                 denies = self.catalog.repo._one("SELECT 1 FROM life_acl WHERE resource_id=? AND effect='deny' "
                     "AND purpose IN ('disclose','internal_use') AND audience_key IN (?, '*') AND (expires_at IS NULL OR expires_at>?)",
                     (parent['resource_id'],ctx.audience_key,self.catalog.clock()))
                 if denies:
-                    return False
-        return True
+                    ok = False
+                    break
+        if _cache is not None:
+            _cache[key] = ok
+        return ok

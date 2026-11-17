@@ -10,7 +10,7 @@ from .text import stable_id
 class People:
     FIELDS={'address','preference','interest','boundary','fact'}
 
-    def __init__(self,role):
+    def __init__(self,role,*,observe_history=True):
         self.role,self.life,self.repo=role,role.life,role.repo
         self.repo.db.execute('''CREATE TABLE IF NOT EXISTS person_profiles(
             id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,actor_id TEXT NOT NULL,
@@ -23,7 +23,7 @@ class People:
             event_id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,actor_id TEXT NOT NULL,scope_id TEXT NOT NULL,
             state TEXT NOT NULL,reason TEXT NOT NULL DEFAULT '',updated REAL NOT NULL)''')
         self.repo.db.execute('CREATE INDEX IF NOT EXISTS person_encounters_actor ON person_encounters(agent_id,actor_id,scope_id,state)')
-        if getattr(role.cfg,'profile_review_enabled',False):
+        if observe_history and getattr(role.cfg,'profile_review_enabled',False):
             # Register identities from real retained speakers, never invent traits.
             with self.repo.tx():
                 self.repo._exec("INSERT OR IGNORE INTO person_encounters(event_id,agent_id,actor_id,scope_id,state,updated) "

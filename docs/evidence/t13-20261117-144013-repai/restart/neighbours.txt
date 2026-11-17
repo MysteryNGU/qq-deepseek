@@ -1,0 +1,4 @@
+companion-embedding=active
+nginx=active
+napcat=inactive
+napcat_containers=none

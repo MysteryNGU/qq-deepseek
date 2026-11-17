@@ -1,0 +1,1 @@
+/var/lib/companion/xiaoyu/data/life.db 356986880 1794897223

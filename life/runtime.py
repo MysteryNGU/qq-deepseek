@@ -439,11 +439,12 @@ class LifeRuntime:
                 return advanced
         return self.drive_state(scope)
 
-    def drive_view(self, scope: Scope, now: float | None = None) -> dict[str, dict[str, Any]]:
+    def drive_view(self, scope: Scope, now: float | None = None, *,
+                   include_private: bool = False) -> dict[str, dict[str, Any]]:
         """同一时点的只读视图；不结算满足、不执行调节、不写库。"""
         state = self.drive_state(scope)
         at = float(self.clock() if now is None else now)
-        return drive_view_at(state, at, self.drive_config())
+        return drive_view_at(state, at, self.drive_config(), include_private=include_private)
 
     def drive_summary(self, scope: Scope, now: float | None = None) -> dict[str, float]:
         return summarize_drives(self.drive_view(scope, now))

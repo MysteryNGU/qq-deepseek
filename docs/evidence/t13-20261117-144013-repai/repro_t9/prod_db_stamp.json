@@ -1,0 +1,12 @@
+{
+  "before": {
+    "path": "/var/lib/companion/xiaoyu/data/life.db",
+    "bytes": 368525312,
+    "mtime": 1794899919.719
+  },
+  "after": {
+    "path": "/var/lib/companion/xiaoyu/data/life.db",
+    "bytes": 368525312,
+    "mtime": 1794899919.719
+  }
+}

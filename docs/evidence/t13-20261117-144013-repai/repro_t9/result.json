@@ -1,0 +1,1220 @@
+{
+  "summary": {
+    "total": 100,
+    "passed": 98,
+    "failed": 1,
+    "limited": 1,
+    "seconds": 165.1
+  },
+  "rows": [
+    {
+      "scenario": "A1",
+      "item": "请求体里有 awareness 且有 observed_at",
+      "ok": true,
+      "detail": {
+        "observed_at": "2026-11-17T15:19:37+08:00",
+        "schema": "awareness-1",
+        "node": "cloud-linux",
+        "bytes": 2883
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "通道关闭时账号状态是 disabled（不是 connected）",
+      "ok": true,
+      "detail": {
+        "state": "disabled",
+        "value": null,
+        "source_ref": "life/companion_qq.py#load_qq_settings",
+        "source_scope": "channel_config",
+        "observed_at": "2026-11-17T15:19:37+08:00"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "账号事实带来源（source_ref 指向运行代码）",
+      "ok": true,
+      "detail": {
+        "source_ref": "life/companion_qq.py#load_qq_settings"
+      }
+    },
+    {
+      "scenario": "A2",
+      "item": "未知就写未知：连接后没有可核验的号时 value 是 null",
+      "ok": true,
+      "detail": {
+        "note": "未登录核验前不把配置里的号当成在用"
+      }
+    },
+    {
+      "scenario": "A2",
+      "item": "模型的输出改不动账号事实",
+      "ok": true,
+      "detail": {
+        "after_model_reply": {
+          "state": "disabled",
+          "value": null
+        }
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "登录核验后号来自通道快照并被标成 connected",
+      "ok": true,
+      "detail": {
+        "state": "connected",
+        "value": "2847165931",
+        "source_ref": "life/companion_im.py#ImManager.snapshot",
+        "source_scope": "runtime_snapshot"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "「在哪」有节点/家目录/动作种类等运行事实",
+      "ok": true,
+      "detail": {
+        "node": "cloud-linux",
+        "home": "/tmp/t13-repro-151739/home-a1-login",
+        "actions": [
+          "web",
+          "command",
+          "skill",
+          "work",
+          "memory",
+          "growth",
+          "dsh"
+        ],
+        "here": "conversation:qq:private:763282103",
+        "wake": {
+          "kind": "timer",
+          "next_attention_at": null,
+          "source_ref": "meta:companion_next_wake",
+          "observed_at": "2026-11-17T15:19:39+08:00"
+        }
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "三个引用分开：actor / account / conversation 不是同一个东西",
+      "ok": true,
+      "detail": {
+        "actor_ref": "actor:763282103",
+        "account_ref": "account:xiaoyu",
+        "conversation_ref": "conversation:qq:private:763282103",
+        "owner_ref": "actor:763282103"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "按需读取 op=awareness 走真实执行器并回执",
+      "ok": true,
+      "detail": {
+        "status": "completed",
+        "returned": 1,
+        "schema": "awareness-1",
+        "output": "会话 conversation:qq:private:763282103；账号 connected；可用动作 7 种；关注 0 条；在办 0 件；能力 10（ready 9）"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "按需读取 op=capabilities 走真实执行器并回执",
+      "ok": true,
+      "detail": {
+        "status": "completed",
+        "returned": 8,
+        "schema": "awareness-1",
+        "output": "能力 8 条：needs_setup=1，ready=7。不能用的：agent.subagent（七操作与台账都已接线，但还没有一次「完成并通过核验」的记录；先派一件 node=work 的小事跑通，这条才会变成 ready。）"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "按需读取 op=attention 走真实执行器并回执",
+      "ok": true,
+      "detail": {
+        "status": "completed",
+        "returned": 0,
+        "schema": "awareness-1",
+        "output": "现在没有单独设过关注；本轮按正常对话处理。"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "按需读取 op=agent_tasks 走真实执行器并回执",
+      "ok": true,
+      "detail": {
+        "status": "completed",
+        "returned": 0,
+        "schema": "awareness-1",
+        "output": "手上没有在跑或排队的事。"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "未实现的 op=people 明说 not_implemented 而不回空数组冒充「查无此事」",
+      "ok": true,
+      "detail": {
+        "status": "not_implemented",
+        "available": null,
+        "reason": "按需读取人物档案需要 C 阶段的人物模型（跨会话、跨平台合并同一人、非主人的可见边界）。本阶段只投影当前这段会话里的人，不做跨会话检索。",
+        "evidence_note": "这里空着不代表「查无此事」，只代表这一类读取还没接上。"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "未实现的 op=conversations 明说 not_implemented 而不回空数组冒充「查无此事」",
+      "ok": true,
+      "detail": {
+        "status": "not_implemented",
+        "available": null,
+        "reason": "会话索引进 C 阶段（QQ 多人交流与 conversation_ref 路由同时落地）。现在只有当前这段会话的 conversation_ref，没有全量会话表可列。",
+        "evidence_note": "这里空着不代表「查无此事」，只代表这一类读取还没接上。"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "未实现的 op=experience 明说 not_implemented 而不回空数组冒充「查无此事」",
+      "ok": true,
+      "detail": {
+        "status": "not_implemented",
+        "available": null,
+        "reason": "经历时间线要按人分层的可见性策略，属 C 阶段。本阶段只用 recent_experience 给当前会话里的几条，不做检索。",
+        "evidence_note": "这里空着不代表「查无此事」，只代表这一类读取还没接上。"
+      }
+    },
+    {
+      "scenario": "A1",
+      "item": "执行器没接上角色时明说「这次查询没有发生」",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "output": "这一层读不到当前投影：执行器没有接到角色上，这次查询没有发生。"
+      }
+    },
+    {
+      "scenario": "A3",
+      "item": "同昵称两人按账号分开存（两个 actor，不合并）",
+      "ok": true,
+      "detail": {
+        "actors": [
+          "10001",
+          "20002",
+          "555"
+        ]
+      }
+    },
+    {
+      "scenario": "A3",
+      "item": "改名不产生第三个身份（改名仍落在同一个账号下）",
+      "ok": true,
+      "detail": {
+        "a": 2,
+        "b": 1,
+        "a_payloads": [
+          "我叫小明，我在做咖啡店的项目，代号 BLUEMOON",
+          "以后叫我阿明，我改名了"
+        ]
+      }
+    },
+    {
+      "scenario": "A3",
+      "item": "查 A 的人，B 的经历不串过来",
+      "ok": true,
+      "detail": {
+        "a_has_blue_moon": true,
+        "b_has_blue_moon": false,
+        "a_block_chars": 857,
+        "b_block_chars": 851
+      }
+    },
+    {
+      "scenario": "A3",
+      "item": "认知投影里当前会话是主人私聊，不是群",
+      "ok": true,
+      "detail": {
+        "here": "conversation:qq:private:763282103"
+      }
+    },
+    {
+      "scenario": "A4",
+      "item": "群会话有自己的作用域（不是主人私聊的作用域）",
+      "ok": true,
+      "detail": {
+        "group": "xiaoyu|qq:group:555",
+        "alice": "xiaoyu|qq:private:10001"
+      }
+    },
+    {
+      "scenario": "A4",
+      "item": "群会话的主上下文不直接带回主人私聊原文",
+      "ok": true,
+      "detail": {
+        "group_block_chars": 0,
+        "leaked": false
+      }
+    },
+    {
+      "scenario": "A5",
+      "item": "私聊这段会话按需找得回刚才的内容（不是靠全量塞上下文）",
+      "ok": true,
+      "detail": {
+        "owner_block_chars": 852,
+        "has_rent": true,
+        "has_amount": true,
+        "preview": "{\"actor_refs\":[\"actor:qq:10001\"],\"attribution\":null,\"authority\":\"memory_material\",\"claim_kind\":\"user_report\",\"content_hash\":\"12d6afaf4994b51ce1baeb8fb92e2412643268674a0f0bb0be9cf615995f8654\",\"evidence"
+      }
+    },
+    {
+      "scenario": "A5",
+      "item": "「转述时不泄露给不该看的人」需要真实模型判断→受限（本验收不造假）",
+      "ok": false,
+      "detail": {
+        "limited": true,
+        "reason": "隔离验收用假模型（FakeModel），转述措辞由模型决定；这里只验证到「能不能找回、哪一段能找回」，不冒充验过模型判断。"
+      }
+    },
+    {
+      "scenario": "A6",
+      "item": "投递账本的表结构确认为 message_id/agent_id 那套（验收读到的是真表）",
+      "ok": true,
+      "detail": {
+        "schema_found": true,
+        "ledger": "life/companion_delivery.py"
+      }
+    },
+    {
+      "scenario": "A6",
+      "item": "逐目标回执：每条投递都有自己的目标与会话引用",
+      "ok": true,
+      "detail": {
+        "targets": [
+          "qq:group:555",
+          "qq:private:10001"
+        ],
+        "states": [
+          "queued",
+          "queued"
+        ],
+        "ledger": "life/companion_delivery.py"
+      }
+    },
+    {
+      "scenario": "A6",
+      "item": "改向群的那一句没有被额外复制到主人私聊（没有跨目标镜像）",
+      "ok": true,
+      "detail": {
+        "group_rows": 1,
+        "owner_texts": [
+          "给主人的另一句"
+        ]
+      }
+    },
+    {
+      "scenario": "A6",
+      "item": "目标的校验：裸数字不是会话引用",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: conversation_ref_ambiguous: 裸数字不能当会话：不知道是哪个平台、私聊还是群聊。写成 qq:private:<号> 这样",
+        "note": "直接拒绝，不猜是私聊还是群"
+      }
+    },
+    {
+      "scenario": "A6",
+      "item": "投递汇总可追溯（按 turn 取回每一条）",
+      "ok": true,
+      "detail": {
+        "summary": {
+          "counts": {
+            "queued": 2
+          },
+          "sent": 0,
+          "rendered": 0,
+          "undelivered": 0,
+          "unknown": 0,
+          "meaning": "sent=服务端已生成并交给传输；rendered=端上已呈现；unknown=结果未知，不等于没送到"
+        },
+        "ledger": "life/companion_delivery.py"
+      }
+    },
+    {
+      "scenario": "A8",
+      "item": "暂停关注是一次显式的关注变更并留痕",
+      "ok": true,
+      "detail": {
+        "reply": "qq:group:555 现在的关注是 muted。",
+        "row": {
+          "conversation_ref": "qq:group:555",
+          "mode": "muted",
+          "reason": "先不看了",
+          "since": "2026-11-17T15:19:41+08:00",
+          "review_at": null,
+          "expires_at": null,
+          "cursor": null,
+          "updated": 1794899981.929863
+        }
+      }
+    },
+    {
+      "scenario": "A8",
+      "item": "暂停关注后账号仍是 connected（没退出登录）",
+      "ok": true,
+      "detail": {
+        "state": "connected",
+        "value": "2847165931"
+      }
+    },
+    {
+      "scenario": "A8",
+      "item": "关注四态与期限：到期的自动 released，暂停的仍是 muted",
+      "ok": true,
+      "detail": {
+        "attention": {
+          "qq:group:555": {
+            "mode": "muted",
+            "stale": null,
+            "since": "2026-11-17T15:19:41+08:00",
+            "expires_at": null
+          },
+          "qq:group:777": {
+            "mode": "released",
+            "stale": true,
+            "since": "2026-11-17T15:18:01+08:00",
+            "expires_at": "2026-11-17T15:19:31+08:00"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "A8",
+      "item": "每条关注都带 reason/since/observed_at",
+      "ok": true,
+      "detail": {
+        "rows": {
+          "qq:group:555": {
+            "conversation_ref": "qq:group:555",
+            "mode": "muted",
+            "reason": "先不看了",
+            "since": "2026-11-17T15:19:41+08:00",
+            "review_at": null,
+            "expires_at": null,
+            "cursor": null,
+            "source_ref": "meta:companion_attention",
+            "observed_at": "2026-11-17T15:19:41+08:00"
+          },
+          "qq:group:777": {
+            "conversation_ref": "qq:group:777",
+            "mode": "released",
+            "reason": "临时看一眼",
+            "since": "2026-11-17T15:18:01+08:00",
+            "review_at": null,
+            "expires_at": "2026-11-17T15:19:31+08:00",
+            "cursor": null,
+            "stale": true,
+            "source_ref": "meta:companion_attention",
+            "observed_at": "2026-11-17T15:19:41+08:00"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "A8",
+      "item": "和主人聊天时当前会话仍是主人私聊",
+      "ok": true,
+      "detail": {
+        "here": "conversation:qq:private:763282103"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "create 回执齐：agent_id/task_ref/operation_id/status=queued",
+      "ok": true,
+      "detail": {
+        "receipt": {
+          "agent_id": "companion-agent_fec985a183a2f909348985d1",
+          "task_ref": "companion-project_151ed4bd2638b465700e79ef",
+          "operation_id": "agent-op_ba9e87d404b55276cf327d18",
+          "status": "queued"
+        }
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "create 同 key 幂等（不新建第二个）",
+      "ok": true,
+      "detail": {
+        "first": "companion-agent_fec985a183a2f909348985d1",
+        "again": "companion-agent_fec985a183a2f909348985d1",
+        "idempotent": true
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "create 缺 goal 拒绝",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: goal_required: create 需要 goal：要达成什么、在哪做、怎样算做完。"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "send 同 message_id 只落一条（幂等回执）",
+      "ok": true,
+      "detail": {
+        "first": "delivered",
+        "second_idempotent": true,
+        "rows": 1,
+        "output": "这条消息已经送达过了（1794899983.8333032），没有重复发送。"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "send 没冒充送达：applied 是 stored 或 delivered，不写「已读」",
+      "ok": true,
+      "detail": {
+        "applied": "delivered",
+        "output": "已送达正在运行的子 agent。"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "wait 短时限 + cursor，等不到就说还没好",
+      "ok": true,
+      "detail": {
+        "state": "pending",
+        "cursor": "agent-cursor_fe22c2834bc8115e0b29dbfa",
+        "output": "companion-agent_e7934e10f55460be15c90fda 仍在 running，还没有结果。"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "wait 的时限被上限卡住（不无限等）",
+      "ok": true,
+      "detail": {
+        "note": "wait_s=9999 被 max_wait_seconds 截断",
+        "state": "pending"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "inspect 回执齐：状态/核验/事件/改动清单",
+      "ok": true,
+      "detail": {
+        "status": "running",
+        "verification": "pending",
+        "messages": 4,
+        "changes": 0
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "cancel 报告状态与不可撤销副作用（字段在，空也要有）",
+      "ok": true,
+      "detail": {
+        "status": "cancelled",
+        "side_effects": [],
+        "output": "已取消。没有产生不可撤销的改写。"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "执行完成：completed 与 verification 分开记，passed 来自事核验",
+      "ok": true,
+      "detail": {
+        "status": "completed",
+        "verification": "passed",
+        "seconds": 0.167,
+        "usage": null
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "read_artifact 原文可取且哈希一致",
+      "ok": true,
+      "detail": {
+        "hash_matches": true,
+        "bytes": 15,
+        "text": "# 报告\n内容",
+        "path": "/tmp/t13-repro-151739/home-b-ops/data/companion/agents/companion-agent_1ff59c941787e337815514fa/report.md"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "read_artifact 越界一律拒绝（只能读登记过的证据目录）",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: artifact_outside_evidence: 只能读子 agent 证据目录里的文件，/tmp/t13-repro-151739/home-a1-login/config.toml 不在其内。"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "resume 生成新 attempt 且保留历史（claimed from 原 agent）",
+      "ok": true,
+      "detail": {
+        "new": "companion-agent_26bc115e3c5c23cfff0b78eb",
+        "attempt": 2,
+        "resumed_from": "companion-agent_1ff59c941787e337815514fa",
+        "mode": "checkpoint",
+        "output": "续作已登记（第 2 次）：companion-agent_26bc115e3c5c23cfff0b78eb。没有可用的原会话，按上次的检查点续作——这是续作，不是恢复原会话，上次会话里没落盘的推理已经没了"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "resume 明说「续作还是恢复」",
+      "ok": true,
+      "detail": {
+        "mode": "checkpoint",
+        "reason_text": "续作已登记（第 2 次）：companion-agent_26bc115e3c5c23cfff0b78eb。没有可用的原会话，按上次的检查点续作——这是续作，不是恢复原会话，上次会话里没落盘的推理已经没了"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "终态之后 send 被拒并给原因",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: agent_finished: 这个子 agent 已经结束（completed）；要接着做就 resume 生成新的 attempt。"
+      }
+    },
+    {
+      "scenario": "B1",
+      "item": "未知 op 被拒并列出可用 op",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: unknown_op: kind=agent 的 op 只有 create/send/inspect/wait/cancel/resume/read_artifact，收到 'nope'"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "状态集合包含 cancelling 与六个终态/中间态",
+      "ok": true,
+      "detail": {
+        "states": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "waiting",
+          "interrupted",
+          "cancelled",
+          "cancelling"
+        ],
+        "terminal": [
+          "completed",
+          "failed",
+          "interrupted",
+          "cancelled"
+        ]
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "queued → running 在真台账上合法",
+      "ok": true,
+      "detail": {
+        "status": "running"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "queued 不能直接跳 completed（必须先进 running）",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: completed_requires_result: 标记 completed 要给结果清单（outcome/summary/changes/tests/artifacts/evidence_refs/remaining/blockers/"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "waiting 缺 waiting_for/recover_when 必须拒绝（写库路径上）",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: waiting_requires_guards: waiting 必须同时给出 waiting_for（在等谁/什么）和 recover_when（什么条件下恢复）；只说“等一会”等于没有落点"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "waiting 带上等待对象与恢复条件才允许，并原样存下来",
+      "ok": true,
+      "detail": {
+        "waiting_for": "用户确认",
+        "recover_when": "用户回复"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "waiting 不能直接跳 completed（要先回 running 真干完）",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: illegal_transition: 不能从 waiting 直接变成 completed；允许的是 cancelled、failed、interrupted、running"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "领取是原子的：running 之后不会被第二次领走",
+      "ok": true,
+      "detail": {
+        "second": false
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "running → completed 没有结果清单时被挡（不是先写后解释）",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: completed_requires_result: 标记 completed 要给结果清单（outcome/summary/changes/tests/artifacts/evidence_refs/remaining/blockers/"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "终态不再移动",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: illegal_transition: 不能从 completed 直接变成 running；允许的是 （终态，不再变化）",
+        "status": "completed"
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "并发上限 3 / 嵌套上限 2 是常量且可配置覆盖",
+      "ok": true,
+      "detail": {
+        "max_concurrent": 3,
+        "max_depth": 2
+      }
+    },
+    {
+      "scenario": "B2",
+      "item": "七个操作就是 create/send/inspect/wait/cancel/resume/read_artifact",
+      "ok": true,
+      "detail": {
+        "ops": [
+          "create",
+          "send",
+          "inspect",
+          "wait",
+          "cancel",
+          "resume",
+          "read_artifact"
+        ]
+      }
+    },
+    {
+      "scenario": "B3",
+      "item": "并发 3 真的生效：3 件在跑时第 4 件仍是 queued（不是失败）",
+      "ok": true,
+      "detail": {
+        "running": 3,
+        "fourth": "queued",
+        "limit": 3
+      }
+    },
+    {
+      "scenario": "B3",
+      "item": "create 之后主认知不被占锁：3 件在跑时仍能装配完整一轮",
+      "ok": true,
+      "detail": {
+        "seconds": 0.091,
+        "messages": 3,
+        "agent_tasks_in_context": [],
+        "observed_at": "2026-11-17T15:20:08+08:00"
+      }
+    },
+    {
+      "scenario": "B3",
+      "item": "wait 期间主认知照常装配（没被 wait 卡住）",
+      "ok": true,
+      "detail": {
+        "assembly_seconds": 0.034,
+        "wait_still_running": true
+      }
+    },
+    {
+      "scenario": "B3",
+      "item": "wait 到时限就如实说还没好",
+      "ok": true,
+      "detail": {
+        "state": "pending",
+        "output": "companion-agent_032622a7a36c2b883d6a3c3b 仍在 queued，还没有结果。"
+      }
+    },
+    {
+      "scenario": "B3",
+      "item": "嵌套上限 2 真实生效：深处第 3 层被拒（nesting_limit 或父已结束）",
+      "ok": false,
+      "detail": {
+        "parent_depth": 0,
+        "child_depth": 1,
+        "error": "AgentError: parent_ambiguous: 这个名字（companion-project_9c36fa7ca1bec1089ef33c64）同时挂着 2 件没结束的子 agent，按名字算深度会算不清；请改用 create 回执里的 agent_id 作为 parent_task_ref。",
+        "limits": {
+          "max_concurrent": 3,
+          "max_depth": 2,
+          "max_wait_seconds": 20.0
+        }
+      }
+    },
+    {
+      "scenario": "B3",
+      "item": "层级是真实记账的（父 0、子 1），不是全平",
+      "ok": true,
+      "detail": {
+        "depths": [
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "scenario": "B4",
+      "item": "重启收尾：running → interrupted（第一次），第二次为空（不重复宣布）",
+      "ok": true,
+      "detail": {
+        "first": [
+          "companion-agent_bd344e9c9ff3c7616986a864",
+          "rs-action-running"
+        ],
+        "second": [],
+        "statuses": {
+          "companion-agent_bd344e9c9ff3c7616986a864": "interrupted",
+          "companion-agent_9cd792ee1f65fb93ed1d65a8": "queued",
+          "companion-agent_58b184f1f4e03bb69b0d7c37": "queued"
+        }
+      }
+    },
+    {
+      "scenario": "B4",
+      "item": "重启不丢排队中的任务（queued 原样保留）",
+      "ok": true,
+      "detail": {
+        "queued": "queued"
+      }
+    },
+    {
+      "scenario": "B4",
+      "item": "重启不动终态（还是 queued→ 没被顺手改成别的）",
+      "ok": true,
+      "detail": {
+        "done": "queued"
+      }
+    },
+    {
+      "scenario": "B4",
+      "item": "执行器账本里停在 running 的活也收成 interrupted",
+      "ok": true,
+      "detail": {
+        "action": "interrupted"
+      }
+    },
+    {
+      "scenario": "B4",
+      "item": "interrupted 之后可续作：新 attempt、指回原 agent",
+      "ok": true,
+      "detail": {
+        "new": "companion-agent_29b776329cf06676bf9bdb91",
+        "mode": "checkpoint",
+        "attempt": 2
+      }
+    },
+    {
+      "scenario": "B4",
+      "item": "续作之后没有「两个活的同一件事」重叠跑（旧的是终态）",
+      "ok": true,
+      "detail": {
+        "old": "interrupted",
+        "live": [
+          [
+            "bf9bdb91",
+            "queued"
+          ],
+          [
+            "9b0d7c37",
+            "queued"
+          ],
+          [
+            "ed1d65a8",
+            "queued"
+          ]
+        ]
+      }
+    },
+    {
+      "scenario": "B5",
+      "item": "承诺的交付物没出现：结果清单标不完整，核验不通过",
+      "ok": true,
+      "detail": {
+        "status": "completed",
+        "verification": "pending",
+        "output": "companion-agent_426ecfcdce96b47421c4b503｜completed｜验证 pending｜第 1 次\n目标：{\"stdout\": \"我做完了，报告写好了\"}\n结论：我做完了，报告写好了\n\n没做完：report.md"
+      }
+    },
+    {
+      "scenario": "B5",
+      "item": "剩余项（remaining）被明确列出来，没被「完成」盖住",
+      "ok": true,
+      "detail": {
+        "remaining": [
+          "report.md"
+        ],
+        "outcome": "incomplete"
+      }
+    },
+    {
+      "scenario": "B5",
+      "item": "退出码非 0：状态 failed，核验不通过",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "verification": "failed"
+      }
+    },
+    {
+      "scenario": "B5",
+      "item": "有一个交付物不是本次写的：整件核验不通过（旧文件混不过去）",
+      "ok": true,
+      "detail": {
+        "verdict": "failed",
+        "checks": [
+          {
+            "name": "artifact_fresh",
+            "ok": false,
+            "detail": "old.md"
+          },
+          {
+            "name": "artifact_fresh",
+            "ok": true,
+            "detail": "fresh.md"
+          }
+        ],
+        "artifacts": [
+          "old.md",
+          "fresh.md"
+        ],
+        "note": "同一份台账里的证据：把 old.md 的 mtime 拨回 2 小时前，再按 _verify 的规则判"
+      }
+    },
+    {
+      "scenario": "B5",
+      "item": "对照：全部是本次写出来的才 passed",
+      "ok": true,
+      "detail": {
+        "verdict": "passed",
+        "checks": [
+          {
+            "name": "artifact_fresh",
+            "ok": true,
+            "detail": "new.md"
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "B5",
+      "item": "产物被改过：哈希不符时 read_artifact 明说 hash_matches=false",
+      "ok": true,
+      "detail": {
+        "registered": "1391961e12194bdff83eb1765797dbdcb1c5051c0e9595352da0b15ea5530f4b",
+        "actual": "ac590e98af49f2c5738555d04f8c184dff4b4e0d474099d6eba933bd45890667",
+        "hash_matches": false
+      }
+    },
+    {
+      "scenario": "B5",
+      "item": "正常交付的那件才 passed（与上面缺产物/旧文件的两件形成对照）",
+      "ok": true,
+      "detail": {
+        "normal": "passed",
+        "missing": "pending",
+        "preexisting": "failed",
+        "only_fresh": "passed"
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "off：不拦，也不编造限制",
+      "ok": true,
+      "detail": {
+        "allowed": true,
+        "mode": "off",
+        "limits": {},
+        "missing_limits": [],
+        "enforceable": {
+          "concurrency": true,
+          "runtime_s": true,
+          "calls": false
+        },
+        "accounting": {
+          "mode": "off",
+          "unknown_written_as_zero": false
+        },
+        "usage_known": false,
+        "reason": "",
+        "provider": "dsh"
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "bounded_estimate：放行，限制写明，缺的记 missing（不写成 0）",
+      "ok": true,
+      "detail": {
+        "allowed": true,
+        "mode": "bounded_estimate",
+        "limits": {
+          "concurrency": 3,
+          "runtime_s": 600,
+          "calls": null
+        },
+        "missing_limits": [
+          "calls"
+        ],
+        "enforceable": {
+          "concurrency": true,
+          "runtime_s": true,
+          "calls": false
+        },
+        "accounting": {
+          "mode": "known_or_unknown_never_zero",
+          "unknown_written_as_zero": false
+        },
+        "usage_known": false,
+        "reason": "这些上限还没定，按不设限执行、用量记为未知：calls",
+        "provider": "dsh",
+        "note": "调用次数上限只作提示，不能强制（DSH 与主机命令都不报调用次数）"
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "strict + DSH：阻断并给出原因（needs_setup，不是静默）",
+      "ok": true,
+      "detail": {
+        "allowed": false,
+        "mode": "strict",
+        "limits": {},
+        "missing_limits": [
+          "usage"
+        ],
+        "enforceable": {
+          "concurrency": true,
+          "runtime_s": true,
+          "calls": false
+        },
+        "accounting": {
+          "mode": "complete_per_call",
+          "unknown_written_as_zero": false
+        },
+        "usage_known": false,
+        "reason": "strict 需要每一次调用的完整逐次用量；DSH 只暴露 4 个 RPC、没有逐次 usage 字段。要么在配置里改成 bounded_estimate，要么接受用量记为未知——不会替你改成 strict 以外的模式。",
+        "provider": "dsh",
+        "needs_setup": true,
+        "status": "needs_setup"
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "未知用量不写 0：两边都没有就记 None",
+      "ok": true,
+      "detail": {
+        "merged": null
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "只有一边有数：缺的字段是 None 并标 unknown",
+      "ok": true,
+      "detail": {
+        "merged": {
+          "input_tokens": 100,
+          "output_tokens": 50,
+          "total_tokens": 150,
+          "cost": null,
+          "unknown": true,
+          "measured_side": "known"
+        }
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "strict 下真派 node=dsh 的子 agent：被拒并给出原因（不是报错崩掉）",
+      "ok": true,
+      "detail": {
+        "status": "rejected",
+        "reason": "strict 需要每一次调用的完整逐次用量；DSH 只暴露 4 个 RPC、没有逐次 usage 字段。要么在配置里改成 bounded_estimate，要么接受用量记为未知——不会替你改成 strict 以外的模式。"
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "strict 下能力目录里 dsh 是 needs_setup 并写明原因（不静默消失）",
+      "ok": true,
+      "detail": {
+        "spending_mode": "strict",
+        "not_ready": [
+          "action.dsh needs_setup（预算模式为 strict：DSH 只暴露 4 个 RPC、没有逐次 usage，完整计费不可知，因此本轮拒绝执行（不是静默隐藏）。要么改 bounded_estimate，要么接受）",
+          "agent.subagent needs_setup（预算模式为 strict：DSH 只暴露 4 个 RPC、没有逐次 usage，严格计费下的子 agent 只能跑本机命令；要用 DSH 就跑 bounded_estimate，或）"
+        ]
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "bounded_estimate 下 dsh 回到可用动作里（不静默改用户的严格选择）",
+      "ok": true,
+      "detail": {
+        "spending_mode": "bounded_estimate",
+        "actions": [
+          "web",
+          "command",
+          "skill",
+          "work",
+          "memory",
+          "growth",
+          "dsh"
+        ]
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "bounded_estimate 下真跑一件：拿不到用量记 None（不写 0）",
+      "ok": true,
+      "detail": {
+        "usage": null,
+        "status": "completed"
+      }
+    },
+    {
+      "scenario": "B6",
+      "item": "Usage 表里没有把未知写成 0 的记录",
+      "ok": true,
+      "detail": {
+        "rows": []
+      }
+    },
+    {
+      "scenario": "B7",
+      "item": "_agent_worker_one 真的领走并跑完排队的那件（后台循环的单步）",
+      "ok": true,
+      "detail": {
+        "worked": true,
+        "status": "completed",
+        "verification": "passed"
+      }
+    },
+    {
+      "scenario": "B7",
+      "item": "_agent_worker_one 跑完的那件在任务主线里有对应记录（沿用 TaskService，不另建状态机）",
+      "ok": true,
+      "detail": {
+        "agent_task_ref": "companion-project_74fec77bfdc1b2d7749f3b59",
+        "task_rows": [
+          {
+            "ref": "companion-project_74fec77bfdc1b2d7749f3b59",
+            "scope_id": "xiaoyu|qq:private:763282103",
+            "conversation_id": "qq:private:10001",
+            "goal": "{\"stdout\": \"后台跑完\", \"artifacts\": {\"b.md\":",
+            "status": "done",
+            "key": "{\"stdout\": \"后台跑完\", \"artifacts\": {\"b.md\":",
+            "origin": "self",
+            "companion": true,
+            "agent": true,
+            "transition_cause": "agent:completed",
+            "updated_at": 1794900021.441447,
+            "closed_after_ingest_seq": 0,
+            "last_agent_receipt": {
+              "agent_id": "companion-agent_674cf5931fb29fc5c0ff8fa5",
+              "status": "completed",
+              "verification": "passed",
+              "at": 1794900021.4594991,
+              "summary": "companion-agent_674cf5931fb29fc5c0ff8fa5｜completed｜验证 passed｜第 1 次\n目标：{\"stdout\": \"后台跑完\", \"artifacts\": {\"b.md\": \"# b\"}}\n结论：后台跑完\n\n证据：agent-artifact_4869c03862e6681878611f7c(/tmp/t13-repro-151739/home-b-loop/data/companion/agents/companion-agent_674cf5931fb29fc5c0ff8fa5/b.md)\n最近改动：write /tmp/t13-repro-151739/home-b-loop/data/companion/agents/companion-agent_674cf5931fb29fc5c0ff8fa5/b.md aaddfeb14d"
+            }
+          }
+        ],
+        "companion_actions": [],
+        "corrected": "companion_actions 不是子 agent 的落点；子 agent 台账在 companion_agent_tasks，任务主线在 meta(action_task:*) 里由 TaskService 维护。"
+      }
+    },
+    {
+      "scenario": "B7",
+      "item": "并发满了 _agent_worker_one 不领新活（第 4 件留在 queued）",
+      "ok": true,
+      "detail": {
+        "claimed": false,
+        "fourth": "queued",
+        "running": 3
+      }
+    },
+    {
+      "scenario": "B7",
+      "item": "_worker 的领取条件排除 kind=agent（不两处抢同一行）",
+      "ok": true,
+      "detail": {
+        "snippet": [
+          "\"WHERE a.agent=? AND a.status='pending' AND (? OR json_extract(m.v,'$.origin')='user')\"",
+          "\" AND COALESCE(json_extract(a.action,'$.kind'),'')!='agent' ORDER BY a.created LIMIT 1\",",
+          "(self.life.agent_id, self.active))"
+        ]
+      }
+    },
+    {
+      "scenario": "B8",
+      "item": "cancel 报告不可撤销副作用（改过的文件不会自动回滚）",
+      "ok": true,
+      "detail": {
+        "status": "cancelled",
+        "side_effects": [
+          "已写入/删改 1 个文件（/tmp/p3-fx-note.md）；文件改动不会自动回滚，要还原只能按哈希核对后手动处理"
+        ],
+        "output": "已取消。不可撤销的副作用：已写入/删改 1 个文件（/tmp/p3-fx-note.md）；文件改动不会自动回滚，要还原只能按哈希核对后手动处理"
+      }
+    },
+    {
+      "scenario": "B8",
+      "item": "cancelling 是可见的中间态（取消不是瞬间跳过去）",
+      "ok": true,
+      "detail": {
+        "events": [
+          "created",
+          "receipt",
+          "running",
+          "change",
+          "cancelling",
+          "cancelled"
+        ]
+      }
+    },
+    {
+      "scenario": "B8",
+      "item": "排队中取消：报告「没有产生任何改动」",
+      "ok": true,
+      "detail": {
+        "status": "cancelled",
+        "output": "排队中的任务已取消；它还没有开始跑，没有产生任何改动。"
+      }
+    },
+    {
+      "scenario": "B8",
+      "item": "运行中抛异常：台账落 failed，调用方拿到错误（不吞）",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "failure": "{\"code\": \"exception\", \"reason\": \"RuntimeError: 模拟工作进程起不来\"}",
+        "raised": "RuntimeError: 模拟工作进程起不来"
+      }
+    },
+    {
+      "scenario": "B8",
+      "item": "异常本身有可复核记录（验收侧注入的记录器写到事件表）",
+      "ok": true,
+      "detail": {
+        "events": [
+          "created",
+          "receipt",
+          "running",
+          "failed",
+          "exception"
+        ],
+        "note": "产品代码自身不把异常写进台账（_run 直接抛出）；这一条由tools/stage-c 的注入记录器补齐，见文档「失败/缺口」一节。"
+      }
+    },
+    {
+      "scenario": "B8",
+      "item": "取消之后 send 被拒，并要求 resume 才算续作",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: agent_finished: 这个子 agent 已经结束（cancelled）；要接着做就 resume 生成新的 attempt。"
+      }
+    }
+  ]
+}

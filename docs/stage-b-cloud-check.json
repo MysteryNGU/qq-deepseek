@@ -1,0 +1,145 @@
+{
+  "home": "/tmp/stage-b-fuu8lv2_",
+  "budget": {
+    "off": {
+      "dsh_present": true,
+      "kinds": [
+        "web",
+        "command",
+        "skill",
+        "work",
+        "memory",
+        "growth",
+        "dsh"
+      ],
+      "agent_present": false,
+      "dsh_capability": [],
+      "spending_mode": "off"
+    },
+    "bounded_estimate": {
+      "dsh_present": true,
+      "kinds": [
+        "web",
+        "command",
+        "skill",
+        "work",
+        "memory",
+        "growth",
+        "dsh"
+      ],
+      "agent_present": false,
+      "dsh_capability": [],
+      "spending_mode": "bounded_estimate"
+    },
+    "strict": {
+      "dsh_present": false,
+      "kinds": [
+        "web",
+        "command",
+        "skill",
+        "work",
+        "memory",
+        "growth"
+      ],
+      "agent_present": false,
+      "dsh_capability": [
+        "action.dsh needs_setup（预算模式为 strict：DSH 只暴露 4 个 RPC、没有逐次 usage，完整计费不可知，因此本轮拒绝执行（不是静默隐藏）。要么改 bounded_estimate，要么接受）"
+      ],
+      "spending_mode": "strict"
+    }
+  },
+  "flow": {
+    "context": {
+      "core_home": "/tmp/stage-b-flow-didhj9j2",
+      "agents_home": "/tmp/stage-b-flow-didhj9j2",
+      "executor_home": "/tmp/stage-b-flow-didhj9j2",
+      "cfg_life_db": "data/life.db"
+    },
+    "create": {
+      "status": "queued",
+      "has_ids": true
+    },
+    "idempotent": true,
+    "execute": {
+      "status": "completed",
+      "verification": "passed"
+    },
+    "inspect": {
+      "status": "completed",
+      "verification": "passed",
+      "changes": 1,
+      "artifacts": 1,
+      "summary_chars": 219.0
+    },
+    "artifact": {
+      "complete": true,
+      "hash_ok": true,
+      "text": "# 报告"
+    },
+    "wait": {
+      "state": "finished",
+      "cursor": true
+    },
+    "resume": {
+      "status": "queued",
+      "mode": "checkpoint",
+      "same_history": true
+    },
+    "cancel": {
+      "status": "cancelled",
+      "effects": []
+    },
+    "send_terminal": "agent_finished",
+    "capability_after_proof": {
+      "available_actions": [
+        "web",
+        "command",
+        "skill",
+        "work",
+        "memory",
+        "growth",
+        "dsh"
+      ],
+      "full_catalogue": [
+        "action.web:ready",
+        "action.command:ready",
+        "action.skill:ready",
+        "action.work:ready",
+        "action.memory:ready",
+        "action.growth:ready",
+        "action.dsh:ready",
+        "agent.subagent:ready",
+        "channel.qq:ready",
+        "channel.wechat:ready"
+      ],
+      "ready": [
+        "action.web",
+        "action.command",
+        "action.skill",
+        "action.work",
+        "action.memory",
+        "action.growth",
+        "action.dsh",
+        "agent.subagent",
+        "channel.qq",
+        "channel.wechat"
+      ],
+      "not_ready": []
+    }
+  },
+  "restart": {
+    "first": {
+      "interrupted": [
+        "companion-agent_93eb52edba8fd0b1c245166f",
+        "check-running-action"
+      ],
+      "cancelled": []
+    },
+    "second": {
+      "interrupted": [],
+      "cancelled": []
+    },
+    "agent_status": "interrupted",
+    "action_status": "interrupted"
+  }
+}

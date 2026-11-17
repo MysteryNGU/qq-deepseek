@@ -1,0 +1,177 @@
+﻿<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>小鱼</title>
+<style>
+:root{--ink:#213c4b;--muted:#7d939e;--blue:#3487a5;--line:#e3ecee;--paper:#f5f8f8;--mint:#e1f0eb;font-family:system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--paper);font-size:15px;color-scheme:light}*{box-sizing:border-box}body{margin:0}button,input,textarea{font:inherit}button{cursor:pointer;border:0;color:inherit;background:none}button:disabled{opacity:.45}svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.app{height:100dvh;display:flex;flex-direction:column;max-width:780px;margin:auto;background:var(--paper)}header{display:flex;align-items:center;gap:12px;padding:18px 20px 15px;background:#ffffffed;border-bottom:1px solid var(--line);flex-shrink:0}.avatar{width:46px;height:46px;border-radius:17px;background:#e4eff4;object-fit:cover}.heading{flex:1}.heading h1{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:1px}.sub{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}.dot{width:6px;height:6px;background:#87bba5;border-radius:50%}.icon{display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:14px}.icon:active{background:var(--line)}.scene{margin:14px 18px 0;padding:10px 14px;border-radius:12px;background:#eaf1f1;font-size:12px;display:flex;align-items:center;gap:8px;color:#678690}.scene span:last-child{margin-left:auto}main{overflow:auto;flex:1;padding:24px 18px 12px;scroll-behavior:smooth;overscroll-behavior:contain}.date{text-align:center;color:#97a7af;font-size:11px;margin:0 0 24px}.msg{display:flex;flex-direction:column;align-items:flex-start;margin-bottom:17px;animation:appear .18s ease-out}.msg.user{align-items:flex-end}.bubble{background:white;border:1px solid #e9eff0;border-radius:5px 19px 19px 19px;padding:12px 15px;max-width:88%;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 3px 9px #213c4b03}.user .bubble{background:var(--mint);border-color:var(--mint);border-radius:19px 5px 19px 19px}.stamp{font-size:10px;color:#9aaab1;margin-top:6px;padding:0 4px}.chatpic{display:block;max-width:230px;max-height:310px;border-radius:12px;margin:5px 0;object-fit:contain;background:#ecf1f2}.pic-error{font-size:12px;color:var(--muted);padding:10px}.typing{font-size:12px;color:var(--muted);padding:0 22px 6px;min-height:22px}.compose{padding:11px 14px max(15px,env(safe-area-inset-bottom));background:#fff;border-top:1px solid var(--line);flex-shrink:0}.inputrow{display:flex;gap:8px;align-items:flex-end}.inputrow textarea{border:0;outline:0;resize:none;border-radius:15px;background:#f1f5f5;line-height:1.5;min-height:46px;max-height:130px;padding:12px;flex:1;min-width:0;color:var(--ink)}.inputrow textarea::placeholder{color:#9baab2}.send{width:46px;height:46px;background:var(--ink);color:#fff;border-radius:15px;display:grid;place-items:center}.hint{font-size:10px;color:#9baab2;text-align:center;margin-top:9px}.attachments{display:flex;gap:8px;overflow:auto}.attachment{position:relative;margin:0 0 10px}.attachment img{width:62px;height:62px;object-fit:cover;border-radius:10px}.remove{position:absolute;right:-2px;top:-4px;border-radius:50%;background:var(--ink);color:white;width:22px;height:22px}.error{margin:0 16px 8px;color:#a15c4b;background:#fff1ed;border-radius:10px;padding:9px 12px;font-size:12px;display:none}.empty{padding:45px 15px;text-align:center;color:var(--muted);line-height:1.8}.empty b{display:block;color:var(--ink);font-size:20px;font-weight:500;margin:14px}.pair{display:none;position:fixed;inset:0;background:linear-gradient(155deg,#eff6f5,#f9f8f3);z-index:5;padding:9vh 28px 30px;overflow:auto}.pair .avatar{width:74px;height:74px;border-radius:25px}.pair h2{font-size:30px;font-weight:550;letter-spacing:2px;margin:25px 0 13px}.pair p{line-height:1.8;color:var(--muted);font-size:14px}.pair label{display:block;font-size:12px;color:var(--muted);margin:35px 0 12px}.pair input{width:100%;padding:17px 12px;border:1px solid #dce7e8;background:#fff;border-radius:15px;font-size:27px;letter-spacing:12px;text-align:center;outline:none;color:var(--ink)}.primary{width:100%;background:var(--ink);color:white;border-radius:15px;padding:15px;margin-top:18px}.pair .footer{font-size:11px;margin-top:30px;color:#96a8ae}.pair-error{color:#a15c4b!important;min-height:24px}.overlay{position:fixed;inset:0;z-index:6;background:#152c3e55;display:none;align-items:flex-end}.sheet{width:100%;max-width:780px;margin:0 auto;background:#fff;border-radius:24px 24px 0 0;padding:24px 23px max(30px,env(safe-area-inset-bottom));max-height:85dvh;overflow:auto}.sheet h2{font-size:20px;margin:0 0 24px}.setting{display:flex;align-items:center;justify-content:space-between;padding:15px 0;border-bottom:1px solid var(--line);gap:18px}.setting small{display:block;font-size:12px;color:var(--muted);line-height:1.6;margin-top:5px}.setting input{accent-color:var(--blue);width:20px;height:20px}.setting button{background:#eaf2f3;padding:9px 13px;border-radius:10px;white-space:nowrap;font-size:13px}.close{float:right}.sheet p{font-size:12px;line-height:1.8;color:var(--muted)}.meta{font-size:12px;color:var(--muted);line-height:1.9;margin-top:16px}.gallery{position:fixed;inset:0;z-index:8;background:#0c171ded;display:none;align-items:center;justify-content:center}.gallery img{max-width:100%;max-height:90dvh;object-fit:contain}.gallery button{position:absolute;top:24px;right:20px;color:white;font-size:28px}@keyframes appear{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+/* Android resizes the actual WebView for the keyboard; use that remaining viewport. */
+html,body{height:100%;overflow:hidden}.app{height:100%;min-height:0}main{min-height:0}.heading{min-width:0}.heading h1{white-space:nowrap}.header-action{flex-shrink:0;border-radius:12px;background:#eaf2f3;padding:10px 11px;font-size:12px;white-space:nowrap}.version{font-size:11px;color:var(--muted);margin:-14px 0 12px}.permission-help{font-size:12px;color:var(--muted);line-height:1.8;margin:10px 0 18px}.media-options{display:flex;gap:12px;padding:12px 0 20px}.media-options button{flex:1;padding:22px 10px;background:#edf3f2;border-radius:15px}.message-speech{font-size:11px;color:#658793;margin-top:6px;padding:3px 5px}.speech-status{font-size:11px;color:var(--muted);padding:0 20px 6px}.speech-status:empty{display:none}
+.life-sheet{max-height:92dvh}.life-head{margin-bottom:16px}.life-head h2{margin-bottom:8px}.life-note{font-size:12px;color:var(--muted);line-height:1.7;white-space:pre-line}.life-section{margin:22px 0}.life-section h3{font-size:15px;margin:0 0 10px}.life-card{border:1px solid var(--line);background:#f7fafa;border-radius:13px;padding:12px 14px;margin:8px 0;overflow-wrap:anywhere}.life-card strong{display:block;font-weight:600;line-height:1.6}.life-card p{margin:6px 0 0;white-space:pre-wrap;line-height:1.75}.life-card .life-small{font-size:11px;color:var(--muted)}.life-phase{background:var(--mint);border:0}.life-actions{display:flex;justify-content:space-between;align-items:center;gap:12px}.life-actions button{background:#eaf2f3;border-radius:10px;padding:9px 12px;font-size:12px}.life-warning{color:#9b6552}
+.life-details{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px 0}.life-details summary{cursor:pointer;font-size:15px;font-weight:600;padding:10px 0}.life-details h3{margin-top:18px}.life-drive-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.life-drive-grid .life-card{margin:0;padding:10px}.life-drive-grid p{font-size:12px}
+[hidden]{display:none!important}.chat-tools{display:contents}.tabs{display:flex;flex-shrink:0;background:#fff;border-top:1px solid var(--line);padding:7px 22px max(8px,env(safe-area-inset-bottom));gap:12px}.tabs button{flex:1;padding:11px;border-radius:12px;font-size:14px;color:var(--muted)}.tabs button.active{background:var(--mint);color:#315c63;font-weight:600}.compose{padding-bottom:10px}#lifePage{padding:27px 24px 20px;background:#fafcfb}#lifePage .life-head{padding-bottom:20px;border-bottom:1px solid var(--line);margin-bottom:27px}#lifePage h2{font-size:24px;margin:0 0 10px;font-weight:650}#lifePage .life-block{margin:0 0 30px}#lifePage h3{font-size:16px;margin:0 0 13px}#lifePage .life-block p{font-size:15px;line-height:1.9;color:#536e77;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 13px}.life-empty{color:var(--muted);line-height:1.8}#lifeReadError:empty{display:none}.app>header{padding:14px 18px}.app>header .avatar{width:40px;height:40px}.app>header .heading h1{font-size:19px}.sheet #runtimeContent{padding-top:8px}
+
+/* A quiet reading page shared with the desktop companion. */
+:root{--ink:#243d37;--muted:#7c8780;--blue:#2e7468;--line:#e4e2d9;--paper:#f7f5ef;--mint:#dfebe3}
+#lifePage{background:#faf8f2;padding:28px 24px 32px}#lifePage h2{font-family:Georgia,"Noto Serif CJK SC",serif;font-size:29px;letter-spacing:.5px}#lifePage .life-block{border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:25px}#lifePage h3{border-left:3px solid #347769;padding-left:11px;font-weight:600}#lifePage .life-block p{color:#344b43;line-height:1.95;font-size:16px}#lifePage .life-time{font-size:12px;color:var(--muted);margin-bottom:4px}#lifePage .life-entry{margin:0 0 20px}#lifePage .life-entry p{margin:0}#lifePage .life-more{border:1px solid var(--line);padding:12px 17px;border-radius:12px;color:var(--blue);background:#fffdf8}#lifePage .life-note{color:var(--muted)}.tabs{gap:6px}.tabs button{padding:11px 6px}.life-archive details{margin:16px 0}.life-archive summary{cursor:pointer;font-size:15px;padding:10px 0;color:var(--blue)}
+/* 设置面板：吸顶标题与分组，长列表滚动时关闭键始终可见。 */
+.sheet{max-height:92dvh;padding-top:0;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.sheet-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff;padding:16px 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.sheet-head h2{margin:0;font-size:17px}
+.sheet .close{float:none;position:static;width:34px;height:34px}
+.setting{padding:13px 0}
+.setting>div{min-width:0;flex:1}
+.setting small{display:block;margin-top:3px;line-height:1.6}
+.setting input[type=url],.setting input[type=password]{width:46%;max-width:190px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:#f7fafa}
+.group-title{margin:20px 0 0;font-size:12px;letter-spacing:.08em;color:var(--muted)}.life-now{font-size:15px;line-height:1.9;color:#344b43;margin:0 0 18px;padding:0 0 0 11px;border-left:3px solid #347769}
+.life-details p{font-size:15px;line-height:1.9;color:#344b43;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px}
+</style></head><body>
+<div class="app"><header><img class="avatar" src="avatar.png" alt="小鱼"><div class="heading"><h1>小鱼</h1><div class="sub"><i class="dot" id="dot"></i><span id="connection">正在连接</span></div></div><button class="header-action" id="settings" aria-label="设置">设置</button></header>
+<main id="chat"><div class="empty">正在打开你们的对话…</div></main><main id="lifePage" hidden><div class="life-head"><h2>今天，慢慢过</h2><div class="life-note" id="lifeUpdated"></div></div><p id="lifeReadError" class="life-note life-warning" role="status"></p><div id="lifeContent"></div></main><div id="chatTools" class="chat-tools"><div class="typing" id="typing"></div><div class="error" id="error"></div>
+<div class="speech-status" id="speechStatus" role="status"></div><div class="compose"><div class="attachments" id="attachments"></div><div class="inputrow"><button class="icon" id="pick" aria-label="相册或拍照"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8" cy="8" r="1.5"/><path d="m4 17 5-5 4 4 3-3 5 5"/></svg></button><textarea id="text" rows="1" placeholder="想和小鱼说什么…" aria-label="消息"></textarea><button class="send" id="send" aria-label="发送"><svg viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 5v15"/></svg></button></div><div class="hint" id="composeHint">随时可以插话，她听得到。</div></div></div><nav class="tabs" aria-label="主导航"><button id="tabChat" class="active" aria-current="page">对话</button><button id="tabLife">生活</button><button id="tabSettings">设置</button></nav></div>
+<section class="pair" id="pair"><img class="avatar" src="avatar.png" alt="小鱼"><h2>带小鱼出门。</h2><p>电脑关了，她也还在。<br>连接云端的她，继续你们的对话。</p><label for="code">输入你的六位配对码</label><input id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="······"><button class="primary" id="pairButton">和她连上</button><p class="pair-error" id="pairError"></p><div class="footer">这台手机只需配对一次。<br>你的聊天和记忆，仍是同一个小鱼。</div></section>
+<div class="overlay" id="overlay"><section class="sheet"><div class="sheet-head"><h2>陪伴设置</h2><button class="icon close" id="closeSettings" aria-label="关闭">✕</button></div><div class="version" id="version"></div><div class="group-title">运行</div><div class="setting"><div>运行详情<small>需要时查看行动回执、后台事项与用量。</small></div><button id="openRuntime">查看</button></div><div class="group-title">手机与权限</div><div class="setting"><div>让小鱼操作手机<small>点按、滑动、输入和看屏幕。<br>启用“小鱼 · 手机操作”服务，无需 Root。</small></div><button id="phone">打开授权页</button></div><div class="permission-help">如果进入了系统无障碍首页，请找“通用 → 已下载的应用”或“已安装的服务”，选择“小鱼 · 手机操作”。“无障碍按钮”只是系统快捷入口。</div><div class="setting"><div>提示“受限设置”？<small>打开应用信息，点右上角 ⋮，选择“允许受限制的设置”，再回来开启手机操作。</small></div><button id="appInfo">应用信息</button></div><div class="group-title">聊天与声音</div><div class="setting"><div>自动播放她的语音<small>打开聊天时，自动播放小鱼的新回复。</small></div><input type="checkbox" id="speech" aria-label="自动播放语音"></div><div class="setting"><div>后台接收消息<small>保留常驻通知，并在手机系统中允许后台运行。</small></div><button id="battery">系统设置</button></div><div class="group-title">连接</div><div class="setting"><div>重新连接<small>网络恢复后会自动重连，也可以手动尝试。</small></div><button id="reconnect">连接</button></div><div class="setting"><div>IM 通道<small id="imSummary">读取中…</small></div></div><div class="setting"><div>QQ 私聊<small id="imQqState">未读取</small></div><input type="checkbox" id="imQqEnabled" aria-label="QQ 通道"></div><div class="setting"><div>NapCat 地址<small>OneBot 正向 WebSocket</small></div><input id="imQqUrl" type="url" inputmode="url" placeholder="ws://127.0.0.1:3001"></div><div class="setting"><div>连接令牌<small>留空表示不修改</small></div><input id="imQqToken" type="password" placeholder="可选"></div><div class="setting"><div>保存 QQ 设置<small>保存后立即生效</small></div><button id="imQqSave">保存</button></div><div class="meta" id="meta"></div><p>关掉电脑不会关闭她。手机临时离线时，对话仍保存在云端，回来后可以接着看。</p></section></div>
+<div class="gallery" id="gallery"><button id="closeGallery" aria-label="关闭图片">✕</button><img id="fullImage" alt="图片"></div>
+<div class="overlay" id="mediaSheet"><section class="sheet"><button class="icon close" id="closeMedia" aria-label="关闭图片选择">✕</button><h2>发张照片给她</h2><div class="media-options"><button id="album">相册 · 多选照片</button><button id="camera">拍照</button></div></section></div>
+<div class="overlay" id="runtimeOverlay"><section class="sheet life-sheet" role="dialog" aria-modal="true" aria-labelledby="runtimeTitle"><button class="icon close" id="closeRuntime" aria-label="关闭状态">✕</button><div class="life-head"><h2 id="runtimeTitle">运行详情</h2><div class="life-actions"><span class="life-note" id="runtimeUpdated">尚未读取状态</span><button id="refreshRuntime">刷新</button></div></div><div id="runtimeReadError" class="life-note life-warning" role="status"></div><div id="runtimeContent"></div><p class="life-note">这里只读取运行记录。打开和刷新不会让她额外思考。</p></section></div>
+<script>
+const $=id=>document.getElementById(id), pending=new Map(), imageCache=new Map();let serial=0,paired=false,images=[],busy=false,refreshing=false,refreshAgain=false,runtimeRefreshPending=false,signature='',speech=false,lastRequest=null,latestState={},currentPhase={},phaseRevision=0;
+function config(){try{return JSON.parse(Native.config())}catch{return {paired:false,server:'https://47.104.8.84'}}}
+// Presentation acknowledgement is sent only for visible assistant DOM rows.
+const renderedIds=new Set();let renderAckBusy=false;
+async function acknowledgeVisible(){
+ if(renderAckBusy||document.visibilityState!=='visible'||$('chat').hidden)return;
+ const viewport=$('chat').getBoundingClientRect();
+ const ids=[...$('chat').querySelectorAll('.msg.assistant[data-id]')].filter(el=>{const r=el.getBoundingClientRect();const x=Math.max(r.left,viewport.left)+Math.min(r.width,viewport.width)/2,y=(Math.max(r.top,viewport.top)+Math.min(r.bottom,viewport.bottom))/2;return r.bottom>viewport.top&&r.top<viewport.bottom&&r.width>0&&el.contains(document.elementFromPoint(x,y))}).map(el=>el.dataset.id).filter(id=>id&&!renderedIds.has(id)).slice(0,100);
+ if(!ids.length)return;renderAckBusy=true;
+ try{const result=await api('POST','/mobile/rendered',{event_ids:ids});for(const id of result.event_ids||[])renderedIds.add(id)}catch{}finally{renderAckBusy=false}
+}
+setInterval(()=>requestAnimationFrame(acknowledgeVisible),3000);
+function messageForThisPhone(message){const targets=message.delivery?.targets;if(!Array.isArray(targets))return true;return targets.includes('all')||targets.includes('mobile:'+config().device_id)}
+function api(method,path,body){return new Promise((resolve,reject)=>{const id=String(++serial),timer=setTimeout(()=>{pending.delete(id);reject(Error('连接暂时没有回应，请稍后重试。'))},45000);pending.set(id,{resolve,reject,timer});Native.request(id,method,path,body==null?'':JSON.stringify(body))})}
+window.onNativeResult=(id,status,body)=>{const p=pending.get(String(id));if(!p)return;pending.delete(String(id));clearTimeout(p.timer);let value;try{value=typeof body==='string'?JSON.parse(body):body}catch{value={}}if(status>=200&&status<300)p.resolve(value);else p.reject(Error(status===401?'配对码无效或已用过，请检查后重试。':status===429?'尝试太快了，请稍等一分钟。':'暂时没能连接，请检查网络后再试一次。'))};
+function error(text){$('error').textContent=text||'';$('error').style.display=text?'block':'none'}
+function connection(on){$('connection').textContent=on?'在云端，和你一起':'正在重新连接';$('dot').style.background=on?'#87bba5':'#d6b57e'}
+function clock(time){return new Date(time*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}
+async function loadImage(ref,img){try{if(!imageCache.has(ref.handle))imageCache.set(ref.handle,api('GET','/mobile/image/'+ref.handle).then(v=>'data:'+v.mime+';base64,'+v.base64));img.src=await imageCache.get(ref.handle);img.onclick=()=>{$('fullImage').src=img.src;$('gallery').style.display='flex'}}catch{imageCache.delete(ref.handle);img.alt='图片暂未加载，重新打开对话可重试'}}
+function applyPhase(phase){currentPhase=phase&&typeof phase==='object'?phase:{};if(latestState.observability&&latestState.observability.phase?.state!==currentPhase.state)latestState.phase_after_snapshot=true;latestState.phase=currentPhase;if(latestState.observability)latestState.observability.phase=currentPhase;$('typing').textContent=currentPhase.state==='model'?'小鱼正在想…':currentPhase.state==='tools'?'小鱼正在做点事情…':'';if(typeof renderObservability==='function')renderObservability(latestState);renderLife(latestState)}
+function render(state){latestState=state;const chat=$('chat'),rows=state.history||[],near=chat.scrollHeight-chat.scrollTop-chat.clientHeight<110,newSignature=JSON.stringify(rows.map(r=>[r.id,r.content,(r.image_refs||[]).length]));if(newSignature!==signature){signature=newSignature;const fragment=document.createDocumentFragment();if(!rows.length){const empty=document.createElement('div');empty.className='empty';empty.innerHTML='<b>她在这里。</b>说句话，像平常一样。';fragment.append(empty)}else{const date=document.createElement('div');date.className='date';date.textContent='你们的对话';fragment.append(date)}for(const row of rows){if(!['user','assistant'].includes(row.role))continue;const item=document.createElement('div');item.className='msg '+row.role;item.dataset.id=row.id;const bubble=document.createElement('div');bubble.className='bubble';const text=String(row.content||'').replace(/\n?\[历史图片未重新加载；已缓存的图片仍可查看。\]/g,'');if(text){const label=document.createElement('div');label.textContent=text;bubble.append(label)}for(const ref of row.image_refs||[]){const img=document.createElement('img');img.className='chatpic';img.loading='lazy';img.decoding='async';img.alt=ref.name||'图片';bubble.append(img);loadImage(ref,img)}item.append(bubble);const stamp=document.createElement('div');stamp.className='stamp';stamp.textContent=clock(row.created);item.append(stamp);if(row.role==='assistant'&&text){const play=document.createElement('button');play.className='message-speech';play.textContent='▷ 播放语音';play.setAttribute('aria-label','播放这条语音');play.onclick=()=>{Native.stopSpeech();Native.speak(text)};item.append(play)}fragment.append(item)}chat.replaceChildren(fragment);if(near||!chat.dataset.loaded){chat.scrollTop=chat.scrollHeight;chat.dataset.loaded='1'}}applyPhase(state.phase||state.observability?.phase||{});$('meta').textContent='连接：'+config().server+'\n小镇：'+(state.town?.state==='online'?'在线':'暂未连接');}
+let lifePastLimit=8, lifeViewSignature='';
+function lifeText(value){
+  const text=String(value==null?'':value).trim();
+  if(!text||/^(?:Traceback|SELECT |total \d|[\[{])/.test(text)||/\b(?:action_id|workspace_id|source_ref)\b/.test(text))return '';
+  return text;
+}
+function renderLife(state){
+  const host=$('lifeContent');if(!host)return;
+  const life=state?.life||{};
+  const viewKey=JSON.stringify([life,state?.active,state?.phase?.state,state?.notes,lifePastLimit]);
+  if(viewKey===lifeViewSignature)return;lifeViewSignature=viewKey;
+  const opened=new Set([...host.querySelectorAll('details[open]')].map(el=>el.dataset.day));
+  host.replaceChildren();
+  const seen=new Set();
+  const unique=value=>{const v=lifeText(value);if(!v||seen.has(v))return '';seen.add(v);return v};
+  const block=title=>{const el=document.createElement('section');el.className='life-block';const h=document.createElement('h3');h.textContent=title;el.append(h);host.append(el);return el};
+  const para=(el,value)=>{const v=unique(value);if(!v)return false;const p=document.createElement('p');p.textContent=v;el.append(p);return true};
+  const entry=(el,item)=>{const v=unique(item?.display_text||item?.reflection||item?.text);if(!v||item?.technical)return false;const wrap=document.createElement('div');wrap.className='life-entry';if(item.time_label){const stamp=document.createElement('div');stamp.className='life-time';stamp.textContent=item.time_label;wrap.append(stamp)}const p=document.createElement('p');p.textContent=v;wrap.append(p);el.append(wrap);return true};
+
+  const phase=state?.phase?.state;
+  const nowText=unique(life.now?.display_text||life.now?.text||(phase==='model'?'正在想事情，等会儿慢慢说。':phase==='tools'?'手上有件事正在做。':state?.active?'这会儿安静待着。':'这会儿先歇一歇。'));
+  if(nowText){const line=document.createElement('div');line.className='life-now';line.textContent=nowText;host.append(line)}
+
+  const today=(life.today_preview||[]).filter(item=>!item.technical&&lifeText(item.display_text||item.reflection||item.text));
+  const todayBlock=block('今天');
+  const summary=life.absence_summary;
+  const hasSummary=para(todayBlock,typeof summary==='string'?summary:summary?.display_text||summary?.text);
+  let shown=0;
+  for(const item of today){if(shown>=6)break;if(entry(todayBlock,item))shown+=1}
+  if(!shown&&!hasSummary)para(todayBlock,'今天还没有整理下来的经历，有了新见闻会留在这里。');
+  else if(today.length>shown){const more=document.createElement('p');more.className='life-note';more.textContent='还有 '+(today.length-shown)+' 件没在这儿展开。';todayBlock.append(more)}
+
+  const interestBlock=block('最近惦记');
+  let anyInterest=false;
+  for(const item of (life.interest_preview||state?.projects||[]).slice(0,3)){
+    if(para(interestBlock,item?.question||item?.next_idea||item?.display_text||item?.goal))anyInterest=true;
+  }
+  if(!anyInterest)interestBlock.remove();
+
+  const recollection=life.recollection;
+  if(recollection){const el=block('想起一件事');para(el,recollection.display_text||recollection.text)}
+  const letter=life.latest_letter;
+  if(letter){const el=block('写给你');para(el,letter.display_text||letter.text)}
+
+  const ideas=(life.ideas_changes||[]).map(item=>item.display_text||(item.before&&item.after?'之前：'+item.before+'\n现在：'+item.after+(item.reason?'\n'+item.reason:''):''));
+  const notes=(state?.notes||[]).filter(note=>note.kind==='self').map(note=>note.text);
+  const merged=[...ideas,...notes];
+  if(merged.length){
+    const details=document.createElement('details');details.className='life-details';
+    const label=document.createElement('summary');label.textContent='她的想法与本子 · '+merged.length+' 条';details.append(label);
+    let added=0;
+    for(const value of merged){if(added>=10)break;const v=unique(value);if(!v)continue;const p=document.createElement('p');p.textContent=v;details.append(p);added+=1}
+    host.append(details);
+  }
+
+  const past=(life.past_preview||[]).filter(item=>!item.technical&&lifeText(item.display_text||item.reflection||item.text));
+  if(past.length){
+    const archive=block('往日的生活');archive.classList.add('life-archive');
+    const groups=new Map();
+    past.slice(0,lifePastLimit).forEach(item=>{const day=item.day_label||new Date(item.created*1000).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric'});if(!groups.has(day))groups.set(day,[]);groups.get(day).push(item)});
+    for(const [day,items] of groups){
+      const details=document.createElement('details');details.dataset.day=day;details.open=opened.has(day);
+      const label=document.createElement('summary');label.textContent=day+' · '+items.length+' 件';details.append(label);
+      items.forEach(item=>entry(details,item));archive.append(details);
+    }
+    if(past.length>lifePastLimit){
+      const more=document.createElement('button');more.className='life-more';more.textContent='再展开一些往日';
+      more.onclick=()=>{lifePastLimit+=10;renderLife(latestState)};archive.append(more);
+    }else if(life.past_has_more){
+      const hint=document.createElement('p');hint.className='life-note';hint.textContent='这里先放了最近的往日经历。';archive.append(hint);
+    }
+  }
+  $('lifeUpdated').textContent=new Date((life.generated_at||Date.now()/1000)*1000).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'});
+}
+
+let refreshTimer=null,runtimePending=false;
+function queueRefresh(){if(refreshTimer)return;refreshTimer=setTimeout(()=>{refreshTimer=null;refresh()},700)}
+const STATE_CACHE='xiaoyu.state.v1';
+function storeState(state){try{localStorage.setItem(STATE_CACHE,JSON.stringify({history:(state.history||[]).slice(-60),life:state.life||{},phase:state.phase||{},town:state.town||{},active:state.active,notes:state.notes||[],projects:state.projects||[],cached_at:Date.now()}))}catch(e){}}
+function cachedState(){try{const raw=localStorage.getItem(STATE_CACHE);if(!raw)return null;const value=JSON.parse(raw);if(!value||Date.now()-(value.cached_at||0)>86400000)return null;return value}catch(e){return null}}
+async function refresh(runtime){if(!paired)return;const wants=!!runtime||runtimePending;if(refreshing){refreshAgain=true;if(wants)runtimePending=true;return}refreshing=true;const requestedPhaseRevision=phaseRevision;try{const state=await api('GET','/mobile/state'+(wants?'?runtime=1':''));if(requestedPhaseRevision!==phaseRevision){state.phase=currentPhase;state.phase_after_snapshot=true;if(state.observability)state.observability.phase=currentPhase}render(state);renderLife(state);storeState(state);connection(true);error('');$('lifeReadError').textContent='';$('runtimeReadError').textContent=''}catch(e){connection(false);error(e.message);$('lifeReadError').textContent='暂时没连上，先保留上次的近况。';$('runtimeReadError').textContent=e.message}finally{refreshing=false;runtimePending=false;if(refreshAgain){refreshAgain=false;setTimeout(()=>refresh(wants),150)}}}
+window.onServerEvent=e=>{if(typeof e==='string'){try{e=JSON.parse(e)}catch{return}}if(e.type==='connection')connection(!!e.connected);if(e.type==='error'){error(e.text||'这次暂时没有完成。');queueRefresh()}if(e.type==='message'&&e.role==='user')Native.stopSpeech();if(e.type==='phase'){phaseRevision++;applyPhase(e.phase||{});if($('runtimeOverlay').style.display==='flex')refresh(true)}if(e.type==='message'&&e.role==='assistant')appendIncoming(e);if(['message','ready','resync','snapshot','status','action_result','mobile_request'].includes(e.type)){queueRefresh();if(e.type==='message'&&e.role==='assistant'&&speech&&e.text&&!e.previously_received&&messageForThisPhone(e))Native.speak(e.text)}};
+function appendIncoming(event){
+  if(!event||!event.id||!event.text)return;
+  const chat=$('chat');if(!chat||chat.hidden)return;
+  if(chat.querySelector('[data-id="'+String(event.id).replace(/"/g,'')+'"]'))return;
+  const empty=chat.querySelector('.empty');if(empty)empty.remove();
+  const item=document.createElement('div');item.className='msg assistant';item.dataset.id=event.id;
+  const bubble=document.createElement('div');bubble.className='bubble';
+  const label=document.createElement('div');label.textContent=event.text;bubble.append(label);
+  const stamp=document.createElement('div');stamp.className='stamp';stamp.textContent=clock(Date.now()/1000);
+  item.append(bubble,stamp);chat.append(item);
+  const near=chat.scrollHeight-chat.scrollTop-chat.clientHeight<160;
+  if(near)chat.scrollTop=chat.scrollHeight;
+  signature='';
+}function attachmentUI(){$('attachments').replaceChildren();images.forEach((im,i)=>{const wrap=document.createElement('div');wrap.className='attachment';const pic=document.createElement('img');pic.src='data:'+im.mime+';base64,'+im.base64;const remove=document.createElement('button');remove.className='remove';remove.textContent='×';remove.onclick=()=>{images.splice(i,1);attachmentUI()};wrap.append(pic,remove);$('attachments').append(wrap)})}
+window.onPickedImage=im=>{if(typeof im==='string')im=JSON.parse(im);if(im.error){error(im.error);return}if(images.length>=8){error('一次最多发送八张图片。');return}images.push(im);attachmentUI()};
+function uuid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return(c==='x'?r:(r&3|8)).toString(16)})}
+async function send(){const text=$('text').value.trim();if(busy||(!text&&!images.length))return;Native.stopSpeech();busy=true;$('send').disabled=true;const sentImages=images.slice(),key=JSON.stringify({text,images:sentImages});if(!lastRequest||lastRequest.key!==key)lastRequest={key,id:uuid()};try{await api('POST','/mobile/chat',{id:lastRequest.id,text,images:sentImages});lastRequest=null;if($('text').value.trim()===text){$('text').value='';$('text').style.height='46px'}images=images.filter(im=>!sentImages.includes(im));attachmentUI();error('');setTimeout(refresh,180)}catch(e){error(e.message)}finally{busy=false;$('send').disabled=false}}
+$('send').onclick=send;$('text').oninput=()=>{Native.stopSpeech();$('text').style.height='46px';$('text').style.height=Math.min(130,$('text').scrollHeight)+'px'};$('text').onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();send()}};$('pick').onclick=()=>Native.pickImage();
+$('pairButton').onclick=async()=>{const code=$('code').value.trim();if(!/^\d{6}$/.test(code)){$('pairError').textContent='输入六位数字配对码。';return}$('pairButton').disabled=true;$('pairError').textContent='';try{await api('POST','/mobile/pair',{code,device_name:config().device_name||'小鱼安卓'});paired=true;$('pair').style.display='none';Native.startConnection();refresh()}catch(e){$('pairError').textContent=e.message}finally{$('pairButton').disabled=false}};
+function phoneStatus(){const cfg=config();$('phone').textContent=cfg.phone_enabled?'已开启 · 查看':'打开授权页';$('version').textContent='小鱼 '+(cfg.version||'0.3.0');}
+$('settings').onclick=()=>{document.activeElement?.blur();phoneStatus();imRefresh();$('overlay').style.display='flex'};$('closeSettings').onclick=()=>{$('overlay').style.display='none'};$('overlay').onclick=e=>{if(e.target===$('overlay'))$('overlay').style.display='none'};$('speech').onchange=()=>{speech=$('speech').checked;Native.setSpeech(speech)};$('phone').onclick=()=>Native.openPhoneSettings();$('appInfo').onclick=()=>Native.openAppSettings();$('battery').onclick=()=>Native.openSettings();$('reconnect').onclick=()=>{Native.startConnection();refresh();$('overlay').style.display='none'};$('closeGallery').onclick=()=>{$('gallery').style.display='none'};
+const receiveEvent=window.onServerEvent;window.onServerEvent=e=>{receiveEvent(e);phoneStatus()};
+function showPage(page){
+  const life=page==='life';
+  $('chat').hidden=life;$('chatTools').hidden=life;$('lifePage').hidden=!life;
+  $('tabChat').classList.toggle('active',!life);$('tabLife').classList.toggle('active',life);
+  $('tabChat').setAttribute('aria-current',life?'false':'page');$('tabLife').setAttribute('aria-current',life?'page':'false');
+  document.activeElement?.blur();if(life)renderLife(latestState);
+}
+$('tabChat').onclick=()=>showPage('chat');$('tabLife').onclick=()=>showPage('life');$('tabSettings').onclick=()=>$('settings').click();
+const initial=config();paired=initial.paired;speech=!!initial.speech;$('speech').checked=speech;if(paired){const cached=cachedState();if(cached){try{render(cached);renderLife(cached)}catch(e){}}Native.startConnection();refresh()}else{$('pair').style.display='block'}document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});setInterval(()=>{if(paired&&!document.hidden)refresh()},60000);
+let imQrTimer=null;
+function imStateText(state){return ({logged_in:'已登录',waiting_scan:'等待扫码',needs_login:'未登录',disabled:'已关闭',connecting:'连接中',disconnected:'已断开',closed:'已关闭'})[state]||state||'未知'}
+function imRender(channels){const qq=channels.qq||{};$('imQqEnabled').checked=!!qq.enabled;if(!$('imQqUrl').matches(':focus'))$('imQqUrl').value=qq.ws_url||'';$('imQqState').textContent=imStateText(qq.state)+(qq.has_token?' · 有令牌':' · 无令牌');$('imSummary').textContent='QQ '+imStateText(qq.state)}
+async function imRefresh(){try{const r=await api('GET','/mobile/im');const result=r.result||{};imRender(result.channels||{});if(result.error)$('imSummary').textContent='通道异常：'+result.error}catch(e){$('imSummary').textContent='读取失败：'+e.message}}
+async function imSave(channel,options){try{const r=await api('POST','/mobile/im/config',Object.assign({channel},options));if(!r.ok)throw Error(r.error||'保存失败');imRender((r.result&&r.result.channels)||{});error('');return true}catch(e){error(e.message);return false}}
+$('imQqSave').onclick=async()=>{const options={enabled:$('imQqEnabled').checked,ws_url:$('imQqUrl').value.trim()||'ws://127.0.0.1:3001'};const token=$('imQqToken').value.trim();if(token)options.token=token;if(await imSave('qq',options))$('imQqToken').value=''};
+$('imQqEnabled').onchange=()=>imSave('qq',{enabled:$('imQqEnabled').checked,ws_url:$('imQqUrl').value.trim()||'ws://127.0.0.1:3001'});
+
+</script><script src="mobile-input.js"></script></body></html>

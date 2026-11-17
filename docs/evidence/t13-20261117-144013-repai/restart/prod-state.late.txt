@@ -1,0 +1,11 @@
+--- prod stat now
+/var/lib/companion/xiaoyu/data/life.db 368525312 1794900360 2026-11-17 15:26:00.798960956 +0800
+/var/lib/companion/xiaoyu/config.toml 14660 1794801984 2026-11-16 12:06:24.353570509 +0800
+/var/lib/companion/xiaoyu/data/life.db-wal 9022832 1794900684 2026-11-17 15:31:24.323418406 +0800
+--- prod config sha
+f5e169264efad3563a65ce4f3bccc20d52afee341e57fd6b6c31ca9ff51addb2  /var/lib/companion/xiaoyu/config.toml
+--- service
+864221
+0
+active
+Tue 2026-11-17 15:24:13 CST

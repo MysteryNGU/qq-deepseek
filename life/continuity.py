@@ -465,7 +465,10 @@ class Continuity:
                         started_at=a['started_at'],result_at=a.get('result_at')) for a in activities]]
         available = [group[index] for index in range(5) for group in groups if len(group)>index]
         for preview in available[:5]:
-            item = dict(preview,text=preview['text'][:120])
+            text = preview.get('text','')
+            if not isinstance(text,str):
+                text = canonical(text)
+            item = dict(preview,text=text[:120])
             if estimate_tokens(previews+[item])<=min(total,policy.continuity_context_target_tokens):
                 previews.append(item)
             else:

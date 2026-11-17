@@ -191,7 +191,7 @@ class PrivateExperience:
         with self.repo.tx():
             s=self._load(scope)
             rev,shared=self.experience._load()
-            if not s or shared['scope']!=asdict(scope):
+            if not s or not self.experience.same_binding(shared['scope'], scope):
                 raise SessionFailure('scope_mismatch','先在唯一成年伴侣绑定内建立边界')
             old=self.repo._one('SELECT * FROM experience_private_journal WHERE agent_id=? AND call_key=?',
                 (self.life.agent_id,key))

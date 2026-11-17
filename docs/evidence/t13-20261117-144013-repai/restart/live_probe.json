@@ -1,0 +1,1 @@
+{"module": "/opt/qq-deepseek/life/companion.py", "agents_module": "life.companion_agents", "agent_enum": true, "ops": ["create", "send", "inspect", "wait", "cancel", "resume", "read_artifact"], "has_attach": true}

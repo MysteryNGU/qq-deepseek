@@ -1,0 +1,8 @@
+# Independent companion core. Desktop rendering is optional: requirements-desktop.txt.
+openai==3.35.1
+httpx==0.28.1
+aiohttp>=3.11,<4
+jsonschema==4.26.0
+Pillow>=11,<13
+tzdata==2026.5
+qrcode[pil]>=8

@@ -1,0 +1,1 @@
+f5e169264efad3563a65ce4f3bccc20d52afee341e57fd6b6c31ca9ff51addb2  /var/lib/companion/xiaoyu/config.toml

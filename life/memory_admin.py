@@ -247,7 +247,7 @@ class MemoryAdministration:
                     review_enabled=getattr(self.role.cfg,'profile_review_enabled',False),
                     known_actors=self.repo._one("SELECT COUNT(DISTINCT p.actor_id) n FROM person_encounters p JOIN events e ON e.id=p.event_id WHERE p.agent_id=? AND e.redacted_at IS NULL",(self.life.agent_id,))['n'],
                     review_states=[dict(r) for r in self.repo._all("SELECT p.state,COUNT(*) n FROM person_encounters p JOIN events e ON e.id=p.event_id WHERE p.agent_id=? AND e.redacted_at IS NULL GROUP BY p.state",(self.life.agent_id,))]),
-                idle_policy=dict(min_seconds=self.role.resources.idle_min_seconds,max_seconds=self.role.resources.idle_random_max_seconds,
+                idle_policy=dict(min_seconds=self.role.resources.owner_idle_min_seconds,max_seconds=self.role.resources.owner_idle_max_seconds,
                     starts='after_sequence_completion',pending=[dict(r) for r in self.repo._all(
                         "SELECT kind,state,due,plan_revision FROM role_wakes WHERE scope_id=? AND state IN ('pending','dispatching','waiting_resource')",(owner.scope_id,))],
                     awaiting_completion=bool(self.repo._one('SELECT 1 FROM meta WHERE k=?',('idle_after_sequence:'+owner.scope_id,)))),

@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>小鱼 · 陪伴</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/companion.css"><link rel="stylesheet" href="/chat.css"><link rel="stylesheet" href="/shell.css"><body>
+<aside class="rail"><div class="brand"><img src="/api/avatar" alt="小鱼"><div><strong id="name">小鱼</strong><small>在这里，慢慢说</small></div></div>
+<nav aria-label="主导航"><button data-page="chat" class="active"><span aria-hidden="true">◌</span>对话</button><button data-page="life"><span aria-hidden="true">▦</span>她的生活</button><button data-page="settings"><span aria-hidden="true">⚙</span>连接与设置</button></nav>
+<footer><span class="home-note"><i></i>云端伙伴</span><details><summary>关于与署名</summary><small>身体与聊天：Coopanion · AGPL-3.0<br>角色核心：Companion<br>Live2D Cubism · Live2D Inc.<br>形象作者署名保留于模型目录。</small></details></footer></aside>
+<main id="main"><div class="page-stack">
+<section id="chat" class="featureslot-chat"></section>
+<section id="life" class="reading-page" hidden><header class="reading-head"><h1>她的生活</h1><p class="life-date"></p></header><div id="life-body" class="life-prose"></div></section>
+<section id="settings" class="reading-page" hidden><header class="reading-head"><h1>连接与设置</h1><p>按你喜欢的方式，待在一起。</p></header>
+<div class="appearance"><label>桌面形象<select id="models"></select></label><button id="dress">装扮与大小</button><button id="connections">连接与声音设置</button></div>
+<div class="setting-row"><div><h2>自主活动</h2><p>让她继续自己的兴趣和日常。</p></div><input id="autonomy" type="checkbox" aria-label="自主活动"></div>
+<div class="setting-row"><div><h2>聊天里的近况</h2><p>在对话旁边留一页她的念想。</p></div><input id="nearby-setting" type="checkbox" aria-label="显示近况"></div>
+<details class="run-details"><summary>运行详情</summary><pre id="notice-detail"></pre><div id="monitor" aria-live="polite"></div><pre id="legacy-state"></pre><pre id="activity-log"></pre></details>
+<button id="exit" class="exit-button">退出桌面伙伴</button></section></div>
+<aside id="nearby" class="nearby" aria-label="小鱼的近况"><header><h2>她的生活</h2><button id="close-nearby" aria-label="收起近况" title="收起近况">×</button></header><div id="nearby-body" class="life-prose"></div></aside>
+<div id="notice" role="status"></div></main><script type="module" src="/chat.js"></script></body></html>

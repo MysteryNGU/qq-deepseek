@@ -61,23 +61,29 @@ class Repository:
     def tx(self) -> Iterator["Repository"]:
         with self._lock:
             depth = self._tx_depth
+            # Adopt an implicit transaction at the outermost boundary so it is
+            # committed here. A SAVEPOINT alone would leave it open forever.
+            nested = depth > 0
             savepoint = f"life_tx_{depth}"
-            self.db.execute("BEGIN IMMEDIATE" if depth == 0 else f"SAVEPOINT {savepoint}")
+            if nested:
+                self.db.execute(f"SAVEPOINT {savepoint}")
+            elif not self.db.in_transaction:
+                self.db.execute("BEGIN IMMEDIATE")
             self._tx_depth += 1
             try:
                 yield self
             except BaseException:
-                if depth == 0:
-                    self.db.rollback()
-                else:
+                if nested:
                     self.db.execute(f"ROLLBACK TO {savepoint}")
                     self.db.execute(f"RELEASE {savepoint}")
+                else:
+                    self.db.rollback()
                 raise
             else:
-                if depth == 0:
-                    self.db.commit()
-                else:
+                if nested:
                     self.db.execute(f"RELEASE {savepoint}")
+                else:
+                    self.db.commit()
             finally:
                 self._tx_depth -= 1
 

@@ -1,0 +1,13 @@
+main_pid=862279
+lrwxrwxrwx 1 companion companion 0 Nov 17 15:21 /proc/862279/cwd -> /opt/qq-deepseek
+lrwxrwxrwx 1 companion companion 0 Nov 17 15:21 /proc/862279/exe -> /usr/bin/python3.12
+/opt/qq-deepseek/.venv-companion/bin/python /opt/qq-deepseek/companion.py --home /var/lib/companion/xiaoyu --serve --host 127.0.0.1 --port 8765 
+companion.py open_by_service=0
+companion_agents.py open_by_service=0
+companion_executor.py open_by_service=0
+companion_delivery.py open_by_service=0
+companion_awareness.py open_by_service=0
+857143b7998d575bda51608b76ac50737893773656a4c5e9706cf29a515b7c41  life/companion.py
+853bb29e8b85ae3a242d9b9dec5992755a26633a7ee6658c86f34da62be7ba95  life/companion_agents.py
+no remote-token found
+{"module": "/opt/qq-deepseek/life/companion.py", "agents_module": "life.companion_agents", "agent_enum": true, "ops": ["create", "send", "inspect", "wait", "cancel", "resume", "read_artifact"], "has_attach": true}

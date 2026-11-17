@@ -1,0 +1,44 @@
+{
+  "summary": {
+    "total": 4,
+    "passed": 4,
+    "failed": 0,
+    "seconds": 1.7
+  },
+  "rows": [
+    {
+      "item": "按 agent_id 逐层派：0 → 1 → 2 都落得下，深度如实记账",
+      "ok": true,
+      "detail": {
+        "depths": [
+          0,
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "item": "第 3 层被 nesting_limit 明确拒绝（不是悄悄放行）",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: nesting_limit: 嵌套最多 2 层（再往下就是第 4 层）；把这件事放进上一层的目标里，或者等它结束再派。",
+        "limit": 2
+      }
+    },
+    {
+      "item": "按项目名派且有同名兄弟时：明确 parent_ambiguous（不猜、也不算越层）",
+      "ok": true,
+      "detail": {
+        "error": "AgentError: parent_ambiguous: 这个名字（companion-project_478d62aaa4d3b1f1b53cb2cc）同时挂着 3 件没结束的子 agent，按名字算深度会算不清；请改用 create 回执里的 agent_id 作为 parent_task_ref。"
+      }
+    },
+    {
+      "item": "唯一父时按项目名派仍然可用（没误伤）",
+      "ok": true,
+      "detail": {
+        "depth": 1,
+        "child": "companion-agent_3a403c982ae3acfcbedf57c2"
+      }
+    }
+  ]
+}

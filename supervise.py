@@ -128,6 +128,11 @@ def drop_lock() -> None:
 
 
 def main():
+    if (ROOT/'data/characters/primary-retired.json').is_file():
+        from life.settings_web import ensure_server
+        ensure_server(ROOT)
+        print('旧人物已移除；人物管理：http://127.0.0.1:6100/')
+        return 0
     if not PY.exists():
         say(f"找不到 python：{PY}")
         return 1

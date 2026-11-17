@@ -1,0 +1,5 @@
+# Optional Bilibili backend dependencies; ordinary chat does not import these.
+bilibili-api-python>=17.4.1,<18
+aiohttp>=3.9.0
+mcp>=1,<2
+qrcode[pil]>=8

@@ -1,0 +1,293 @@
+{
+  "summary": {
+    "mode": "real",
+    "total": 13,
+    "passed": 12,
+    "failed": 1,
+    "seconds": 46.7,
+    "token_sha_prefix": "D3-342"
+  },
+  "rows": [
+    {
+      "step": "准备：空工作目录 + 一个探测文件",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "probe_dir": "/tmp/p10d3-20261117-172329/home/probe",
+        "probe_file": "/tmp/p10d3-20261117-172329/home/probe/probe.txt",
+        "token_len": 15,
+        "dir_entries": [
+          "probe.txt"
+        ]
+      }
+    },
+    {
+      "step": "隔离确认：库指向沙箱、预算模式、DSH 是否可用",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "home": "/tmp/p10d3-20261117-172329/home",
+        "life_db": "data/life.db",
+        "budget_mode": "off",
+        "dsh_paths": true,
+        "dsh_home": "/tmp/p10d3-20261117-172329/home/data/dsh-linux"
+      }
+    },
+    {
+      "step": "(a1) 决策入口受理了模型的 kind=agent 动作（pending）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "action_id": "companion-action_893ce278fdde983327b7155d",
+        "status": "pending",
+        "kind": "agent"
+      }
+    },
+    {
+      "step": "(a2) _agent_pending_one 认领后进台账（queued）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "claimed": true,
+        "action_status": "queued",
+        "agent_id": "companion-agent_5315db2d5d130f65a9caab06",
+        "task_status": "queued",
+        "node": "local",
+        "origin": "dsh"
+      }
+    },
+    {
+      "step": "(b1) 台账执行器跑完（未超时）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "done": true,
+        "seconds": 22.0,
+        "budget_s": 300
+      }
+    },
+    {
+      "step": "(b2) 观察到真实子进程（DSH/node 或 agent worker）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "sample": "929446 /opt/qq-deepseek/.venv-companion/bin/python -B /opt/qq-deepseek/life/companion_agent_worker.py /tmp/p10d3-20261117-172329/home/data/companion/artifacts/agent-companion-agent_5315db2d5d130f65a9caab06.request.json",
+        "note": "pgrep 采样；进程存在本身是\"真的起过\"的证据，不是台账自述"
+      }
+    },
+    {
+      "step": "(b3) DSH 真的被调用（会话号 / 完成原因 / 模型真实回复，三者任一）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "session_id": null,
+        "finish_reason": null,
+        "model_replied": true,
+        "log_tail": "placeholder-token: D3-34230CDD0FD7\n\n摘要：已完成读取 `/tmp/p10d3-20261117-172329/home/probe/probe.txt` 并原样提取 token；未写文件、未改文件、未安装、未访问数据库、未联网、未创建子代理，未做其他任务；无卡点，全部完成。\n"
+      }
+    },
+    {
+      "step": "(b4) 子 agent 没有写文件（探测目录除探测文件外没有新增）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "dir_entries": [
+          "probe.txt"
+        ],
+        "probe_content_changed": false
+      }
+    },
+    {
+      "step": "(c1) 动作回执已结算（_settle 写回 pending→终态）",
+      "ok": false,
+      "limited": false,
+      "detail": {
+        "action_status": "queued",
+        "result_head": "{\"ok\":true,\"agent_id\":\"companion-agent_5315db2d5d130f65a9caab06\",\"task_ref\":\"companion-project_9170b21c278f7d919190a5d9\",\"operation_id\":\"agent-op_5e97a15a517d22a81a0479e3\",\"status\":\"queued\",\"verification\":\"pending\",\"depth\":0,\"node\":\"local\",\"attempt\":1,\"created_at\":\"2026-11-17 17:23:38\",\"observed_at\":\"2026-11-17 17:23:38\",\"budget\":{\"allowed\":true,\"mode\":\"off\",\"limits\":{},\"missing_limits\":[],\"enforc"
+      }
+    },
+    {
+      "step": "(c2) 结果轮被唤醒（self/tool observation 事件里带着这次结果）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "wake_events": [
+          {
+            "id": "evt_ac9dc82efd2c4463",
+            "kind": "companion_wake",
+            "source": "self_observation"
+          },
+          {
+            "id": "evt_331e438f2dbf4659",
+            "kind": "companion_wake",
+            "source": "self_observation"
+          },
+          {
+            "id": "evt_4faf9eaca340447d",
+            "kind": "tool_result",
+            "source": "tool_observation"
+          },
+          {
+            "id": "evt_3dd13372c3744672",
+            "kind": "companion_connection_observation",
+            "source": "tool_observation"
+          },
+          {
+            "id": "evt_8d60edbdc6ef4f9a",
+            "kind": "companion_wake",
+            "source": "self_observation"
+          }
+        ],
+        "activity": [
+          {
+            "type": "activity",
+            "text": "项目更新：让子 agent 读探测文件并回报"
+          },
+          {
+            "type": "activity",
+            "text": "子 agent 有了结果：completed"
+          },
+          {
+            "type": "activity",
+            "text": "项目更新：让子 agent 读探测文件并回报"
+          }
+        ],
+        "result_text_seen": true
+      }
+    },
+    {
+      "step": "(d1) 台账终态与 verification 的真实值",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "agent_id": "companion-agent_5315db2d5d130f65a9caab06",
+        "status": "completed",
+        "verification": "pending",
+        "attempt": 1,
+        "session_id": "session-d200482d60704299afa932b3e064ff48",
+        "outcome": "completed",
+        "artifacts": [],
+        "events": [
+          "created",
+          "receipt",
+          "running",
+          "completed"
+        ]
+      }
+    },
+    {
+      "step": "(d2) 回执摘要里有没有那个 token（子 agent 真读到了文件）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "token_prefix": "D3-342…",
+        "found_in_result": true,
+        "found_in_log": true,
+        "result_summary": "placeholder-token: D3-34230CDD0FD7\n\n摘要：已完成读取 `/tmp/p10d3-20261117-172329/home/probe/probe.txt` 并原样提取 token；未写文件、未改文件、未安装、未访问数据库、未联网、未创建子代理，未做其他任务；无卡点，全部完成。\n"
+      }
+    },
+    {
+      "step": "(e1) 记账：这次调用的用量记成什么（未知必须 null，不能 0）",
+      "ok": true,
+      "limited": false,
+      "detail": {
+        "usage": [
+          {
+            "id": "companion:563500889a7d42de9df9cb141de0667d",
+            "agent": "xiaoyu",
+            "purpose": "activity",
+            "model": "fake",
+            "usage": "null",
+            "seconds": null,
+            "created": 1794907456.886586
+          },
+          {
+            "id": "companion:0165ecfec0d4425280e1e8c8bedd18e1",
+            "agent": "xiaoyu",
+            "purpose": "activity",
+            "model": "fake",
+            "usage": "null",
+            "seconds": null,
+            "created": 1794907434.8210192
+          },
+          {
+            "id": "companion:76de02524ef34635a5f534ac860f50e2",
+            "agent": "xiaoyu",
+            "purpose": "executor",
+            "model": "deepseek-flash",
+            "usage": "null",
+            "seconds": null,
+            "created": 1794907418.700956
+          },
+          {
+            "id": "companion:c0e23a35d7d94f54b562255e162630ea",
+            "agent": "xiaoyu",
+            "purpose": "dialogue",
+            "model": "fake",
+            "usage": "null",
+            "seconds": null,
+            "created": 1794907418.4028585
+          },
+          {
+            "id": "companion:fe9f89e313a042ea85eaf1a41038cc3b",
+            "agent": "xiaoyu",
+            "purpose": "activity",
+            "model": "deepseek-flash",
+            "usage": "{\"input_tokens\":17072,\"cached_input_tokens\":8192,\"output_tokens\":724,\"total_tokens\":17796}",
+            "seconds": 6.185,
+            "created": 1794907360.6436775
+          }
+        ],
+        "spending": [
+          {
+            "call_key": "memory-query_95c191489dc128a181b9522b",
+            "session_id": "memory:xiaoyu",
+            "day": "2026-11-17",
+            "reserved": 0,
+            "charged": 0,
+            "state": "settled",
+            "payload": "{\"finished_at\":1794907444.5406535,\"origin\":\"memory_embedding\",\"price_version\":\"local-cpu-zero-provider-fee-v1\",\"purpose\":\"memory_query\",\"source_refs\":[],\"started_at\":1794907444.1861203}"
+          },
+          {
+            "call_key": "memory-query_b0f271de5d4d38c272e34ef1",
+            "session_id": "memory:xiaoyu",
+            "day": "2026-11-17",
+            "reserved": 0,
+            "charged": 0,
+            "state": "settled",
+            "payload": "{\"finished_at\":1794907419.4414601,\"origin\":\"memory_embedding\",\"price_version\":\"local-cpu-zero-provider-fee-v1\",\"purpose\":\"memory_query\",\"source_refs\":[],\"started_at\":1794907418.7823138}"
+          },
+          {
+            "call_key": "memory-query_5152e52e958f19d31f00b8f0",
+            "session_id": "memory:xiaoyu",
+            "day": "2026-11-17",
+            "reserved": 0,
+            "charged": 0,
+            "state": "settled",
+            "payload": "{\"finished_at\":1794907414.9188688,\"origin\":\"memory_embedding\",\"price_version\":\"local-cpu-zero-provider-fee-v1\",\"purpose\":\"memory_query\",\"source_refs\":[],\"started_at\":1794907414.7612398}"
+          },
+          {
+            "call_key": "memory-index_d6d2130c96b509a92075093f:batch:0",
+            "session_id": "memory:xiaoyu",
+            "day": "2026-11-17",
+            "reserved": 0,
+            "charged": 0,
+            "state": "settled",
+            "payload": "{\"finished_at\":1794907363.944391,\"origin\":\"memory_embedding\",\"price_version\":\"local-cpu-zero-provider-fee-v1\",\"purpose\":\"memory_index\",\"source_refs\":[\"life_8329047ec2e295ae8e438b6c\"],\"started_at\":1794907363.5491567}"
+          },
+          {
+            "call_key": "memory-index_98e81bd0efe7e2528dbc4003:batch:0",
+            "session_id": "memory:xiaoyu",
+            "day": "2026-11-17",
+            "reserved": 0,
+            "charged": 0,
+            "state": "settled",
+            "payload": "{\"finished_at\":1794907357.808986,\"origin\":\"memory_embedding\",\"price_version\":\"local-cpu-zero-provider-fee-v1\",\"purpose\":\"memory_index\",\"source_refs\":[\"life_518c59d5cef8f9f4e767b7af\"],\"started_at\":1794907357.3860888}"
+          }
+        ],
+        "result_usage": null,
+        "note": "DSH 拿不到逐次 usage → usage/None；spending_policy 为 off → spending_calls 不新增"
+      }
+    }
+  ]
+}

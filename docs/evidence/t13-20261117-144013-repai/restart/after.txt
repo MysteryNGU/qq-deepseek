@@ -1,0 +1,8 @@
+active_enter=Tue 2026-11-17 15:24:13 CST
+main_pid=864221
+n_restarts=0
+invocation=b97cb8a963f0474a89271350bb3d46c1
+is_active=active
+after_lines=5
+after_tracebacks=0
+after_errors=0
