@@ -121,7 +121,9 @@ function renderObservability(state={}){
   for(const failure of failures.slice(0,8))lifeCard(errors,lifeTime(failure.created),[lifeText(failure.summary,'未提供错误摘要')],'life-warning');
   $('runtimeContent').replaceChildren(root);
 }
-$('openRuntime').onclick=()=>{document.activeElement?.blur();$('overlay').style.display='none';$('runtimeOverlay').style.display='flex';renderObservability(latestState);refresh()};
+// runtime=1 必须传：服务端只有在它存在时才附带 observability（companion_mobile.py:294），
+// 否则界面永远是「服务没有提供详细运行记录」。
+$('openRuntime').onclick=()=>{document.activeElement?.blur();$('overlay').style.display='none';$('runtimeOverlay').style.display='flex';renderObservability(latestState);refresh(true)};
 $('closeRuntime').onclick=()=>{$('runtimeOverlay').style.display='none'};
 $('runtimeOverlay').onclick=event=>{if(event.target===$('runtimeOverlay'))$('runtimeOverlay').style.display='none'};
-$('refreshRuntime').onclick=()=>refresh();
+$('refreshRuntime').onclick=()=>refresh(true);

@@ -1,0 +1,21 @@
+[Unit]
+Description=Companion watchdog: roll back a broken self-modification and tell her
+After=network-online.target companion.service
+Wants=network-online.target
+# The watchdog must outlive the thing it rescues: it never stops with companion.service.
+PartOf=
+BindsTo=
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/qq-deepseek/.venv-companion/bin/python /opt/qq-deepseek/ops/companion-watchdog.py
+Restart=always
+RestartSec=10
+# It must be able to run systemctl for the unit it watches, so it may not live in a sandbox
+# that forbids dbus. Everything it touches is bounded by the script's own arguments.
+NoNewPrivileges=no
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

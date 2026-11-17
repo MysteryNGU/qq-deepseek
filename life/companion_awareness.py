@@ -37,7 +37,7 @@ ATTENTION_MODES = ('focused', 'watching', 'muted', 'released')
 ACCOUNT_STATES = ('connected', 'disconnected', 'disabled', 'unconfigured', 'login_required', 'unknown')
 # 计划 B 才会接线；在那之前只能是 needs_setup，不能靠这里宣布可用。
 AGENT_CAPABILITY = 'agent.subagent'
-READ_OPS = ('awareness', 'people', 'conversations', 'experience',
+READ_OPS = ('awareness', 'people', 'conversations', 'experience', 'used',
             'attention', 'capabilities', 'agent_tasks')
 SET_OPS = ('attention_set',)
 NOT_IMPLEMENTED = {
@@ -46,10 +46,18 @@ NOT_IMPLEMENTED = {
     'conversations': '会话索引进 C 阶段（QQ 多人交流与 conversation_ref 路由同时落地）。'
                      '现在只有当前这段会话的 conversation_ref，没有全量会话表可列。',
     'experience': '经历时间线要按人分层的可见性策略，属 C 阶段。'
-                  '本阶段只用 recent_experience 给当前会话里的几条，不做检索。',
+                  '本阶段只用 recent_experience 给当前会话里的几条，不做检索。'
+                  '「我自己用过什么、拿到过什么回执」是另一件事，用 op=used 查。',
 }
 
 BEIJING = timezone(timedelta(hours=8))
+
+# 子 agent 的七个操作。真源在 companion_agents.OPS，这里冗余一份只为在
+# ```companion_awareness`` 单独被 import 时（测试/审计脚本）仍能给出说明。
+try:
+    from .companion_agents import OPS as OP_NAMES
+except Exception:  # noqa: BLE001 - 单独 import 时不拖垮整份投影
+    OP_NAMES = ('create', 'send', 'inspect', 'wait', 'cancel', 'resume', 'read_artifact')
 
 
 # ------------------------------------------------------------------ 小工具
@@ -96,7 +104,7 @@ def _fields(action):
     merged = dict(raw) if isinstance(raw, dict) else {}
     for key in ('op', 'query', 'ref', 'cursor', 'limit', 'since', 'until',
                 'actor_ref', 'conversation_ref', 'mode', 'reason',
-                'review_at', 'expires_at', 'goal'):
+                'review_at', 'expires_at', 'goal', 'kind', 'kinds'):
         if action.get(key) not in (None, '') and merged.get(key) in (None, ''):
             merged[key] = action[key]
     return merged
@@ -126,23 +134,35 @@ def _server_of(core):
     return None
 
 
-def _self_account(core, config):
-    """账号事实只来自登录核验，不来自 persona，也不来自 cfg.bot_qq 的存在与否。
+def _channel_facts(core, config):
+    """每个通道的真实状态：登录核验过的快照优先，其次是配置文件。
 
-    三处来源，从新到旧：ImManager/CompanionQQ 的 snapshot、进程持有的 qq 对象、
-    通道配置文件。任何一处都拿不到就是 unknown；通道没启用是 disabled。
+    这是 ``channel.*`` 能力条目和 ``self.account`` 的**同一条来源**。
+    以前 ``channel.*`` 的 ready 判据是「执行器报没报动作」，与登录无关——
+    生产上 QQ 根本没有连接进程，条目却照样 ready。通道是否在线，只能问通道自己。
+
+    返回 ``{channel: {state, enabled, source_ref, source_scope, error, observed_at}}``，
+    state 取值见 ``ACCOUNT_STATES``；拿不到就是 unknown，不猜。
     """
     observed = time.time()
     try:
-        from .companion_qq import load_qq_settings
-        settings = load_qq_settings(core.home) or {}
+        from .companion_im import load_im_settings
+        settings_by_channel = load_im_settings(core.home) or {}
     except Exception:
-        settings = {}
-    source_ref = 'life/companion_qq.py#load_qq_settings'
-    enabled = bool(settings.get('enabled'))
-    snapshot = None
-    state = None
-    error = ''
+        settings_by_channel = {}
+    if not settings_by_channel:
+        # load_im_settings 拿不到就逐个退到各自的 loader，不因此把通道判成没配置。
+        try:
+            from .companion_qq import load_qq_settings
+            settings_by_channel = dict(qq=load_qq_settings(core.home) or {})
+        except Exception:
+            settings_by_channel = {}
+        try:
+            from .companion_wechat import load_wechat_settings
+            settings_by_channel['wechat'] = load_wechat_settings(core.home) or {}
+        except Exception:
+            pass
+    snapshots, snapshot_error, snapshot_ref = {}, '', ''
     server = _server_of(core)
     im = getattr(server, 'im', None) if server is not None else None
     if im is None and server is not None:
@@ -152,42 +172,73 @@ def _self_account(core, config):
             try:
                 im = factory()
             except Exception as failure:
-                error = type(failure).__name__
+                snapshot_error = type(failure).__name__
     if im is not None:
         try:
-            snapshot = (im.snapshot() or {}).get('qq')
-            source_ref = 'life/companion_im.py#ImManager.snapshot'
+            snapshots = dict((im.snapshot() or {}).get('channels') or {})
+            snapshot_ref = 'life/companion_im.py#ImManager.snapshot'
         except Exception as failure:
-            error = type(failure).__name__
-    qq = getattr(im, 'qq', None) if im is not None else None
-    if snapshot is None and qq is not None:
-        try:
-            snapshot = qq.snapshot()
-            source_ref = 'life/companion_qq.py#CompanionQQ.snapshot'
-        except Exception as failure:
-            error = error or type(failure).__name__
-    if snapshot is not None:
-        state = str(snapshot.get('state') or 'unknown')
-        error = error or str(snapshot.get('error') or '')
-        # account 是登录核验过才有的值；核对前不把配置里的号当成在用。
-        value = snapshot.get('account') if state == 'connected' else None
-        value = str(value) if value not in (None, '', 0, '0') else None
-    else:
-        value = None
-        if not enabled:
-            state = 'disabled'
-        elif settings.get('login_required'):
-            state = 'login_required'
-        elif settings:
-            state = 'unknown'
+            snapshot_error = type(failure).__name__
+        for channel in ('qq', 'wechat'):
+            if channel in snapshots:
+                continue
+            bot = getattr(im, channel, None)
+            if bot is not None and hasattr(bot, 'snapshot'):
+                try:
+                    snapshots[channel] = bot.snapshot()
+                    snapshot_ref = snapshot_ref or 'life/companion_qq.py#CompanionQQ.snapshot'
+                except Exception as failure:
+                    snapshot_error = snapshot_error or type(failure).__name__
+    out = {}
+    for channel in ('qq', 'wechat'):
+        settings = settings_by_channel.get(channel) or {}
+        snapshot = snapshots.get(channel)
+        # 三档，按「我知道多少」从强到弱，**不许越档**：
+        #   有 snapshot        → 用核验过的运行时状态（最可信）
+        #   没有 IM 对象可问    → 只能读配置，那是「配置怎么说」，不是「现在怎样」
+        #   问了但抛错/拿不到  → **不知道**。绝不能退回配置再断言「主动关的」：
+        #        配置 enabled=false 只说明有人写过那行字，不等于此刻状态（F-3）。
+        if snapshot is not None:
+            state = str(snapshot.get('state') or 'unknown')
+            error = str(snapshot.get('error') or '')
+            # account 是登录核验过才有的值；核对前不把配置里的号当成在用。
+            value = snapshot.get('account') if state == 'connected' else None
+            value = str(value) if value not in (None, '', 0, '0') else None
+            scope, ref = 'runtime_snapshot', snapshot_ref or 'life/companion_im.py#ImManager.snapshot'
+        elif snapshot_error:
+            value, error, state = None, snapshot_error, 'unknown'
+            scope = 'runtime_snapshot_failed'
+            ref = 'life/companion_im.py#ImManager.snapshot'
         else:
-            state = 'unconfigured'
-    if state not in ACCOUNT_STATES:
-        state = 'unknown'
-    return dict(value=value, value_visibility='owner-only', state=state, enabled=enabled,
-                error=(error or None), source_ref=source_ref,
-                source_scope='runtime_snapshot' if snapshot is not None else 'channel_config',
-                observed_at=_stamp(observed))
+            value, error = None, ''
+            if not bool(settings.get('enabled')):
+                state = 'unconfigured' if not settings else 'disabled'
+            elif settings.get('login_required'):
+                state = 'login_required'
+            else:
+                state = 'unknown'
+            scope = 'channel_config'
+            ref = 'life/companion_%s.py#load_%s_settings' % (channel, channel)
+        if state not in ACCOUNT_STATES:
+            state = 'unknown'
+        out[channel] = dict(value=value, state=state, enabled=bool(settings.get('enabled')),
+                            error=(error or None), source_ref=ref, source_scope=scope,
+                            observed_at=_stamp(observed))
+    return out
+
+
+def _self_account(core, config):
+    """账号事实只来自登录核验，不来自 persona，也不来自 cfg.bot_qq 的存在与否。
+
+    三处来源，从新到旧：ImManager/CompanionQQ 的 snapshot、进程持有的 qq 对象、
+    通道配置文件。任何一处都拿不到就是 unknown；通道没启用是 disabled。
+    """
+    facts = _channel_facts(core, config)
+    qq = dict(facts.get('qq') or {})
+    return dict(value=qq.get('value'), value_visibility='owner-only', state=qq.get('state'),
+                enabled=qq.get('enabled'), error=qq.get('error'),
+                source_ref=qq.get('source_ref'), source_scope=qq.get('source_scope'),
+                observed_at=qq.get('observed_at'))
 
 
 def _self_agent(core):
@@ -332,26 +383,313 @@ def _dsh_endpoint(executor):
     return None
 
 
-def capabilities(core, state=None, *, now=None):
-    """能力目录：每条都能落到「谁在用、凭什么说它能用」。
+def _guide(kind):
+    """这个 kind 的用法说明（companion_context.GUIDES 里那一段）。"""
+    try:
+        from .companion_context import GUIDES
+        return GUIDES.get(str(kind))
+    except Exception:
+        return None
 
-    ready 只给有真实成功调用证据的；动作种类只证明通道在此节点存在，不证明
-    这次跑成功过。agent 能力在计划 B 接线前一律 needs_setup。
+
+def _guide_tail(kind):
+    """用法说明的「参数要点」一行：GUIDES 开头那句 op/参数约定。
+
+    只有一句、到第一个句号为止——主上下文里一句话一条，完整段落仍由
+    ``tool_instructions(kinds)`` 注入，细节走 memory op=capabilities。
+    """
+    text = _guide(kind)
+    if not text:
+        return None
+    text = str(text).strip()
+    for stop in ('。', '；'):
+        if stop in text:
+            text = text.split(stop, 1)[0]
+            break
+    # 再硬截一道：GUIDES 的第一句常常很长（web/phone 一整段才一个句号），
+    # 摘要里一句话一条就够了，完整段落本来就在 Instructions 里。
+    return (text[:48] + '…') if len(text) > 48 else text
+
+
+def _action_description(kind):
+    """能力条目的说明分两层：管理员口径 + 模型口径。
+
+    description 保持旧形状（``动作种类 <kind>``）不动，下游有按它匹配的地方；
+    模型读的那一层放在 ``what``，它直接来自 GUIDES，不靠模型记忆。
+    """
+    return dict(capability_ref=None, category='action', description='动作种类 ' + str(kind),
+                what=_guide_tail(kind), how_ref='companion_context.GUIDES[' + str(kind) + ']')
+
+
+def _action_entry(kind, status, *, reason=None, evidence=None, checked_at=None, scope=None,
+                  availability=None):
+    """动作种类的能力条目：状态、原因、依据、怎么用，四个都在。
+
+    与 ``_capability`` 的差别只在多带了 ``what``（取自 GUIDES）与 ``how_ref``，
+    目的是让「能不能用」和「怎么用」两条通路共用同一个条目，不再各走各的。
+    """
+    item = _capability('action.' + str(kind), 'action', '动作种类 ' + str(kind), status,
+                       reason=reason, evidence=evidence, checked_at=checked_at,
+                       schema_ref='life/companion.py#DECISION.actions')
+    item['what'] = _guide_tail(kind)
+    item['how_ref'] = 'companion_context.GUIDES[' + str(kind) + ']' if _guide(kind) else None
+    if scope:
+        item['state_scope'] = scope
+    if availability:
+        item['availability'] = availability
+    return item
+
+
+def _probe(fn, *args):
+    """跑一次探测，返回 (值, 失败原因)。**失败不是结果**，调用方必须区别对待。
+
+    这是 F-2/F-3 的根因统一处理：探测抛错时，某些分支曾经写成
+    「本机没有手机控制通道」「通道被关了」这种**断言**——但我们其实什么都不知道。
+    所有探测都走这里，失败一律 ``(None, 异常名)``，由调用方报 unknown + 说「读不到」。
+    """
+    try:
+        return fn(*args), None
+    except Exception as failure:  # noqa: BLE001 - 探测失败要变成「不知道」，不是崩
+        return None, type(failure).__name__
+
+
+def _unknown_reason(what, detail=''):
+    """统一口径的「不知道」：只说我这边看到什么、不知道什么，绝不断言。"""
+    head = '我读不到%s的状态' % what
+    if detail:
+        head += '（%s）' % detail
+    return head + '，所以现在不能确认它能不能用；这不能说明它坏了，也不能说明它没有。'
+
+
+def _offline_reason(core, kind, *, executor):
+    """这个 kind 现在不可用的具体原因。**不知道就说不确定，不编原因**。
+
+    三档必须分清（F-2 的统一修法）：
+      - 探测成功且明确不可用 → 说具体原因（offline / needs_setup）
+      - 探测抛错 / 拿不到     → unknown + 「读不到」，**不许写成断言**
+      - 探测说「能用」         → 这里不该被调到；真发生了就如实说没有可靠原因
+    """
+    if kind == 'phone':
+        context, failure = _probe(lambda: executor.phone_context() if hasattr(executor, 'phone_context')
+                                  else None)
+        if failure is not None:
+            return _unknown_reason('手机通道', '探测抛错 %s' % failure), 'unknown'
+        if context is None:
+            # 执行器没给 phone_context：读不到状态，不等于"这台机器没有手机能力"。
+            return _unknown_reason('手机通道', '执行器没给 phone_context'), 'unknown'
+        devices = context.get('devices') or []
+        if not devices:
+            return ('手机端最近 90 秒内没有上报过注册，所以我这边看不到在线设备；'
+                    '这表示手机现在连不上，不是我没有操作手机的能力。'
+                    '要让它恢复，在手机上打开小鱼 App 并保持前台即可。'), 'offline'
+        if any(item.get('has_stream') for item in devices):
+            return ('手机注册过但操作拿不到回执（可能被系统挂起或 App 在后台），'
+                    '所以现在派活送不到；把 App 切回前台再试。'), 'offline'
+        return ('手机上装了 App 也注册过，但没有活动连接（App 不在前台或已断开）；'
+                '即便派活也送不到，需要把 App 切回前台。'), 'offline'
+    if kind == 'computer':
+        # peer 是桌面客户端真实连没连；读不到就说不知道，不说"没连上"。
+        peer, failure = _probe(lambda: getattr(_server_of(core), 'peer', None))
+        if failure is not None:
+            return _unknown_reason('桌面连接', '探测抛错 %s' % failure), 'unknown'
+        return ('桌面端没有连上（桌面客户端的 websocket 没连进来），'
+                '所以现在既看不到屏幕也不能点击。'), 'offline'
+    if kind == 'body':
+        connected, failure = _probe(lambda: bool(getattr(core, '_body_context', {}).get('connected')))
+        if failure is not None:
+            return _unknown_reason('桌面身体', '探测抛错 %s' % failure), 'unknown'
+        return '桌面身体形象没有连上，动作发过去没人接收。', 'offline'
+    if kind == 'town':
+        return ('小镇没启用或没有保存接入码（town.config.enabled=false 或 code 为空）；'
+                '这是配置项，不是网络问题。'), 'needs_setup'
+    if kind == 'bilibili':
+        return 'B 站没有登录态（插件未配置或登录已失效），读不到内容也不能互动。', 'needs_setup'
+    if kind == 'dsh':
+        return '本机没有可用的 DSH 运行时。', 'needs_setup'
+    return '执行器没有把它报成可用；具体原因我这边看不到。', 'unknown'
+
+
+# 「已实现、但现在可能不在 available_actions 里」的 kind 全集。这不是能力清单，
+# 是「掉线时要留一条带原因的条目」的登记表：真正的可用性永远来自执行器。
+# 掉线就整个消失，模型看到的是一个沉默的缺口——她没法解释「为什么没有手机了」。
+TRACKED_KINDS = ('web', 'command', 'work', 'memory', 'growth', 'skill', 'dsh', 'agent',
+                 'computer', 'phone', 'body', 'town', 'bilibili')
+
+# 主上下文里「当前不可用」写几条。其余只列名字指向按需读取：完整原因留在条目里，
+# 不为省事而删——但每轮请求体只放这么多（test_projection_stays_small 的 4000 字节上限）。
+UNUSABLE_IN_PROMPT = 3
+
+# **必须**进主上下文的条目：用户会直接问到、答错会误导的那些。
+# 它们不受 UNUSABLE_IN_PROMPT 截断影响，永远各占一个位置。
+# 依据 2026-11-18 对照实测：`guard.watchdog` 排在不可用项第 9 位被截掉，
+# 结果她答「改坏了谁救」时一次都没引用它——条目内容完全正确，只是没送到眼前。
+PINNED_REFS = ('guard.watchdog', 'action.phone', 'action.computer', 'agent.subagent')
+
+
+def offline_reasons(core, kinds):
+    """当轮不可用、但**能说出具体原因**的 kind：``[{kind, reason, state_scope}]``。
+
+    与 ``capabilities()`` 用同一份 ``_offline_reason``，所以请求体里的那句
+    「手机：没有活动连接」和 memory op=capabilities 读到的 reason 是同一句话。
+    只返回真知道原因的；拿不到原因的不编。
+    """
+    present = set(kinds or ())
+    executor = getattr(core, 'executor', None)
+    rows = []
+    for kind in TRACKED_KINDS:
+        if kind in present or kind in ('dsh', 'agent'):
+            continue
+        reason, scope = _offline_reason(core, kind, executor=executor)
+        if reason and scope != 'unknown':
+            rows.append(dict(kind=kind, reason=reason, state_scope=scope))
+    return rows
+
+
+def _systemctl(*args):
+    """跑一次 systemctl，拿回一行文本；跑不了就是 None（不猜状态）。"""
+    try:
+        import subprocess
+        done = subprocess.run(['systemctl', *args], capture_output=True, text=True, timeout=5)
+        return (done.stdout or '').strip() or None
+    except Exception:  # noqa: BLE001 - 没有 systemd、超时、权限都可能，一律当未知
+        return None
+
+
+def watchdog_capability(core, *, now=None):
+    """``guard.watchdog``：谁能把改坏的源码换回去。
+
+    基线里她答「这台机器上没有人替我兜底」，而当时 watchdog 正 enabled+active——
+    系统从没告诉过她。状态**只以 ``systemctl`` 实测为准**，不读文档（文档里
+    「默认 disabled，等授权」已经过时）。跑不了 systemctl 就是 unknown，不猜。
+
+    摘要层只放一句「现在管不管事」；what_it_does / limits 这些细节走
+    ``memory op=capabilities`` 读整条。
+    """
+    now = time.time() if now is None else float(now)
+    unit = 'companion-watchdog.service'
+    active = _systemctl('is-active', unit)
+    enabled = _systemctl('is-enabled', unit)
+    if active is None and enabled is None:
+        status, reason = 'unknown', ('这台机器上没有 systemd（或读不到它的状态），'
+                                     '所以我不知道有没有人替我兜底；不能断言有，也不能断言没有。')
+        scope = 'unknown'
+    elif active == 'active':
+        status, reason = 'ready', None
+        scope = 'active'
+    elif active == 'inactive':
+        status = 'offline'
+        reason = ('这个守护停了（当前 inactive），改坏了不会自动换回去，要人手动处理。')
+        scope = 'inactive'
+    else:
+        status = 'offline'
+        reason = ('这个守护现在是 %s，不在管事；改坏了不会自动换回去。' % (active or 'unknown'))
+        scope = str(active or 'unknown')
+    return dict(capability_ref='guard.watchdog', category='guard', node=NODE, status=status,
+                description='改坏源码时的自动回滚',
+                reason=reason, checked_at=_stamp(now), state_scope=scope,
+                schema_ref='ops/companion-watchdog.py#DEFAULTS',
+                evidence=['systemctl is-active ' + unit + '=' + str(active),
+                          'systemctl is-enabled ' + unit + '=' + str(enabled)],
+                source_ref='ops/companion-watchdog.py', who_owns_it='主人（用 systemctl 启停）',
+                # 摘要那一句：她只需要知道「现在有没有人兜底」。
+                what=('我改坏起不来时会换回上次能跑的版本' if status == 'ready'
+                      else '我不知道有没有人替我兜底' if status == 'unknown'
+                      else '现在没人替我兜底'),
+                # 以下只在按需读取时给，不进主上下文摘要。
+                what_it_does='重启后盯一段时间，起不来就换回上次能跑的源码版本并重新拉起，'
+                             '再给我留一条消息说刚才那次改动被丢弃了。',
+                when_it_acts='只在我重启之后；正常运行期间它不动我。',
+                what_it_does_not_do='不动 life.db、config.toml、人格文件——数据它一概不碰。',
+                limits='只管源码快照，观察窗约一分钟；连续失败 3 次就停手等人处理，不再自动回滚。',
+                enabled=enabled, active=active)
+
+
+    """当轮不可用、但**能说出具体原因**的 kind：``[{kind, reason, state_scope}]``。
+
+    与 ``capabilities()`` 用同一份 ``_offline_reason``，所以请求体里的那句
+    「手机：没有活动连接」和 memory op=capabilities 读到的 reason 是同一句话。
+    只返回真知道原因的；拿不到原因的不编。
+    """
+    present = set(kinds or ())
+    executor = getattr(core, 'executor', None)
+    rows = []
+    for kind in TRACKED_KINDS:
+        if kind in present or kind in ('dsh', 'agent'):
+            continue
+        reason, scope = _offline_reason(core, kind, executor=executor)
+        if reason and scope != 'unknown':
+            rows.append(dict(kind=kind, reason=reason, state_scope=scope))
+    return rows
+
+
+def _dispatch_caveat(core, kind, *, executor):
+    """``(dispatchable, caveat)``：这个在清单里按着用的 kind，**派活会不会被拒**。
+
+    只对「状态宽、派发严」的连接类有意义（今天只有 phone）：``phone_context.connected``
+    看的是 90 秒注册窗口，而 ``run()`` 要求真有活动连接。**这不是改状态，是补一句
+    提醒**——status 仍如实反映执行器的判断，caveat 说明落差（F-4）。
+    """
+    if kind != 'phone':
+        return True, None
+    context, failure = _probe(lambda: executor.phone_context() if hasattr(executor, 'phone_context')
+                              else None)
+    if failure is not None or context is None:
+        # 读不到就不断言能派活，也不断言不能。
+        return None, _unknown_reason('手机通道', failure and ('探测抛错 %s' % failure) or '没有 phone_context')
+    devices = context.get('devices') or []
+    if any(item.get('has_stream') for item in devices):
+        return True, None
+    if not devices:
+        # 清单说能用，但我这边看不到任何在线设备：这句必须跟事实走，
+        # 不能照抄「注册过但没有活动连接」——那是另一种情形。
+        return False, ('执行器把手机报成了可用，但我这边看不到任何在线设备；'
+                       '现在派活很可能被拒，先确认手机上小鱼 App 在前台再操作。')
+    return False, ('手机在最近 90 秒内注册过（所以状态是在线），但它没有活动连接：'
+                   '现在派活会被拒（需要 App 在前台）。先让它回到前台再操作。')
+
+
+def capabilities(core, state=None, *, now=None):
+    """能力目录：每条都能落到「谁在用、凭什么说它能用、怎么用」。
+
+    ready 只给执行器当轮真的报成可用的动作种类；``available_actions`` 里有它，
+    就是执行器这一轮探测过的事实。**没在里面的 kind 不再静默消失**：照 dsh 的
+    写法补一条 ``needs_setup``/``offline`` 条目并写清原因（TRACKED_KINDS）。
     """
     now = time.time() if now is None else float(now)
     state = state or {}
     checked = _stamp(now)
     catalogue = []
+    executor = getattr(core, 'executor', None)
     # 键 'agent' 也是动作种类（kind=agent），但它的能力条目是下面的
     # agent.subagent，不能再按「动作种类」重复登记成一条 ready。
     kinds = [kind for kind in (state.get('available_actions') or []) if kind != 'agent']
     # dsh 的条目由下面对应的那条统一登记（带 strict 原因），这里先跳过它，
     # 否则会多出一条「动作种类 ready」和一条「strict 下 needs_setup」自相矛盾。
     for kind in [kind for kind in kinds if kind != 'dsh']:
-        catalogue.append(_capability(
-            'action.' + str(kind), 'action', '动作种类 ' + str(kind),
-            'ready', evidence=['available_actions'], checked_at=checked,
-            schema_ref='life/companion.py#DECISION.actions'))
+        item = _action_entry(kind, 'ready', evidence=['available_actions'], checked_at=checked)
+        # 「在清单里」只说明执行器这一轮认为它可用；连接类还有一个更严的门槛：
+        # 手机注册着但没活动连接时，available_kinds 仍报 phone 可用，而 run() 会拒绝
+        # （t1 记的「连着≠能派活」）。这里把这个落差显式说出来，**不改 status**
+        # ——status 是执行器的判断，如实反映；dispatchable 是我们对「派活会不会被拒」
+        # 的诚实提示（F-4）。
+        dispatchable, caveat = _dispatch_caveat(core, kind, executor=executor)
+        item['dispatchable'] = dispatchable
+        if caveat:
+            item['reason'] = caveat
+        catalogue.append(item)
+    # 掉线的照样留条目：能力不在不等于这件事不存在。原因按 kind 具体说，
+    # 不能说成「配置问题」糊过去——她要能回答「手机怎么连不上了」。
+    for kind in TRACKED_KINDS:
+        if kind in kinds or kind in ('dsh', 'agent'):
+            continue
+        reason, scope = _offline_reason(core, kind, executor=executor)
+        item = _action_entry(kind, scope if scope in STATES else 'unknown',
+                             reason=reason, evidence=['available_actions:absent'],
+                             checked_at=checked, scope=scope)
+        # 不在清单里 = 执行器这轮没报它可用，所以谈不上派活：
+        # 显式 False（不是缺键），下游按 `dispatchable is False` 判断不会落空。
+        item['dispatchable'] = False
+        catalogue.append(item)
     mode = spending_mode(getattr(getattr(core, 'spending', None), 'policy', None))
     # DSH 是否存在：看真正跑 dsh 的执行器链（服务模式下是 RemoteExecutor.original）。
     executor = getattr(core, 'executor', None)
@@ -368,23 +706,70 @@ def capabilities(core, state=None, *, now=None):
                       '要么改 bounded_estimate，要么接受用量记为未知。')
     elif not endpoint:
         dsh_reason = '本机没有可用的 DSH 运行时（dsh_root/dsh_node 或入口缺失）。'
-    catalogue.append(_capability(
+    dsh_item = _capability(
         'action.dsh', 'action', '把一整件多步工作交给后端代理', dsh_status,
         reason=dsh_reason, evidence=['cfg.dsh_root'] if endpoint else [],
-        checked_at=checked, schema_ref='life/companion.py#kind:dsh', node=node))
+        checked_at=checked, schema_ref='life/companion.py#kind:dsh', node=node)
+    dsh_item['dispatchable'] = dsh_status == 'ready'
+    catalogue.append(dsh_item)
     # 子 agent 能力：计划 B 已接线（life/companion_agents.py）。ready 只在台账里真有过
     # 一次「跑完并核验通过」时才给；否则写 needs_setup 并说清缺的是哪一步。
     catalogue.append(agent_capability(core, mode=mode, endpoint=endpoint, now=now))
-    # 通道是否启用看执行器有没有报可用动作；上面已经按种类筛过，这里不能复用
-    # 那个（可能为空的）列表，否则「没报动作」会被读成「通道没开」。
-    actions_reported = state.get('available_actions') is not None
+    # 通道状态只问通道自己：登录核验过的 snapshot 优先，其次是配置。
+    # 以前这里看「执行器报没报可用动作」，所以生产上没有 QQ 连接进程时
+    # channel.qq 依旧 ready——那条判据与 QQ 登录毫无关系。
+    facts = _channel_facts(core, getattr(core, 'cfg', None))
+    channel_reason = {
+        'connected': None,
+        'disabled': '通道被关闭了（配置里 enabled=false），不是掉线，是主动关的。',
+        'unconfigured': '还没有配置过这个通道。',
+        'login_required': '配置好了但还没登录成功，需要重新扫码/登录。',
+        'disconnected': '登录过，但现在的连接不在了。',
+        'unknown': '连不上通道自己，拿不到登录状态；这是不知道，不是不在线。',
+    }
     for channel in ('qq', 'wechat'):
-        catalogue.append(_capability(
-            'channel.' + channel, 'channel', '消息通道：' + channel,
-            'ready' if actions_reported else 'unknown',
-            reason=None if actions_reported else '执行器没有报告可用动作，无法判断通道状态',
-            checked_at=checked, schema_ref='life/companion_im.py#ImManager'))
-    return catalogue[:24]
+        fact = facts.get(channel) or {}
+        state_ = str(fact.get('state') or 'unknown')
+        status_ = 'ready' if state_ == 'connected' else ('offline' if state_ in ('disconnected', 'disabled')
+                                                        else 'needs_setup')
+        item = _capability(
+            'channel.' + channel, 'channel', '消息通道：' + channel, status_,
+            reason=None if state_ == 'connected' else channel_reason.get(state_, '状态未知。'),
+            evidence=['self.account:' + state_], checked_at=fact.get('observed_at') or checked,
+            schema_ref='life/companion_im.py#ImManager')
+        item['source_ref'] = fact.get('source_ref')
+        item['source_scope'] = fact.get('source_scope')
+        # state_scope 保持原义（就是通道状态本身），**不改格式**——t5 的用例按它
+        # 精确比期望值，改形状会打乱下游。来源档位另给一个键，需要分辨
+        # 「不知道」和「被关了」的人读 state_source 即可（t5 提的第二条）。
+        item['state_scope'] = state_
+        item['state_source'] = fact.get('source_scope') or 'unknown'
+        # 通道不是动作 kind，不适用「派活会不会被拒」；显式给 None，
+        # 免得下游按 `dispatchable is False` 判断时把「没有这个键」当成未知（t5 提的第三条）。
+        item['dispatchable'] = None
+        # usable 是「现在真能往外发消息吗」：通道在 **且** 账号登录过才算。
+        # 只给 channel.qq: ready 容易被读成「我能用 QQ」，所以把这两件事分开写。
+        item['usable'] = state_ == 'connected'
+        item['what'] = '消息通道（%s）' % (
+            '已登录，能收发' if state_ == 'connected' else '现在发不出消息：' + (
+                channel_reason.get(state_) or '状态未知')[:24])
+        catalogue.append(item)
+    # 改坏了自己能不能被救回来：这件事也只以 systemctl 实测为准。
+    catalogue.append(_section('guard.watchdog', [], lambda: watchdog_capability(core, now=now), None)
+                     or _capability('guard.watchdog', 'guard', '改坏源码时的自动回滚',
+                                    'unknown', reason='读不到守护服务的状态，不知道它管不管事。',
+                                    checked_at=checked, schema_ref='ops/companion-watchdog.py'))
+    # 最后归一：**每条都带 dispatchable 键**，免得下游被「缺键」当成未知（t5 提的第三条）。
+    # 取值的语义必须互斥、不能靠 falsy 一锅端（t5 留给 t7 的那条）：
+    #   True  → 在清单里，派活会被接收
+    #   False → 在清单里但派活会被拒；或不在清单里（谈不上派活）
+    #   None  → **不适用**（通道、守护这类不是动作 kind），不是「不能派活」
+    # 用 `if not dispatchable` 判断会把 None 和 False 混成一种，所以这里不靠注释约束：
+    # 键名就是为了「能派活吗」这个提问，不适用时给 None 是明确的「这个问题不成立」。
+    # 下游要区分就写 `is False`（不能派活）/ `is None`（不适用），别用 `not`。
+    for item in catalogue:
+        item.setdefault('dispatchable', None)
+    return catalogue
 
 
 def agent_capability(core, *, mode, endpoint, now=None):
@@ -427,11 +812,22 @@ def agent_capability(core, *, mode, endpoint, now=None):
                   '先派一件小事跑通，这条才会变成 ready。')
     else:
         reason = '本机没有可用的 DSH 运行时；子 agent 只能跑 node=work（本机命令）。'
-    return _capability(
+    item = _capability(
         AGENT_CAPABILITY, 'agent', '起独立上下文的子 agent 并回收结果',
         'ready' if (done and not (mode == 'strict' and endpoint)) else 'needs_setup',
         reason=reason, evidence=evidence_refs, checked_at=checked,
         schema_ref='life/companion_agents.py#OPS', node=node)
+    # agent 是唯一没有 GUIDE 的 kind（它的说明在 companion.AGENT_INSTRUCTIONS）。
+    # 这里补上同一份「怎么用」，按 op 说清参数，免得她照 AGENT_INSTRUCTIONS 的
+    # 字面写法去发顶层字段——DECISION 只认 7 个键，别的都会 additionalProperties 拒绝。
+    item['what'] = ('kind=agent + op(create/send/inspect/wait/cancel/resume/read_artifact)，'
+                    '参数一律放进 arguments 这个 JSON 字符串')
+    item['how_ref'] = 'life/companion.py#AGENT_INSTRUCTIONS'
+    item['ops'] = list(OP_NAMES)
+    # agent 是动作 kind，必须回答「能派活吗」：只有 ready 才真的能派。
+    # needs_setup 时说 False —— 它与「掉线」的区别由 status + reason 承载，不由这个布尔承载。
+    item['dispatchable'] = item['status'] == 'ready'
+    return item
 
 
 def _capability_line(item):
@@ -444,18 +840,115 @@ def _capability_line(item):
     return line
 
 
+# 每种动作「干什么」的一句话。摘要层用：只描述职责，不宣布可用、不含参数——
+# 可用性由 status 说，参数在 GUIDES 与 memory op=capabilities 里。
+# 这不是能力清单：有哪些 kind、能不能用，永远来自执行器与真实探测。
+PURPOSE = {
+    'command': '在云主机上跑命令',
+    'work': '读写工作区文件、跑测试',
+    'web': '上网搜索、读网页',
+    'skill': '查和存自己的做法库',
+    'memory': '回查自己做过的动作和回执',
+    'growth': '记自己的认识与兴趣',
+    'dsh': '把多步工作整体交给后端代理',
+    'computer': '操作主人电脑桌面',
+    'phone': '操作手机界面',
+    'body': '桌面形象身体',
+    'town': '去小镇和角色互动',
+    'bilibili': 'B 站搜索、看视频',
+}
+
+
+def _prompt_line(item):
+    """摘要里这一条写什么：能用的写一句它干什么，连接类写它的真实处境。
+
+    guard/channel 的 ``what`` 是「现在怎样」（有人兜底吗、发得出消息吗），
+    这个必须每轮看见；动作种类用固定的短句——它们没有随轮变化的状态。
+    """
+    ref = str(item.get('capability_ref') or '')
+    if ref.startswith('channel.') or ref == 'guard.watchdog':
+        return str(item.get('what') or _purpose(item))[:36]
+    return _purpose(item)
+
+
+def _purpose(item):
+    """一句话说这个能力是干什么的（摘要层用，不含参数）。"""
+    ref = str(item.get('capability_ref') or '')
+    if ref.startswith('channel.'):
+        return '消息通道'
+    if ref == 'guard.watchdog':
+        return '改坏源码时的自动回滚'
+    if ref == AGENT_CAPABILITY:
+        return '派子 agent 做完整一件事'
+    return PURPOSE.get(ref.replace('action.', ''), '动作')
+
+
+# 第一层索引里每一项的「处境」短词（3~8 字）。**这是给名字配的一句话，
+# 不是完整原因**：完整原因在条目里，用 memory op=capabilities 读。
+# 按 capability_ref 查，查不到就用状态本身当词——宁可短，不可把原因塞进来。
+SHORT_STATE = {
+    'guard.watchdog': {('offline',): '回滚守护/当前停用', ('ready',): '回滚守护/在岗',
+                       ('unknown',): '回滚守护/状态不明'},
+    'action.phone': {('offline',): '手机未连', ('unknown',): '手机未连', ('ready',): '手机在线'},
+    'action.computer': {('offline',): '桌面未连', ('ready',): '桌面已连'},
+    'action.body': {('offline',): '身体未连', ('ready',): '身体已连'},
+    'action.town': {('needs_setup',): '小镇未启用'},
+    'action.bilibili': {('needs_setup',): 'B站未登录', ('ready',): 'B站已登录'},
+    'action.dsh': {('needs_setup',): '后端代理不可用'},
+    'agent.subagent': {('needs_setup',): '子 agent 待跑通', ('ready',): '子 agent 可用'},
+    'channel.qq': {('offline',): 'QQ 通道关闭', ('needs_setup',): 'QQ 未登录'},
+    'channel.wechat': {('offline',): '微信通道关闭', ('needs_setup',): '微信未登录'},
+}
+
+# 状态本身的一句话兜底（比原因为短，且不抢位置）。
+# unknown 写成「这次没报」而不是「状态不明」：执行器这一轮压根没把它报成可用，
+# 那是「这轮没拿到」的意思，不是「它坏了」，更不是「它不存在」。
+STATUS_WORD = {'offline': '未连接', 'needs_setup': '未配好', 'unknown': '这轮没报可用',
+               'unsupported': '不支持', 'disabled': '已关闭'}
+
+
+def _short_state(item):
+    """第一层索引用：3~8 个字的处境词，绝不把完整原因写进主上下文。"""
+    ref = str(item.get('capability_ref') or '')
+    status = str(item.get('status') or 'unknown')
+    return (SHORT_STATE.get(ref) or {}).get((status,)) or STATUS_WORD.get(status, '状态不明')
+
+
 def capability_summary(catalogue):
-    """主上下文里的能力摘要：一共几条、哪些不能用、为什么。"""
+    """主上下文里的能力摘要：三层分开写——能用什么、不能用的是什么原因、细节去哪查。
+
+    - ``usable``：一句话一条，仅当轮执行器真的报成可用。
+    - ``unusable``：能力名 + 具体原因。**掉线的不会从这里消失**，所以「手机怎么
+      连不上了」有答案，而不是留一个沉默的缺口。
+    - ``how``：要参数细节用哪个动作读，不把完整 schema 塞进每一轮。
+
+    ``ready``/``not_ready`` 保留旧形状（下游有按这两个键读的地方），内容与上面一致。
+    """
     catalogue = list(catalogue or [])
     gaps = [item for item in catalogue if item.get('status') != 'ready']
     counts = {}
     for item in catalogue:
         counts[item['status']] = counts.get(item['status'], 0) + 1
+    # ===== 第一层：常驻索引（每轮都发，极小）=====
+    # 设计口径（用户 2026-11-18）：「想找的时候信息都有，不用的时候不用占很大上下文」。
+    # 所以**每一项都出现名字**（否则她不知道有这东西，也就不会去查），
+    # 但每项只给 3~8 个字的处境，完整原因/参数/示例一律不进主上下文。
+    usable = ['%s（%s）' % (str(item['capability_ref']).replace('action.', ''), _prompt_line(item))
+              for item in catalogue if item.get('status') == 'ready']
+    unusable = ['%s（%s）' % (str(item['capability_ref']).replace('action.', ''), _short_state(item))
+                for item in gaps]
     return dict(total=len(catalogue),
                 counts=counts,
-                ready=[item['capability_ref'] for item in catalogue if item.get('status') == 'ready'],
-                not_ready=[_capability_line(item) for item in gaps][:6],
-                note='这里是摘要；细节用 memory op=capabilities 读，每条都有自己的 checked_at 与原因。')
+                usable=usable,
+                unusable=unusable,
+                # 最后一句必须说清「怎么查」，否则名字给了她也用不上。
+                how=('上面每项只有一句处境，不带参数。要用某一项、或想知道它为什么不能用，'
+                     '就用 memory 动作 op=capabilities（可加 arguments{"status":"offline"} 过滤）'
+                     '读整条：完整原因、参数要点、检查时刻都在那。'),
+                ready=len(usable),
+                not_ready=len(gaps),
+                note='名字都在这里了，没有一个被省略；不在「可用」里只是此刻用不了，'
+                     '不是不存在，完整原因用 memory op=capabilities 读。')
 
 
 def _agent_tasks(core, observation, now):
@@ -642,6 +1135,122 @@ def _reply(op, projection, page, source_refs, *, status='completed', note=''):
                 output=_summary(op, page, projection))
 
 
+def _used(core, fields, projection):
+    """「这些能力我用过没有、上次怎么样」——只从动作台账提炼，只读。
+
+    与 ``capabilities`` 的分工：那边答「现在能不能用」，这边答「我用过没有」。
+    两者都不能替对方回答，所以两条都列出来，别拿一条当另一条。
+    """
+    repo = getattr(core, 'repo', None)
+    agent_id = getattr(getattr(core, 'life', None), 'agent_id', None)
+    if repo is None or not agent_id:
+        return dict(status='failed', op='used', items=[], next_cursor=None, source_refs=[],
+                    freshness=_freshness(projection), truncation=dict(truncated=False, reason=''),
+                    returned=0, available=0, schema=SCHEMA_VERSION,
+                    reason='没有接上台账，查不到自己的经历',
+                    evidence_scope='none',
+                    output='这次读不到动作台账，所以「用过没有」查不了；不能说成「没做过」。')
+    kinds = fields.get('kind') or fields.get('kinds') or ''
+    if isinstance(kinds, str):
+        kinds = [part for part in kinds.replace('，', ',').split(',') if part.strip()]
+    kinds = [str(item).strip() for item in kinds if str(item).strip()]
+    since, until = _window(fields)
+    if _WINDOW_UNPARSED in (since, until):
+        sample = fields.get('since') if since == _WINDOW_UNPARSED else fields.get('until')
+        return dict(status='failed', op='used', items=[], next_cursor=None, source_refs=[],
+                    freshness=_freshness(projection), truncation=dict(truncated=False, reason=''),
+                    returned=0, available=0, schema=SCHEMA_VERSION,
+                    reason='时间窗看不懂：%r' % (sample,),
+                    evidence_scope='none',
+                    output='时间窗只能是秒级时间戳，或 %s 这样的写法；没有按你给的条件去查，'
+                           '所以这次不是「查无此事」。' % '2026-11-17 09:00')
+    from .companion_experience import Experience
+    report = Experience(repo, agent_id).by_kind(kinds=kinds, since=since, until=until)
+    items = report['kinds']
+    page = _page(items, fields)
+    return dict(status='completed', op='used', items=page['items'], next_cursor=page['next_cursor'],
+                source_refs=['companion_actions'] + (['companion_agent_tasks'] if report['reported'] else []),
+                freshness=_freshness(projection), truncation=page['truncation'],
+                returned=page['returned'], available=page['available'], schema=SCHEMA_VERSION,
+                window=report['window'], reported=report['reported'],
+                basis_kinds=sorted({item['basis'] for item in items}),
+                evidence_scope='action_ledger',
+                evidence_note=report['scope'],
+                output=_used_summary(page, report))
+
+
+def _used_summary(page, report):
+    """主回执的一句话：分得开「用过」与「没做过」，也不把一次失败说成永久结论。"""
+    items = page['items']
+    if not items:
+        return ('这段时间里台账没有任何动作。没做过不等于做不到；'
+                '现在的可用状态看 capabilities。')
+    used = [item for item in items if item.get('counts', {}).get('total')]
+    never = [item for item in items if item['standing']['state'] == 'never_used']
+    lines = []
+    for item in used:
+        counts = item['counts']
+        last = item.get('last') or {}
+        verb = '成功' if last.get('outcome') == 'ok' else '失败'
+        basis = '亲历' if item['basis'] == 'first_hand' else '听它自己说（非亲历）'
+        lines.append('%s 用过 %d 次（成功 %d/失败 %d）；最近一次 %s %s，id=%s，%s'
+                     % (item['kind'], counts['total'], counts['ok'], counts['failed'],
+                        last.get('at') or '时间未知', verb, last.get('action_id'),
+                        basis))
+    # 句式必须跟着事实走：没有一项用过时，不能说「用过 0 项：」——
+    # 那是把「没做过」说成了「用过」（t5 的 F-5，repro-used-never-empty.py 实测）。
+    if used:
+        text = '用过 %d 项：%s' % (len(used), '；'.join(lines))
+    else:
+        text = '这段时间里一项都没用过，没有任何真实回执。'
+    if never:
+        text += ('没做过的是：' + '、'.join(item['kind'] for item in never)
+                 + '（只是没做过，不等于做不到）')
+    if report['reported']:
+        text += '。另有 %d 条是子 agent 台账里它自己的说法，不是亲历' % len(report['reported'])
+    return text
+
+
+_WINDOW_UNPARSED = object()
+
+
+def _window(fields):
+    """时间窗解析：接受秒级时间戳，也接受本地日期/时间字符串。
+
+    看不懂就返回 ``_WINDOW_UNPARSED``，由调用方明说「这次没按条件查」——
+    静默忽略过滤器会变成「拿全量冒充筛选结果」。
+    """
+    out = []
+    for key in ('since', 'until'):
+        value = fields.get(key)
+        if value in (None, ''):
+            out.append(None)
+            continue
+        parsed = _parse_window(value)
+        out.append(_WINDOW_UNPARSED if parsed is None else parsed)
+    return out[0], out[1]
+
+
+def _parse_window(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    for pattern in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, pattern).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
 def _summary(op, page, projection):
     items = page['items']
     if op == 'capabilities':
@@ -675,7 +1284,7 @@ def _summary(op, page, projection):
             len((projection.get('runtime') or {}).get('available_actions') or []),
             len(projection.get('attention') or []),
             len(projection.get('agent_tasks') or []),
-            caps.get('total'), len(caps.get('ready') or [])))
+            caps.get('total'), len(caps.get('usable') or [])))
     return '返回 %d 条。' % len(items)
 
 
@@ -731,6 +1340,8 @@ def read(core, action, *, state=None, current=None, wake_kind=None, attention=No
             items = [item for item in items if ref in (item.get('task_ref'), item.get('project_ref'))]
         page = _page(items, fields)
         return _reply(op, projection, page, ['companion_actions'])
+    if op == 'used':
+        return _used(core, fields, projection)
     return dict(status='failed', op=op, items=[], next_cursor=None, source_refs=[],
                 freshness=_freshness(projection),
                 truncation=dict(truncated=False, reason=''),
@@ -834,8 +1445,12 @@ SUMMARY = (
     'expires_at 到了就自动放下，不要还当在关注。\n'
     '- agent_tasks 是真实台账里排队或正在跑的事，new_results 是这件之后到的新结果条数；'
     'queued/running 都不是完成。\n'
-    '- capabilities 是摘要：total/counts/ready 列出能用的，not_ready 逐条给「为什么不能用」；'
-    'status=ready 才真能用，needs_setup 就按原因说明缺什么，unknown 是还没探测、不等于没有。\n'
+    '- capabilities 是**索引**不是说明书：usable 与 unusable 都把每个能力的名字列全了，'
+    '后面括号里只有 3~8 个字的处境（例如「手机（手机未连）」）。名字在，说明它存在；'
+    '不在「可用」里只是此刻用不了。**完整原因、参数要点、检查时刻都不在这里**，'
+    '要就按 how 那句话说的方法读；不要把 idx 里的一句话当成完整原因复述，也不要因为'
+    '某条只写了处境就说成「没有这个能力」。状态词是 ready/offline/needs_setup/unknown，'
+    'unknown 一律说「不知道」，别说成 offline 或没有。\n'
     '- 要细节用 memory 动作：op=awareness/capabilities/attention/agent_tasks 读投影，'
     'op=attention_set 加 conversation_ref/mode/reason/review_at/expires_at 改关注。'
     'people/conversations/experience 现在返回 not_implemented——那表示「这一层还没接上」，'
@@ -847,7 +1462,8 @@ GUIDE = (
     'value 为 null 就是不知道，disabled 是被关了、不能当成在线；here 里的 actor_ref（说话的人）、'
     'account_ref（你用的号）、conversation_ref（这段会话）是三样东西，别混着说。'
     'attention 里 released 或已到期的关注已经放下，别再当在关注；agent_tasks 里 queued/running 都还没完成。'
-    'capabilities 只给摘要，ready 才真能用，not_ready 每条都写了原因，按原因说缺什么，不知道就说不知道。'
+    'capabilities 是索引：每个能力的名字都在，括号里只有几个字的处境；完整原因与参数用 '
+    'memory op=capabilities 读整条。写着处境不等于没有这个能力，别把它说成不存在。'
     '要细节用 memory 动作：op=awareness/capabilities/attention/agent_tasks 按需读，'
     'op=attention_set 加 conversation_ref/mode/reason/review_at/expires_at 改关注；'
     'people/conversations/experience 返回 not_implemented，意思是这一层还没接上，不是「查无此事」。'

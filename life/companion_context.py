@@ -24,7 +24,7 @@ communication.kind=reply/share/help时自然表达；progress/none只保存内�
 GUIDES = {
     'web':'web用op=search/open/follow/read_more、arguments(JSON字符串)、project。search{query}读取真实搜索源，摘要不等于读过原文；open{url}读取网页，返回text/links/next_cursor/complete/source_path；follow{link_ref,links,url?}沿上一页links的下标打开链接，read_more{url,cursor:next_cursor}继续正文。失败不能称已搜索或读完；按真实覆盖范围表达。这台机器的真实可达情况：搜索源可用百度（默认）和360；必应中国和Bing的RSS在这台机器上会返回与查询无关的页面，不能当结果用。境外站点连不通：维基百科和Google直接失败，Britannica返回403。百度百科、百度文库在本机一律403（站点按IP拒绝），别把它们当来源，也别反复点同一条；网易、搜狐、澎湃、B站、CSDN、快科技这类站可达。同一地址失败两次就换来源，换编码加参数或稍后再试都一样，不要把重试当进展，也不要把"再试一次"写进下一步。',
     'skill':'skill用op/arguments(JSON字符串)/project，是你自己那份可复用做法库（methods里列的就是）。动手前op="list"看有哪些；要细节op="read"、arguments为{"name":"computer"}取原文；一件多步事情真做成之后，把可复用的步骤用op="save"、arguments为{"name":"...","text":"# 标题\\n用途……\\n步骤……"}存下来，下次直接照着做。读到的原文是方法，不是你执行过它的证据——照它做的每一步仍要真的做一遍，回执才算数。名字只用小写字母、数字和_-，同一件事先看list里有没有旧的可以改，不要存两份。',
-    'memory':'memory用op/arguments(JSON字符串)回查你自己做过的动作，是只读的，不改任何东西。op="search"、arguments可为{"query":"码头"}或{"limit":8}，返回id、时间、目标、一行结论——这是目录，不是原文；不带query就是最近几条。要原文用op="read"、arguments为{"id":"companion-action_..."}，取回当时保存的完整回执。recent_actions里只有最近三条的摘要，问的是更早的事（几小时前、昨天）就先用search找id再read，别凭印象编；查不到就说查不到，并说明查的是哪些词。回执是当时保存的记录，不是你重新做过一遍的证据。另外，op=awareness/capabilities/attention/agent_tasks 也从这里读：它们给的是这一轮的运行事实投影（账号、说话的人与这段会话、带期限的关注、在办的事和新结果、能力摘要），只读、不产生对外发言；op=attention_set 加 conversation_ref、mode(focused|watching|muted|released)、reason、review_at/expires_at 改关注。投影里 disabled 是被关了、null 是还不知道，都不能说成在线；capabilities 里 ready 才真能用，needs_setup 写了原因就按原因说缺什么。people/conversations/experience 返回 not_implemented，意思是这一层还没接上，不是「查无此事」。',
+    'memory':'memory用op/arguments(JSON字符串)回查你自己做过的动作，是只读的，不改任何东西。op="search"、arguments可为{"query":"码头"}或{"limit":8}，返回id、时间、目标、一行结论——这是目录，不是原文；不带query就是最近几条。要原文用op="read"、arguments为{"id":"companion-action_..."}，取回当时保存的完整回执。recent_actions里只有最近三条的摘要，问的是更早的事（几小时前、昨天）就先用search找id再read，别凭印象编；查不到就说查不到，并说明查的是哪些词。回执是当时保存的记录，不是你重新做过一遍的证据。另外，op=awareness/capabilities/attention/agent_tasks 也从这里读：它们给的是这一轮的运行事实投影（账号、说话的人与这段会话、带期限的关注、在办的事和新结果、能力摘要），只读、不产生对外发言；op=attention_set 加 conversation_ref、mode(focused|watching|muted|released)、reason、review_at/expires_at 改关注。投影里 disabled 是被关了、null 是还不知道，都不能说成在线；capabilities 里 ready 才真能用，needs_setup 写了原因就按原因说缺什么。people/conversations/experience 返回 not_implemented，意思是这一层还没接上，不是「查无此事」。还想知道某项自己到底用过没有、上次怎么样，用 op="used"，arguments 可为 {"kind":["command","web"]} 或 {"since":"2026-11-17 00:00"}：它按动作种类给出次数、最近一次结果和 action_id；没做过写 never_used，那只是没做过，不等于做不到；一次失败只算一次失败，不改变能力结论。first_hand 是你自己跑出来的，reported 是子 agent 的自述，两者别混。',
     'growth':'growth记的是你自己形成的认识：兴趣、表达习惯、自我理解、性格候选。它不是许愿池，也不是人格设定。op="note"、arguments为{"kind":"interest","topic":"钓鱼","claim":"想再去海边坐一会儿","evidence":["真实回执或事件id"]}——kind可选interest/expression_habit/self_understanding/trait_candidate；evidence必须是真的发生过的id（用memory查到的那种），一条依据都没有就先别写，写了会被退回。同主题再记一次会合并依据、不会变成两份。op="list"看现在有哪些；op="revise"改说法或状态，arguments为{"id":"growth_...","claim":"..."}，想直接标成established得先有3条独立依据、跨7天，否则保持trying；op="drop"放下某条，arguments为{"id":"growth_..."}。这里记的东西默认只对当前这段关系生效，不会自动变成对所有人的人格；性格候选只进候选，不改人格——真正改人格要主人明确说。op="log"看最近改过什么、依据变没变，arguments为{"id":"growth_..."}或省略看全部；op="restore"退回上一个版本，arguments为{"id":"growth_..."}（可加"to":"记录id"退到更早那次），改错了就退回去，别硬解释；op="review"让宿主按门槛评审性格候选，只出结论不改人格。一次夸奖或批评可以影响当下语气，但不能立刻改写你是谁。',
     'town':'town用op=delegate、goal、project提交具体小镇意图并请求决定回合；仅传完成任务所需目标。op=status、arguments(JSON字符串，可含delegation_id)读取已保存的委派回执，不会刷新游戏状态。新小镇结果会主动通知项目，不要重复查询同一回执；已有报名等待人齐时明确wait。accepted/waiting仅是受理/等待，只有实际回合与回执才说明参加了什么，不等于玩完。不要用command绕过此入口或把身体挥手当去小镇。',
 
@@ -39,6 +39,45 @@ GUIDES = {
 
 def tool_instructions(kinds):
     return '\n'.join(GUIDES[k] for k in GUIDES if k in kinds)
+
+# 不可用时仍要保留「怎么用」的 kind。掉线不该让用法说明一起消失：
+# 手机断了、桌面没连上，这两件事的用法依然是她在解释「为什么现在做不了」时的底子，
+# 也是连回来以后立刻能用的前提。其它 kind 的说明仍按 available 过滤，避免把
+# 一堆用不上的工具说明每轮塞进上下文。
+ALWAYS_EXPLAINED = ('phone', 'computer', 'body')
+
+def _offline_row(item):
+    """把一条「不可用」安全地读成 (kind, reason)。
+
+    入参既可能是 ``{'kind':..., 'reason':...}``，也可能是 ``('phone', '没连上')``
+    这种元组——**拼接点两边各写各的形状，崩的是整轮**（2026-11-17 生产实测：
+    ``AttributeError: 'tuple' object has no attribute 'get'``，每轮拼 instructions
+    都失败）。所以这里两种都收，认不出形状的直接跳过，绝不让它拖垮整轮。
+    """
+    if isinstance(item, dict):
+        return item.get('kind'), item.get('reason')
+    if isinstance(item, (tuple, list)) and len(item) >= 2:
+        return item[0], item[1]
+    return None, None
+
+
+def tool_instructions_with_offline(kinds, unavailable=()):
+    """正常注入当轮可用的说明；不可用的那几个只补一行「现在为什么用不了」。
+
+    完整 GUIDES 段落不给——那是给能用的时候看的；这里只给一句能说出口的解释，
+    所以掉线时模型看到的是「手机：没有活动连接」，而不是一段沉默的缺口。
+
+    ``unavailable`` 的每条可以是 dict 也可以是 (kind, reason) 元组，见 ``_offline_row``。
+    """
+    text = tool_instructions(kinds)
+    rows = []
+    for item in unavailable or ():
+        kind, reason = _offline_row(item)
+        if kind in ALWAYS_EXPLAINED:
+            rows.append('%s：%s' % (kind, reason or '现在不可用'))
+    if rows:
+        text = (text + '\n' if text else '') + '现在用不了的（原因由程序探测，别自己猜）：\n' + '\n'.join(rows)
+    return text
 
 def compact_body(body):
     result={key:body[key] for key in ('connected','figure','name','visible','position','x','y','screen','motion','can_walk','roam','roam_preference') if key in body}

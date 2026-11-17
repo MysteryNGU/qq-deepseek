@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>小鱼</title>
 <style>
 :root{--ink:#213c4b;--muted:#7d939e;--blue:#3487a5;--line:#e3ecee;--paper:#f5f8f8;--mint:#e1f0eb;font-family:system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--paper);font-size:15px;color-scheme:light}*{box-sizing:border-box}body{margin:0}button,input,textarea{font:inherit}button{cursor:pointer;border:0;color:inherit;background:none}button:disabled{opacity:.45}svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.app{height:100dvh;display:flex;flex-direction:column;max-width:780px;margin:auto;background:var(--paper)}header{display:flex;align-items:center;gap:12px;padding:18px 20px 15px;background:#ffffffed;border-bottom:1px solid var(--line);flex-shrink:0}.avatar{width:46px;height:46px;border-radius:17px;background:#e4eff4;object-fit:cover}.heading{flex:1}.heading h1{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:1px}.sub{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}.dot{width:6px;height:6px;background:#87bba5;border-radius:50%}.icon{display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:14px}.icon:active{background:var(--line)}.scene{margin:14px 18px 0;padding:10px 14px;border-radius:12px;background:#eaf1f1;font-size:12px;display:flex;align-items:center;gap:8px;color:#678690}.scene span:last-child{margin-left:auto}main{overflow:auto;flex:1;padding:24px 18px 12px;scroll-behavior:smooth;overscroll-behavior:contain}.date{text-align:center;color:#97a7af;font-size:11px;margin:0 0 24px}.msg{display:flex;flex-direction:column;align-items:flex-start;margin-bottom:17px;animation:appear .18s ease-out}.msg.user{align-items:flex-end}.bubble{background:white;border:1px solid #e9eff0;border-radius:5px 19px 19px 19px;padding:12px 15px;max-width:88%;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 3px 9px #213c4b03}.user .bubble{background:var(--mint);border-color:var(--mint);border-radius:19px 5px 19px 19px}.stamp{font-size:10px;color:#9aaab1;margin-top:6px;padding:0 4px}.chatpic{display:block;max-width:230px;max-height:310px;border-radius:12px;margin:5px 0;object-fit:contain;background:#ecf1f2}.pic-error{font-size:12px;color:var(--muted);padding:10px}.typing{font-size:12px;color:var(--muted);padding:0 22px 6px;min-height:22px}.compose{padding:11px 14px max(15px,env(safe-area-inset-bottom));background:#fff;border-top:1px solid var(--line);flex-shrink:0}.inputrow{display:flex;gap:8px;align-items:flex-end}.inputrow textarea{border:0;outline:0;resize:none;border-radius:15px;background:#f1f5f5;line-height:1.5;min-height:46px;max-height:130px;padding:12px;flex:1;min-width:0;color:var(--ink)}.inputrow textarea::placeholder{color:#9baab2}.send{width:46px;height:46px;background:var(--ink);color:#fff;border-radius:15px;display:grid;place-items:center}.hint{font-size:10px;color:#9baab2;text-align:center;margin-top:9px}.attachments{display:flex;gap:8px;overflow:auto}.attachment{position:relative;margin:0 0 10px}.attachment img{width:62px;height:62px;object-fit:cover;border-radius:10px}.remove{position:absolute;right:-2px;top:-4px;border-radius:50%;background:var(--ink);color:white;width:22px;height:22px}.error{margin:0 16px 8px;color:#a15c4b;background:#fff1ed;border-radius:10px;padding:9px 12px;font-size:12px;display:none}.empty{padding:45px 15px;text-align:center;color:var(--muted);line-height:1.8}.empty b{display:block;color:var(--ink);font-size:20px;font-weight:500;margin:14px}.pair{display:none;position:fixed;inset:0;background:linear-gradient(155deg,#eff6f5,#f9f8f3);z-index:5;padding:9vh 28px 30px;overflow:auto}.pair .avatar{width:74px;height:74px;border-radius:25px}.pair h2{font-size:30px;font-weight:550;letter-spacing:2px;margin:25px 0 13px}.pair p{line-height:1.8;color:var(--muted);font-size:14px}.pair label{display:block;font-size:12px;color:var(--muted);margin:35px 0 12px}.pair input{width:100%;padding:17px 12px;border:1px solid #dce7e8;background:#fff;border-radius:15px;font-size:27px;letter-spacing:12px;text-align:center;outline:none;color:var(--ink)}.primary{width:100%;background:var(--ink);color:white;border-radius:15px;padding:15px;margin-top:18px}.pair .footer{font-size:11px;margin-top:30px;color:#96a8ae}.pair-error{color:#a15c4b!important;min-height:24px}.overlay{position:fixed;inset:0;z-index:6;background:#152c3e55;display:none;align-items:flex-end}.sheet{width:100%;max-width:780px;margin:0 auto;background:#fff;border-radius:24px 24px 0 0;padding:24px 23px max(30px,env(safe-area-inset-bottom));max-height:85dvh;overflow:auto}.sheet h2{font-size:20px;margin:0 0 24px}.setting{display:flex;align-items:center;justify-content:space-between;padding:15px 0;border-bottom:1px solid var(--line);gap:18px}.setting small{display:block;font-size:12px;color:var(--muted);line-height:1.6;margin-top:5px}.setting input{accent-color:var(--blue);width:20px;height:20px}.setting button{background:#eaf2f3;padding:9px 13px;border-radius:10px;white-space:nowrap;font-size:13px}.close{float:right}.sheet p{font-size:12px;line-height:1.8;color:var(--muted)}.meta{font-size:12px;color:var(--muted);line-height:1.9;margin-top:16px}.gallery{position:fixed;inset:0;z-index:8;background:#0c171ded;display:none;align-items:center;justify-content:center}.gallery img{max-width:100%;max-height:90dvh;object-fit:contain}.gallery button{position:absolute;top:24px;right:20px;color:white;font-size:28px}@keyframes appear{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
@@ -131,7 +131,77 @@ function renderLife(state){
 let refreshTimer=null,runtimePending=false;
 function queueRefresh(){if(refreshTimer)return;refreshTimer=setTimeout(()=>{refreshTimer=null;refresh()},700)}
 const STATE_CACHE='xiaoyu.state.v1';
-function storeState(state){try{localStorage.setItem(STATE_CACHE,JSON.stringify({history:(state.history||[]).slice(-60),life:state.life||{},phase:state.phase||{},town:state.town||{},active:state.active,notes:state.notes||[],projects:state.projects||[],cached_at:Date.now()}))}catch(e){}}
+// ---------------------------------------------------------------- 消息状态（P31-1）
+// 服务端每条消息在 requests 表里有终态，并经 /mobile/state 的 mobile_requests 下发；
+// 以前前端把它整个丢掉，于是「发了、她没回」时用户零提示。
+// 这里把「服务器收下了」与「她处理完了」分成两件事说：
+//   sending  已发出，还在等服务器回应
+//   accepted 服务器收下了（202）——**这只说明收到了，不代表她回过了**
+//   completed 她处理完了
+//   failed / interrupted 处理没完成——**原地重试，沿用同一个 id**
+// 重试必须复用同一个 id：服务端按 (device,id) 去重（companion_mobile.py:314），
+// 换新 id 会绕过去重，同一条话被处理两遍。
+const REQUEST_STATUS='xiaoyu.requests.v1';
+function loadRequests(){try{const raw=localStorage.getItem(REQUEST_STATUS);const rows=JSON.parse(raw||'[]');return Array.isArray(rows)?rows.filter(r=>r&&r.id):[]}catch(e){return []}}
+function saveRequests(rows){try{localStorage.setItem(REQUEST_STATUS,JSON.stringify((rows||[]).slice(-40)))}catch(e){}}
+let pendingRequests=loadRequests();
+// ---------------------------------------------------------------- 草稿（P31-2）
+// WebView 每次启动都 loadUrl 一个空白页，页面重建/进程被回收后输入框是空的。
+// 只存**文字**：图片是 base64、单张上限 8MB、最多 8 张，整组塞 localStorage 会撞配额
+// （审计明确提醒）。所以这里明确只保文字，图片重启后丢弃——不存比存一半更诚实。
+const DRAFT_KEY='xiaoyu.draft.v1';
+const DRAFT_LIMIT=8000;
+function saveDraft(){try{const value=$('text')?$('text').value:'';if(value&&value.trim())localStorage.setItem(DRAFT_KEY,value.slice(0,DRAFT_LIMIT));else localStorage.removeItem(DRAFT_KEY)}catch(e){}}
+function restoreDraft(){
+  // 只在输入框还空的时候恢复：用户已经打了字就不要覆盖他正在写的东西。
+  try{const saved=localStorage.getItem(DRAFT_KEY);const box=$('text');if(!saved||!box||box.value)return;
+    box.value=saved;box.style.height='46px';box.style.height=Math.min(130,box.scrollHeight)+'px';
+    const hint=$('composeHint');if(hint)hint.textContent='上次没发出去的内容还在。';
+  }catch(e){}
+}
+function clearDraft(){try{localStorage.removeItem(DRAFT_KEY)}catch(e){}}
+function pendingRequest(id){return pendingRequests.find(r=>r.id===id)||null}
+function rememberRequest(id,text,status){const now=Date.now();const row=pendingRequest(id);if(row){row.status=status;row.at=now}else{pendingRequests.push({id,text,status,at:now})}saveRequests(pendingRequests)}
+function requestState(row){
+  // 以服务端为准：能读到 mobile_requests 就用它，读不到才用本地记的状态。
+  const server=(latestState&&Array.isArray(latestState.mobile_requests))?latestState.mobile_requests:null;
+  const hit=server&&server.find(r=>r.id===row.id);
+  return (hit&&hit.status)||row.status||'sending';
+}
+const REQUEST_WORDS={sending:'正在发送…',accepted:'已送到，她在处理',completed:'她处理完了',failed:'处理失败，可以重发',interrupted:'被打断了，可以重发'};
+function renderRequests(){
+  // 没有终态的消息挂在消息流末尾：用户能看见自己的话已经出去了、现在到哪一步。
+  const chat=$('chat');if(!chat)return;
+  for(const item of [...chat.querySelectorAll('.msg.pending')])item.remove();
+  const live=pendingRequests.filter(row=>requestState(row)!=='completed');
+  for(const row of live){
+    const state=requestState(row);
+    const item=document.createElement('div');item.className='msg user pending';item.dataset.request=row.id;
+    const bubble=document.createElement('div');bubble.className='bubble';
+    const text=document.createElement('div');text.textContent=row.text||'';bubble.append(text);
+    const tag=document.createElement('div');tag.className='request-state '+state;tag.textContent=REQUEST_WORDS[state]||state;
+    bubble.append(tag);item.append(bubble);
+    if(state==='failed'||state==='interrupted'){
+      const retry=document.createElement('button');retry.className='request-retry';retry.textContent='重发';
+      retry.setAttribute('aria-label','重发这条消息');
+      retry.onclick=()=>resend(row.id);
+      item.append(retry);
+    }
+    chat.append(item);
+  }
+  saveRequests(pendingRequests);
+}
+async function resend(id){
+  const row=pendingRequest(id);if(!row||busy)return;
+  // 沿用同一个 id（幂等键），内容不变；服务端会按 digest 判是不是同一条。
+  const payload=row.payload||{text:row.text||''};
+  rememberRequest(id,row.text,'sending');
+  error('正在重发…');
+  try{await api('POST','/mobile/chat',Object.assign({id},payload));rememberRequest(id,row.text,'accepted');error('');setTimeout(()=>refresh(true),180)}
+  catch(e){rememberRequest(id,row.text,'failed');error('这条还是没发出去：'+e.message)}
+  renderRequests();
+}
+function storeState(state){try{localStorage.setItem(STATE_CACHE,JSON.stringify({history:(state.history||[]).slice(-60),life:state.life||{},phase:state.phase||{},town:state.town||{},active:state.active,notes:state.notes||[],projects:state.projects||[],mobile_requests:state.mobile_requests||[],cached_at:Date.now()}))}catch(e){}}
 function cachedState(){try{const raw=localStorage.getItem(STATE_CACHE);if(!raw)return null;const value=JSON.parse(raw);if(!value||Date.now()-(value.cached_at||0)>86400000)return null;return value}catch(e){return null}}
 async function refresh(runtime){if(!paired)return;const wants=!!runtime||runtimePending;if(refreshing){refreshAgain=true;if(wants)runtimePending=true;return}refreshing=true;const requestedPhaseRevision=phaseRevision;try{const state=await api('GET','/mobile/state'+(wants?'?runtime=1':''));if(requestedPhaseRevision!==phaseRevision){state.phase=currentPhase;state.phase_after_snapshot=true;if(state.observability)state.observability.phase=currentPhase}render(state);renderLife(state);storeState(state);connection(true);error('');$('lifeReadError').textContent='';$('runtimeReadError').textContent=''}catch(e){connection(false);error(e.message);$('lifeReadError').textContent='暂时没连上，先保留上次的近况。';$('runtimeReadError').textContent=e.message}finally{refreshing=false;runtimePending=false;if(refreshAgain){refreshAgain=false;setTimeout(()=>refresh(wants),150)}}}
 window.onServerEvent=e=>{if(typeof e==='string'){try{e=JSON.parse(e)}catch{return}}if(e.type==='connection')connection(!!e.connected);if(e.type==='error'){error(e.text||'这次暂时没有完成。');queueRefresh()}if(e.type==='message'&&e.role==='user')Native.stopSpeech();if(e.type==='phase'){phaseRevision++;applyPhase(e.phase||{});if($('runtimeOverlay').style.display==='flex')refresh(true)}if(e.type==='message'&&e.role==='assistant')appendIncoming(e);if(['message','ready','resync','snapshot','status','action_result','mobile_request'].includes(e.type)){queueRefresh();if(e.type==='message'&&e.role==='assistant'&&speech&&e.text&&!e.previously_received&&messageForThisPhone(e))Native.speak(e.text)}};
@@ -152,7 +222,7 @@ function appendIncoming(event){
 window.onPickedImage=im=>{if(typeof im==='string')im=JSON.parse(im);if(im.error){error(im.error);return}if(images.length>=8){error('一次最多发送八张图片。');return}images.push(im);attachmentUI()};
 function uuid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return(c==='x'?r:(r&3|8)).toString(16)})}
 async function send(){const text=$('text').value.trim();if(busy||(!text&&!images.length))return;Native.stopSpeech();busy=true;$('send').disabled=true;const sentImages=images.slice(),key=JSON.stringify({text,images:sentImages});if(!lastRequest||lastRequest.key!==key)lastRequest={key,id:uuid()};try{await api('POST','/mobile/chat',{id:lastRequest.id,text,images:sentImages});lastRequest=null;if($('text').value.trim()===text){$('text').value='';$('text').style.height='46px'}images=images.filter(im=>!sentImages.includes(im));attachmentUI();error('');setTimeout(refresh,180)}catch(e){error(e.message)}finally{busy=false;$('send').disabled=false}}
-$('send').onclick=send;$('text').oninput=()=>{Native.stopSpeech();$('text').style.height='46px';$('text').style.height=Math.min(130,$('text').scrollHeight)+'px'};$('text').onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();send()}};$('pick').onclick=()=>Native.pickImage();
+$('send').onclick=send;$('text').oninput=()=>{Native.stopSpeech();$('text').style.height='46px';$('text').style.height=Math.min(130,$('text').scrollHeight)+'px';saveDraft()};$('text').onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();send()}};$('pick').onclick=()=>Native.pickImage();
 $('pairButton').onclick=async()=>{const code=$('code').value.trim();if(!/^\d{6}$/.test(code)){$('pairError').textContent='输入六位数字配对码。';return}$('pairButton').disabled=true;$('pairError').textContent='';try{await api('POST','/mobile/pair',{code,device_name:config().device_name||'小鱼安卓'});paired=true;$('pair').style.display='none';Native.startConnection();refresh()}catch(e){$('pairError').textContent=e.message}finally{$('pairButton').disabled=false}};
 function phoneStatus(){const cfg=config();$('phone').textContent=cfg.phone_enabled?'已开启 · 查看':'打开授权页';$('version').textContent='小鱼 '+(cfg.version||'0.3.0');}
 $('settings').onclick=()=>{document.activeElement?.blur();phoneStatus();imRefresh();$('overlay').style.display='flex'};$('closeSettings').onclick=()=>{$('overlay').style.display='none'};$('overlay').onclick=e=>{if(e.target===$('overlay'))$('overlay').style.display='none'};$('speech').onchange=()=>{speech=$('speech').checked;Native.setSpeech(speech)};$('phone').onclick=()=>Native.openPhoneSettings();$('appInfo').onclick=()=>Native.openAppSettings();$('battery').onclick=()=>Native.openSettings();$('reconnect').onclick=()=>{Native.startConnection();refresh();$('overlay').style.display='none'};$('closeGallery').onclick=()=>{$('gallery').style.display='none'};

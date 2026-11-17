@@ -118,3 +118,7 @@ ZenlessZoneZero-Auto/
 /output/
 /build/
 *.tar.gz
+
+# 本地临时产物（不提交）
+/.acceptance-local/
+/.tmp-ev*.py

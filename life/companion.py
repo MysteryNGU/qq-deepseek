@@ -41,6 +41,7 @@ from .companion_motivation import CHOICES as MOTIVATION_CHOICES, ATTENTION_INSTR
 from .companion_followthrough import FollowThrough, FollowThroughError, FIELD as ENGAGEMENT
 from . import companion_delivery as delivery_ledger
 from . import companion_evidence as evidence
+from . import companion_experience as experience_log
 from . import companion_presence as presence
 from .companion_awareness import build as build_awareness, public_view
 
@@ -51,8 +52,8 @@ from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
 
-from .companion_context import METHOD, tool_instructions, compact_body, compact_recall
-from .companion_awareness import spending_mode
+from .companion_context import METHOD, tool_instructions, tool_instructions_with_offline, compact_body, compact_recall
+from .companion_awareness import spending_mode, offline_reasons
 
 _ERROR_KINDS = {
     'ConnectError': '连不上：DNS 解析失败或连接被拒',
@@ -201,6 +202,114 @@ def result_view(result, limit=600, op=''):
     return ''
 
 
+# ---------------------------------------------------------------- 模型输出容错提取
+# 模型偶尔会在 JSON 后面追加解释（Extra data），或用 ``` 包起来，或被截断。
+# 这些都不是「模型没回答」，不该让整轮失声。按代价从低到高依次尝试，
+# 并把实际用了哪一种记进审计，便于长期统计模型输出质量。
+
+_FENCE = re.compile(r'```(?:json|JSON)?\s*\n?(.*?)(?:```|$)', re.S)
+# 最近一次成功解析用的方式（standard/fence/outer_braces/scan）；供审计与回溯读取。
+_LAST_PARSE_METHOD = [None]
+
+
+def _json_balanced_object(text, start):
+    """从 text[start]=='{' 起，逐字符找到第一个括号配平的完整对象；找不到返回 None。
+
+    只做结构扫描，不管字符串里的花括号（"a{b" 这类要先跳过字符串内部）。
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    return None
+
+
+def parse_model_json(raw):
+    """把模型的一段输出解析成 dict。返回 (值, 方式, 尝试记录)；全失败时值为 None。
+
+    顺序（照 P27 约定）：标准 → 去 ``` 代码块 → 首 { 到末 } → 逐字符扫描配平对象。
+    """
+    attempts = []
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None, [dict(method='empty', error='empty output')]
+    text = raw.strip()
+
+    def _try(method, candidate):
+        if candidate is None:
+            return None
+        try:
+            value = json.loads(candidate)
+        except ValueError as error:
+            attempts.append(dict(method=method, error='%s: %s' % (type(error).__name__, str(error)[:120])))
+            return None
+        attempts.append(dict(method=method, ok=True))
+        return value
+
+    for method, candidate in (
+            ('standard', text),
+            ('fence', next((m.group(1).strip() for m in _FENCE.finditer(text)), None)),
+            ('outer_braces', text[text.find('{'):text.rfind('}') + 1]
+                if '{' in text and '}' in text and text.find('{') < text.rfind('}') else None)):
+        value = _try(method, candidate)
+        if isinstance(value, dict):
+            return value, method, attempts
+        if value is not None:
+            attempts.append(dict(method=method, error='parsed but not an object: %s' % type(value).__name__))
+
+    # 逐字符扫描：从左往右，每个 '{' 都试一次配平提取。
+    search_at = 0
+    while True:
+        start = text.find('{', search_at)
+        if start < 0:
+            break
+        candidate = _json_balanced_object(text, start)
+        if candidate is None:
+            break                      # 后面已经没有配平的对象了，不必再扫
+        try:
+            value = json.loads(candidate)
+        except ValueError as error:
+            attempts.append(dict(method='scan', error='%s: %s' % (type(error).__name__, str(error)[:120])))
+            search_at = start + 1
+            continue
+        if isinstance(value, dict):
+            attempts.append(dict(method='scan', ok=True, at=start))
+            return value, 'scan', attempts
+        search_at = start + 1
+    if not any(item.get('method') == 'scan' for item in attempts):
+        attempts.append(dict(method='scan', error='no balanced object found'))
+    return None, None, attempts
+
+
+def raw_head_of(result, limit=800):
+    """审计用：原始输出的前 N 个字符。取不到就是 None，不编造。"""
+    raw = (result.get('message') or {}).get('content')
+    if not isinstance(raw, str):
+        return None
+    return raw[:limit]
+
+
+def last_parse_method():
+    """上一次成功解析用的方式；没有过就是 None。给审计/回溯用，不要在解析里读它。"""
+    return _LAST_PARSE_METHOD[0]
+
+
 def ensure_goal(action):
     """每个动作都要说得清打算做什么。模型没写就按动作本身补一个，不留空意图。"""
     goal = action.get('goal')
@@ -212,6 +321,11 @@ def ensure_goal(action):
     action['goal'] = ('%s %s' % (op, target)).strip()[:200]
     action['goal_source'] = 'derived'
     return action['goal']
+
+# 执行器实际回报的「这一步做成了」词表。companion_executor/work/phone 一律产
+# 'completed'；'succeeded' 是 companion_agents 映射表里的旧写法，保留兼容。
+# 只认这两个：failed/cancelled/interrupted/queued 都不是「有回执」。
+SETTLED_OK = ('completed', 'succeeded')
 
 AGENT_INSTRUCTIONS = (
     'agent 是「起一个子 agent 独立做完一件事」：用 kind=agent、op、arguments(JSON字符串)。'
@@ -662,6 +776,14 @@ class Companion:
             self._background.append(asyncio.create_task(self._supervise('memory_index',self._index_memories())))
         await self.town.start()
         await self.bilibili_social.start()
+        # B站原始视频是临时中间产物，流程结束时已删；这里兜「进程被 kill、机器重启」
+        # 这类没走完 finally 的残渣，避免几天后又把磁盘塞满。失败只记日志，不挡启动。
+        try:
+            moved = await self.bilibili_reader.startup_sweep()
+            if moved.get('removed'):
+                log.info('启动清理 bilibili-frames：%d 个文件、%d 字节', moved['removed'], moved['freed'])
+        except Exception:
+            log.exception('bilibili-frames 启动清理失败，不影响启动')
         self._emit('status', '已在本机醒来，可以聊天。')
 
     async def _index_memories(self):
@@ -1258,6 +1380,33 @@ class Companion:
                             updated=_iso_time(row['updated'])))
         return out
 
+    def _self_process_facts(self, kinds):
+        """我自己这份程序的事实：跑在哪、源码在哪、改完怎么生效。
+
+        只报程序算得出来的：单元名与源码根从真实路径推，拿不到就写 null，
+        不写死「一定是 /opt/qq-deepseek」。是否真的能写由 ``work`` 是否可用来反映
+        （``work`` 不可用就说明我这边写不进自己的源码），不替她打包票。
+
+        **生效方式**：没有热重载，改完必须重启进程——这条是结构事实，
+        不是某台机器的配置，所以无条件下发。
+        """
+        source_root = None
+        try:
+            from . import companion as _self
+            source_root = str(Path(_self.__file__).resolve().parents[1])
+        except Exception:
+            source_root = None
+        return dict(
+            unit='companion.service',
+            source_root=source_root,
+            work_root=str(getattr(self.executor, 'work_root', '') or '') or None,
+            # 能不能写自己的源码，以 work 通道是否真的可用为准（不打包票）。
+            can_write_own_source=('work' in kinds),
+            restart_to_take_effect=True,
+            effect_note=('改完源码不会自动生效：进程已经把旧代码载进内存了，'
+                         '必须 systemctl restart companion.service 才用上新版本。'),
+            source_ref='life/companion.py#_self_process_facts')
+
     def _available_destinations(self):
         if hasattr(self.executor,'available_destinations'):return self.executor.available_destinations()
         return [dict(target='desktop',source=dict(kind='desktop'))] if self._body_context.get('connected') else []
@@ -1402,6 +1551,10 @@ class Companion:
                      available_destinations=self._available_destinations(),last_user_endpoint=self._state('last_user_endpoint'))
         state['execution'] = dict(os=os.name, shell='PowerShell' if os.name=='nt' else 'sh',
             command_host='core', desktop_connected=bool(self._body_context.get('connected')))
+        # 她自己的部署事实：跑在哪、源码在哪、改完怎么生效。
+        # 这些是程序知道的事实，不该让她每次靠猜（2026-11-18 对照：用户在 D1
+        # 问「改完怎么生效」，她答不出「要重启」这条已知事实）。
+        state['self_process'] = self._self_process_facts(kinds)
         state['town'] = self.town.context()
         state['phone_context'] = self.executor.phone_context() if hasattr(self.executor,'phone_context') else dict(connected=False,devices=[])
         town_status = self.town.snapshot()
@@ -1486,8 +1639,9 @@ class Companion:
                 picked.append(r)
                 seen.add(r['id'])
         if len(picked) < 3:
-            for r in self.repo._all('SELECT id,status,action,result,project_ref FROM companion_actions '
-                                    'WHERE agent=? ORDER BY updated DESC LIMIT 8', (self.life.agent_id,)):
+            for r in self.repo._all('SELECT id,status,action,result,project_ref,created,updated '
+                                    'FROM companion_actions WHERE agent=? ORDER BY updated DESC LIMIT 8',
+                                    (self.life.agent_id,)):
                 if len(picked) >= 3:
                     break
                 if r['id'] not in seen:
@@ -1495,18 +1649,31 @@ class Companion:
                     seen.add(r['id'])
         def _recent_view(r):
             action = json.loads(r['action'] or '{}')
-            result = json.loads(r['result'] or '{}')
-            return dict(id=r['id'], status=r['status'], project=action.get('project'),
+            result = json.loads(r['result'] or '{}') if r['result'] else {}
+            rows = dict(r)
+            return dict(id=r['id'], at=_iso_time(rows.get('updated') or rows.get('created')),
+                        status=r['status'], project=action.get('project'),
                         same_project=bool(settled_ref and r['project_ref'] == settled_ref),
                         op=action.get('op') or action.get('kind'),
                         goal=(action.get('goal') or '')[:100],
                         target=action_target(action),
                         output=result_view(result, 600, action.get('op')),
-                        output_path=result.get('output_path') or result.get('source_path'))
+                        output_path=result.get('output_path') or result.get('source_path'),
+                        read_op=dict(kind='memory', op='read', arguments=encode(dict(op='read', id=r['id']))))
         state['recent_actions'] = [_recent_view(r) for r in picked[:3]]
+        # 经历：每种能力最近一次的真实结果，带 action_id 可回查；亲历与听说分开标。
+        # 只放最近几天的，旧经历走 memory op=used，本轮不为它腾地方。
+        state['experience'] = experience_log.Experience(self.repo, self.life.agent_id).summary(kinds)
         if observation:
             state['action_result'] = dict(observation, output=result_view(observation, 2400, observation.get('op')))
-        instructions=persona+'\n\n'+METHOD+'\n'+MOTIVATION_INSTRUCTIONS+'\n'+ATTENTION_INSTRUCTIONS+'\n'+tool_instructions(kinds)+'\n'+AGENT_INSTRUCTIONS
+        # 掉线的连接留一句原因：手机/桌面断开时，GUIDES 里那一段会随 kinds 一起消失，
+        # 只剩一个沉默的缺口——她没法解释「为什么现在不能操作手机」。
+        # 这里必须是 dict：tool_instructions_with_offline 按 item.get('kind') 读；
+        # 早先写成 (kind, reason) 元组，每一轮都在拼 instructions 时抛 AttributeError。
+        unavailable = [dict(kind=item.get('kind'), reason=item.get('reason'))
+                       for item in (offline_reasons(self, kinds) or [])
+                       if isinstance(item, dict)]
+        instructions=persona+'\n\n'+METHOD+'\n'+MOTIVATION_INSTRUCTIONS+'\n'+ATTENTION_INSTRUCTIONS+'\n'+tool_instructions_with_offline(kinds, unavailable)+'\n'+AGENT_INSTRUCTIONS
         def pack():
             state['context_reading']=dict(history_messages=len(history),recalled_items=len(material['recall']),notes=len(material['notes']),today_items=len(material['today']),meaning='本轮实际装入；不是数据库总数')
             # Previous assistant messages demonstrate the actual wire format.
@@ -1786,36 +1953,75 @@ class Companion:
             return None
         return result
 
-    def _salvage_reply(self, result, purpose, source, error):
-        """解析失败时把这一轮的正文救回来；救不回来返回 None 交给原来的失败路径。"""
-        salvaged = self._reply_only(result)
-        if salvaged is None and purpose == 'dialogue':
-            # 对话轮宁可给一句诚实的"没接上"，也不能让用户以为消息没发出去。
-            salvaged = dict(reply='刚才那下没接上，您再说一遍行吗？')
+    def _salvage_reply(self, result, purpose, source, error, attempts=None):
+        """解析失败时把这一轮的正文救回来；救不回来也要给一句诚实的回话。
+
+        绝不返回 None 交给「静默失败」：用户发过话，就一定要看到某种回复。
+        救回来的东西只是纯回复——不带动作、不改项目，来源在审计里写清楚。
+        """
+        salvaged = None
+        how = '原文当回复'
+        attached = getattr(error, 'salvaged_reply', None)
+        if isinstance(attached, str) and attached.strip():
+            # 截断但已解析出 reply：用它，而不是拿半截 JSON 原文去正则抠。
+            salvaged = dict(reply=' '.join(attached.split())[:4000], followups=[], remember=[],
+                            projects=[], actions=[], wake_after=0)
+            how = '截断后已解析的reply'
+        else:
+            salvaged = self._reply_only(result)
         if salvaged is None:
-            return None
-        self._audit('activity', '这轮没有可解析的 JSON，已把原文当回复交付，未执行任何动作。',
-                    reason=str(error)[:160], source=source.id)
+            # 连一句人话都取不到（空输出/纯符号）：给一句诚实的「没接上」。
+            # 这不是失败通知，是对话轮必须有的最小回复。
+            salvaged = dict(reply='刚才那下没接上，您再说一遍行吗？')
+            how = '兜底提示语'
+        self._audit('error', '这轮没有可解析的 JSON，已按纯回复交付，未执行任何动作。',
+                    how=how, reason=str(error)[:160], source=source.id,
+                    attempts=attempts, purpose=purpose,
+                    truncated=bool(getattr(error, 'truncated', False)),
+                    head=(raw_head_of(result)))
         validate(salvaged, DECISION)
         return salvaged
 
     @staticmethod
     def _reply_only(result):
-        """把"没包成 JSON 的一段话"还原成只有回复的决定；取不到就返回 None。"""
+        """把"没包成 JSON 的一段话"还原成只有回复的决定；取不到就返回 None。
+
+        P27：代码块包裹、JSON 残缺、JSON 后追加解释，都要先剥干净，
+        不能让 ```json {...}``` 或半截 JSON 原样变成给用户看的话。
+        """
         raw = (result.get('message') or {}).get('content')
         if not isinstance(raw, str):
             return None
         text = raw.strip()
         if not text:
             return None
+        # ``` 包裹：先剥围栏；剥完可能还剩尾随解释，交给下面的分支处理。
+        fenced = _FENCE.search(text)
+        if fenced:
+            text = fenced.group(1).strip()
+            if not text:
+                return None
         if text[0] in '{[':
-            match = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
-            if not match:
-                return None
+            # 先试完整解析（JSON 后带解释的情况在这里就结束了）。
             try:
-                text = json.loads('"' + match.group(1) + '"')
+                value = json.loads(text)
             except ValueError:
-                return None
+                value = None
+            if isinstance(value, dict) and isinstance(value.get('reply'), str):
+                text = value['reply']
+            else:
+                # 残缺 JSON：优先从配平对象里取，其次退回正则抠 reply 字段。
+                candidate, _method, _attempts = parse_model_json(text)
+                if isinstance(candidate, dict) and isinstance(candidate.get('reply'), str):
+                    text = candidate['reply']
+                else:
+                    match = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)', text)
+                    if not match:
+                        return None
+                    try:
+                        text = json.loads('"' + match.group(1) + '"')
+                    except ValueError:
+                        return None
         text = ' '.join(str(text or '').split())[:4000]
         if not text:
             return None
@@ -1823,8 +2029,6 @@ class Companion:
 
     @staticmethod
     def _decode_decision(result, *, wire=False):
-        if result.get('finish_reason')=='length':
-            raise ValueError('模型输出未完整结束')
         raw = result['message'].get('content')
         if isinstance(raw, str) and not raw.strip() and result['message'].get('tool_calls'):
             # 用函数调用回答时正文是空的；这一轮要的是 JSON 决定，不能把它当空内容解析。
@@ -1833,7 +2037,36 @@ class Companion:
             raise _retryable('这轮要用 JSON 决定回答，不能只用函数调用。你刚才调用的是 %s；'
                              '把同一个意图写进 actions 数组（kind/op/arguments 都是 JSON 里的字段），'
                              'arguments 仍然写成转义好的字符串。' % names)
-        decision = json.loads(raw or '')
+        # 输出被 max_tokens 截断（finish_reason=length）时 JSON 必然是残的。
+        # P27 之前这里直接 raise ValueError，绕过了 salvage，整轮失声；
+        # 现在照常往下走容错提取——能救回 reply 就救，救不回由调用方兜底成一句提示。
+        truncated = result.get('finish_reason') == 'length'
+        decision, method, attempts = parse_model_json(raw)
+        if decision is None:
+            # 四种方式都没成：交给调用方的 salvage 路径把它当纯回复交付。
+            # 这里仍然抛 JSONDecodeError，保持原有失败语义（不静默吞掉）。
+            error = json.JSONDecodeError(
+                '模型输出不是可解析的 JSON（已尝试 %s）%s' % (
+                    '/'.join(str(item.get('method')) for item in attempts),
+                    '；输出被截断' if truncated else ''), raw or '', 0)
+            error.attempts = attempts
+            error.truncated = truncated
+            raise error
+        if method != 'standard':
+            # 只用容错提取才解析成功：这条要能统计，模型输出质量在这里留痕。
+            log.warning('模型输出经容错提取才成 JSON：method=%s len=%d truncated=%s',
+                        method, len(raw or ''), truncated)
+        _LAST_PARSE_METHOD[0] = method
+        if truncated:
+            # 截断后仍解析出的对象不可信（可能缺字段、语义不完整）：只当纯回复，
+            # 不拿它去执行动作，避免半截计划被真的派出去。
+            # 抛 JSONDecodeError 让调用方走同一条 salvage 路径；把已解析出的
+            # reply 挂在异常上，_reply_only 优先用它（比正则抠更准）。
+            error = json.JSONDecodeError('模型输出被截断，只保留回复，不执行动作', raw or '', 0)
+            error.attempts = attempts
+            error.truncated = True
+            error.salvaged_reply = decision.get('reply') if isinstance(decision, dict) else None
+            raise error
         # Strict transport requires optional objects too; an unused letter is
         # an empty placeholder, not a malformed or newly written weekly letter.
         letter=decision.get('letter') if isinstance(decision,dict) else None
@@ -2007,7 +2240,8 @@ class Companion:
                     try:
                         decision = self._decode_decision(result,wire=purpose in {'work','activity'})
                     except json.JSONDecodeError as error:
-                        decision = self._salvage_reply(result, purpose, source, error)
+                        decision = self._salvage_reply(result, purpose, source, error,
+                                                       attempts=getattr(error, 'attempts', None))
                         if decision is None:
                             raise
                     self._normalize_project_refs(decision)
@@ -2025,7 +2259,11 @@ class Companion:
                         raise invalid from error
                     break
                 except (ValueError,ValidationError) as error:
-                    if correction or not getattr(error,'retryable',True) or (purpose not in {'work','activity'} and not isinstance(error,DecisionStateError)):
+                    # 格式类错误（schema 校验失败、缺必填字段）重试一次最容易修好：
+                    # 对话轮原先直接丢弃整轮，用户看到的是"发话、没回复、没提示"。
+                    # 状态冲突类（DecisionStateError）与其它线仍然只重试一次就停。
+                    structural = isinstance(error, ValidationError) or isinstance(error, DecisionStateError)
+                    if correction or not getattr(error,'retryable',True) or not structural:
                         self._audit('error', '本轮结果未能保存，输入原文仍在：'+type(error).__name__,
                                     reason=str(error)[:300])
                         raise ValueError('本轮返回结构无效，原始消息和实际回执已保留。') from error
@@ -2992,9 +3230,11 @@ class Companion:
                 payload=dict(self._state('action_route:'+row['id'],{}),action_id=row['id'], result=result),
                 source_event_ids=[row['source']])
             self.continuity.record_action(row,result)
-            if status=='succeeded':
+            if status in SETTLED_OK:
                 # 成功回执本身就是进度事实；模型这时刻失败也不该让项目以为
                 # 这一步还没做，否则续行会让她重复读同一份东西。
+                # 词表以执行器实际产出为准：executor/work/phone 一律回 'completed'，
+                # 'succeeded' 只是 agents 映射表里的旧写法，两种都认。
                 self.tasks.ensure(self.scope,row['project_ref'],None,
                     last_receipt=dict(action_id=row['id'],at=time.time(),
                                       output=str(result.get('output',''))[:300]))

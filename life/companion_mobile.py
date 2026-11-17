@@ -314,7 +314,27 @@ class MobileAPI:
         old=self.db.execute('SELECT digest,status FROM requests WHERE device=? AND id=?',(device,identity)).fetchone()
         if old:
             if not hmac.compare_digest(digest,old[0]):raise web.HTTPConflict(text='Message id already has different content')
-            return web.json_response(dict(id=identity,accepted=True,duplicate=True,status=old[1]),status=202)
+            old_status=old[1]
+            # 失败/被打断的消息允许**沿用同一个 id 重跑**：前端「原地重试」必须复用幂等键，
+            # 否则去重失效、同一条话会被处理两遍。
+            # 为什么只放行这两个状态：`completed` 的回复已经产出，重跑会重复回复；
+            # `accepted` 说明可能有 `_chat` 正在跑或曾跑到一半，放行有双跑风险（启动时
+            # 会被扫成 interrupted，届时自然落到这里，闭环是通的）。
+            # 依据：`core.chat()` 的 future 只在认知成功时 set_result（companion.py:1843），
+            # 所以 `failed` 一定意味着回复没产出，重跑不会重复。
+            if old_status in {'failed','interrupted'}:
+                self.db.execute('UPDATE requests SET status=?,updated=? WHERE device=? AND id=?',
+                                ('accepted',time.time(),device,identity))
+                self.db.commit()
+                self.server.spawn(self._chat(device,identity,text,images))
+                return web.json_response(dict(id=identity,accepted=True,retried=True,previous=old_status),status=202)
+            # 其余状态（completed / accepted）**故意不重跑**：
+            #   completed —— 回复已经产出，重跑会重复回复；
+            #   accepted  —— 可能有 _chat 正在跑，重跑会双跑。这不是漏写：
+            #     进程崩在 finally 之前时消息会停在 accepted，而启动时
+            #     （本文件 `_recover` / :145 那条 UPDATE）会把它们扫成 interrupted，
+            #     下次重试自然落进上面允许重跑的分支，闭环是通的。
+            return web.json_response(dict(id=identity,accepted=True,duplicate=True,status=old_status),status=202)
         now=time.time()
         self.db.execute('INSERT INTO requests VALUES(?,?,?,?,?,?)',(device,identity,digest,'accepted',now,now));self.db.commit()
         self.server.spawn(self._chat(device,identity,text,images))

@@ -36,6 +36,34 @@ def _brief(result, limit=160):
     return result_view(result, limit)
 
 
+UNPARSED = object()
+
+
+def _parse_window(value):
+    """时间窗：秒级时间戳，或本地时间字符串；看不懂给 UNPARSED（不静默忽略）。"""
+    if value in (None, ''):
+        return None
+    if isinstance(value, bool):
+        return UNPARSED
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else UNPARSED
+    text = str(value).strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    for pattern in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
+        try:
+            return time.mktime(time.strptime(text, pattern))
+        except ValueError:
+            continue
+    return UNPARSED
+
+
+def _window(fields):
+    return _parse_window(fields.get('since')), _parse_window(fields.get('until'))
+
+
 class Lookup:
     """按 id 或关键词取回历史动作的原始回执。"""
 
@@ -56,10 +84,14 @@ class Lookup:
         action = json.loads(row['action'] or '{}')
         result = json.loads(row['result'] or '{}') or {}
         return dict(id=row['id'], at=time.strftime('%m-%d %H:%M', time.localtime(row['updated'] or row['created'])),
+                    at_ts=row['updated'] or row['created'],
                     kind=action.get('kind'), status=row['status'],
                     project=row['project_ref'] or action.get('project'),
                     goal=(action.get('goal') or '')[:80],
-                    summary=_brief(result, 140))
+                    summary=_brief(result, 140),
+                    read_op=dict(kind='memory', op='read',
+                                 arguments=json.dumps(dict(op='read', id=row['id']),
+                                                      ensure_ascii=False)))
 
     # 小镇回执不在 companion_actions 的 result 里：交办时只存 waiting，
     # 真正的回执（下水、泡着晒太阳、花了多少）落在 companion_town_delegations。
@@ -77,6 +109,7 @@ class Lookup:
         except (TypeError, ValueError):
             reason = str(receipt)[:140]
         return dict(id=row['id'], at=time.strftime('%m-%d %H:%M', time.localtime(row['updated'] or row['created'])),
+                    at_ts=row['updated'] or row['created'],
                     kind='town', status=state or 'answered',
                     project=row['project_ref'], goal=(row['goal'] or '')[:80],
                     summary=(reason or str(receipt))[:140])
@@ -89,34 +122,61 @@ class Lookup:
             limit = SEARCH_LIMIT
         limit = max(1, min(limit, MAX_SEARCH_LIMIT))
         terms = [part for part in re.split(r'[\s,，、;；]+', query) if part][:4]
+        # 可按动作种类与时间窗收窄：M-2 那种「这个时间窗内有没有对应 kind 的回执」
+        # 要能直接查，不能靠人肉读全量结果再挑。
+        kinds = fields.get('kind') or fields.get('kinds') or ''
+        if isinstance(kinds, str):
+            kinds = [part for part in kinds.replace('，', ',').split(',') if part.strip()]
+        kinds = [str(item).strip() for item in kinds if str(item).strip()]
+        since, until = _window(fields)
+        bad = [key for key, value in (('since', since), ('until', until)) if value is UNPARSED]
+        if bad:
+            return dict(status='failed', op='search', query=query, results=[],
+                        output='时间窗看不懂（%s）。只能是秒级时间戳或 2026-11-17 09:00 这种写法；'
+                               '这次没有按你给的条件查，所以不能当成「查无此事」。' % '/'.join(bad))
+        where, args = ['agent=?'], [self.agent_id]
         if terms:
-            clauses = ' AND '.join('(action LIKE ? OR result LIKE ?)' for _ in terms)
-            args = [self.agent_id]
+            where.append(' AND '.join('(action LIKE ? OR result LIKE ?)' for _ in terms))
             for term in terms:
                 like = '%' + term.replace('%', '').replace('_', '') + '%'
                 args.extend([like, like])
-            args.append(limit)
-            rows = self.repo._all('SELECT id,status,action,result,project_ref,created,updated '
-                                  'FROM companion_actions WHERE agent=? AND ' + clauses + ' '
-                                  "AND COALESCE(json_extract(action,'$.kind'),'') NOT IN ('memory','growth') "
-                                  "AND result IS NOT NULL AND result NOT IN ('{}','null') "
-                                  'ORDER BY updated DESC LIMIT ?', tuple(args))
-        else:
-            rows = self.repo._all('SELECT id,status,action,result,project_ref,created,updated '
-                                  'FROM companion_actions WHERE agent=? '
-                                  "AND COALESCE(json_extract(action,'$.kind'),'') NOT IN ('memory','growth') "
-                                  "AND result IS NOT NULL AND result NOT IN ('{}','null') "
-                                  'ORDER BY updated DESC LIMIT ?', (self.agent_id, limit))
-        towns = self._search_town(terms, limit)
+        if kinds:
+            where.append("COALESCE(json_extract(action,'$.kind'),'') IN (%s)" % ','.join('?' for _ in kinds))
+            args.extend(kinds)
+        if since is not None:
+            where.append('COALESCE(updated,created)>=?')
+            args.append(float(since))
+        if until is not None:
+            where.append('COALESCE(updated,created)<=?')
+            args.append(float(until))
+        args.append(limit)
+        rows = self.repo._all('SELECT id,status,action,result,project_ref,created,updated '
+                              'FROM companion_actions WHERE ' + ' AND '.join(where) + ' '
+                              "AND COALESCE(json_extract(action,'$.kind'),'') NOT IN ('memory','growth') "
+                              "AND result IS NOT NULL AND result NOT IN ('{}','null') "
+                              'ORDER BY updated DESC LIMIT ?', tuple(args))
+        towns = self._search_town(terms, limit) if not (kinds or since or until) else []
         found = [self._row_view(row) for row in rows]
         seen = {item['id'] for item in found}
         found.extend(item for item in towns if item['id'] not in seen)
-        found.sort(key=lambda item: item['at'], reverse=True)
+        # 跨两张表按真实时间排序；格式化后的 %m-%d 字符串跨年比不出先后。
+        found.sort(key=lambda item: item.get('at_ts') or 0, reverse=True)
         found = found[:limit]
         if not found:
+            # 「查了、没有」和「这次没查成」不是一回事：前者是事实，后者是故障。
+            # 用 status=failed 表示后者，用 completed + 空结果 + 明说「查无」表示前者。
             hint = ('没有匹配「%s」的动作。换个词，或者不带 query 看最近几条。' % query) if query \
                 else '这个账号还没有任何动作记录。'
-            return dict(status='failed', op='search', query=query, results=[], output=hint)
+            if kinds or since is not None or until is not None:
+                hint += '筛选条件是 kind=%s、时间窗 %s～%s。' % (
+                    ','.join(kinds) or '不限',
+                    time.strftime('%Y-%m-%d %H:%M', time.localtime(since)) if since else '不限',
+                    time.strftime('%Y-%m-%d %H:%M', time.localtime(until)) if until else '不限')
+            return dict(status='completed', op='search', query=query, count=0, results=[],
+                        matched=False, terms=terms,
+                        evidence_scope='stored_index',
+                        evidence_note='这是检索到的目录，不是原文；要原文用 op=read 加 id。',
+                        output=hint)
         lines = ['%s %s %s｜%s｜%s' % (item['at'], item['kind'], item['status'],
                                        item['goal'] or '（无目标）', item['summary'])
                  for item in found]
@@ -179,11 +239,25 @@ class Lookup:
             elif not row:
                 text = town_text
         if not str(text or '').strip():
-            return dict(status='failed', op='read', id=identity, action_kind=kind,
-                        output='这条动作没有存下可读内容（' + str(kind or '?') + '，'
-                               + str(saved_status) + '）。可能是当时没跑完，或者回执本身就是空的；'
-                               '换一条 id，不要凭它推结论。')
+            # 回执被清了、或者当时没跑完：这是「读不到」，不是「没发生过」。
+            # 台账行仍在，状态与动作种类仍可引用；正文另找台账原文，别猜。
+            at_ts = (town['updated'] or town['created']) if town and not row else (
+                (row['updated'] or row['created']) if row else None)
+            return dict(status='unreadable', op='read', id=identity, action_kind=kind,
+                        saved_status=saved_status, project=project,
+                        at=time.strftime('%m-%d %H:%M', time.localtime(at_ts)) if at_ts else None,
+                        at_ts=at_ts,
+                        evidence_scope='stored_receipt',
+                        evidence_note='这一行的回执正文已经取不到了；它能证明动作发生过与最终状态，'
+                                      '不能证明当时具体看到了什么。',
+                        output='这条动作还在台账里（' + str(kind or '?') + '，'
+                               + str(saved_status) + '），但存下的回执正文是空的：'
+                               '可能是当时没跑完、也可能是回执被清理了。'
+                               '这能说明这件事发生过，不能说明当时看到了什么；'
+                               '要具体内容就换一条有正文的 id，别凭这一条推结论。')
         return dict(status='completed', op='read', id=identity, at=time.strftime('%m-%d %H:%M', at),
+                    at_ts=(town['updated'] or town['created']) if town and not row else
+                          (row['updated'] or row['created']) if row else None,
                     action_kind=kind, goal=goal,
                     target=action.get('arguments') or action.get('command') or '',
                     saved_status=saved_status, project=project,

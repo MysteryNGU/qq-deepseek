@@ -3,12 +3,15 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 from pathlib import Path
 import time
 import uuid
 
 from jsonschema import validate,ValidationError
 from .companion_model import MAX_OUTPUT_TOKENS
+
+log=logging.getLogger(__name__)
 
 CHUNK_CHARS=12000
 MAX_CHUNKS=8
@@ -71,6 +74,27 @@ class BilibiliReader:
     def _backend(self):
         executor=self.core.executor
         return getattr(getattr(executor,'original',executor),'_bilibili',None)
+
+    def _sweeper(self):
+        """启动清理只扫目录：构造一个 Frames 实例即可，不会动她任何状态。"""
+        from .companion_bilibili_frames import Frames
+        return Frames(self.core).sweep()
+
+    async def startup_sweep(self):
+        """服务启动时清一次 bilibili-frames 残留；失败不阻塞启动。
+
+        原片在流程结束时已经删了；这里兜的是「进程被 kill、机器重启」这类没走完 finally 的残渣。
+        """
+        try:return await asyncio.to_thread(self._sweeper)
+        except Exception as error:  # noqa: BLE001
+            log.warning('bilibili-frames 启动清理失败：%s',error)
+            return dict(removed=0,freed=0,failed=1)
+
+    async def _frames(self):
+        if self.frames is None:
+            from .companion_bilibili_frames import Frames
+            self.frames=Frames(self.core)
+        return self.frames
 
     async def _fetch(self,backend,op,args):
         try:
@@ -148,10 +172,8 @@ class BilibiliReader:
         subtitle_result=await self._read_text(args)
         if not args['visual']:return subtitle_result
         try:
-            if self.frames is None:
-                from .companion_bilibili_frames import Frames
-                self.frames=Frames(self.core)
-            frames=await self.frames.prepare(args['bvid'],time_seconds=args.get('frame_time'))
+            frames=await self._frames()
+            frames=await frames.prepare(args['bvid'],time_seconds=args.get('frame_time'))
         except asyncio.CancelledError:raise
         except Exception as error:
             frames=dict(status='failed',code=type(error).__name__,output='视频画面准备失败。')
@@ -192,7 +214,7 @@ class BilibiliReader:
             result=dict(status='completed',completion='observed',output=output[:1650],summary=report['summary'],
                 limitations=limits,coverage=coverage,receipt_ref=receipt_ref,cached=False,cache_scope='visual_report',
                 source_path=subtitle_result.get('source_path'),output_path=str(report_path),
-                visual=dict(observed=True,sheet_path=str(path),video_path=frames.get('video_path'),
+                visual=dict(observed=True,sheet_path=str(path),
                             cache_key=frames.get('cache_key'),coverage=frames.get('coverage'),timestamps=frames.get('timestamps')))
             self._write(report_path,result)
             return self._visual_comments(result,subtitle_result)

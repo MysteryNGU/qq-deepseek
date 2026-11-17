@@ -115,6 +115,7 @@ class CompanionServer:
         self._snapshot_cache=None
         self.app=web.Application(client_max_size=40*1024*1024, middlewares=[self.auth])
         self.app.router.add_get('/health', self.health)
+        self.app.router.add_get('/alive', self.alive)
         self.app.router.add_get('/mobile/link', self.mobile_link)
         self.app.router.add_post('/rpc', self.rpc)
         self.app.router.add_get('/ws', self.websocket)
@@ -126,6 +127,10 @@ class CompanionServer:
 
     @web.middleware
     async def auth(self, request, handler):
+        if request.path=='/alive':
+            # Liveness only: no state, no token, no owner data. The watchdog must not hold
+            # the owner credential, so this one path answers without it.
+            return await handler(request)
         if request.path.startswith('/mobile/'):
             return await self.mobile.authenticate(request,handler)
         if not hmac.compare_digest(request.headers.get('Authorization',''), 'Bearer '+self.token):
@@ -188,6 +193,16 @@ class CompanionServer:
         self.mobile.close()
 
     async def health(self, request): return web.json_response(dict(ok=True, desktop_connected=self.peer is not None))
+
+    async def alive(self, request):
+        """Unauthenticated liveness probe: process is serving, nothing more.
+
+        It carries no state, no token and no owner data, so an external watchdog can
+        ask "is this process up" without holding the owner credential. Business
+        health stays on the authenticated /health.
+        """
+        return web.json_response(dict(alive=True, pid=os.getpid()),
+                                 headers={'Cache-Control': 'no-store'})
 
     async def mobile_link(self, request):
         """Read-only phone link state for the owner; behind the server token like `/mobile/pairing`.

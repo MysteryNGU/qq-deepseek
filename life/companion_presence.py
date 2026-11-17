@@ -172,11 +172,36 @@ def _presence(core):
             phone = core.executor.phone_context() or {}
     except Exception:
         phone = {}
+    # 配对过 ≠ 现在在线。基线里她自己圆出了这一点（「那是配对过的存档，不是真连着」），
+    # 但那是猜出来的——这里把两件事分开给，各自带自己的时间。
+    paired = []
+    try:
+        mobile = getattr(getattr(getattr(core, 'executor', None), 'server', None), 'mobile', None)
+        for value in (getattr(mobile, 'devices', None) or {}).values():
+            if isinstance(value, dict) and not value.get('revoked'):
+                paired.append(dict(name=value.get('name') or '手机',
+                                   paired_at=_stamp(value.get('created_at'))))
+    except Exception:
+        paired = []
+    online = []
+    for item in phone.get('devices') or []:
+        if not isinstance(item, dict):
+            continue
+        online.append(dict(name=item.get('name') or item.get('device_id') or '手机',
+                           last_seen=_stamp(item.get('last_seen')),
+                           has_stream=bool(item.get('has_stream'))))
+    now = _stamp(time.time())
     return dict(
         desktop=dict(connected=bool(desktop.get('connected')),
                      seen_at=_stamp(desktop.get('updated_at') or desktop.get('at'))),
         phone=dict(connected=bool(phone.get('connected')),
-                   devices=[d.get('name') or d.get('serial') for d in (phone.get('devices') or [])][:3]),
+                   # devices 保留旧字段，它就是「现在真在线」的那批，避免下游读空。
+                   devices=[row['name'] for row in online][:3],
+                   paired=paired[:5],
+                   online=online[:5],
+                   observed_at=now,
+                   basis='online=最近一次注册在 90 秒窗口内；paired 只是配对过的存档，'
+                         '不代表现在连得上'),
     )
 
 

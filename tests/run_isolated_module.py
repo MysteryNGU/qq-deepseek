@@ -77,6 +77,11 @@ def closure(entry: Path) -> set[Path]:
     """Every local file the entry needs, transitively (life/*.py by name, no package init)."""
     seen: set[Path] = set()
     pending = [entry]
+    # Scripts outside the packages a test loads by path (ops/, tools/) are staged too, since
+    # `importlib` on a computed path is invisible to the AST scan.
+    for extra in (ROOT / 'ops', ROOT / 'tools'):
+        if extra.is_dir():
+            pending.extend(sorted(extra.glob('*.py')))
     while pending:
         module = pending.pop()
         if module in seen:
@@ -110,6 +115,8 @@ def main(argv=None) -> int:
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(module.read_bytes())
         # Namespace marker: without the real __init__ the package imports stay local.
+        (target / "life").mkdir(exist_ok=True)
+        (target / "tests").mkdir(exist_ok=True)
         (target / "life" / "__init__.py").write_text("", encoding="utf-8")
         (target / "tests" / "__init__.py").write_text("", encoding="utf-8")
         print(f"# sandbox={sandbox.root}")

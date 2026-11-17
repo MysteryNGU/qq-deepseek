@@ -67,6 +67,21 @@ log = logging.getLogger(__name__)
 SCHEMA_VERSION = 'agent-1'
 OPS = ('create', 'send', 'inspect', 'wait', 'cancel', 'resume', 'read_artifact')
 
+# 每个 op 真正认的参数。这份表就是 dispatch() 里 **fields 展开的边界：
+# 表外的键在 _action_fields 里就被丢掉，不会走到 AgentManager 的方法签名上。
+# 改任何一个方法的签名，这张表要跟着改（tests/test_capability_cognition.py 会核对）。
+OP_FIELDS = {
+    'create': {'goal', 'deliverables', 'acceptance', 'workspace', 'node_requirements',
+               'scope', 'budget', 'parent_task_ref', 'idempotency_key', 'context_refs',
+               'node', 'node_reason', 'resume_session_id'},
+    'send': {'agent_id', 'text', 'message_id', 'intent'},
+    'inspect': {'agent_id', 'changes', 'messages'},
+    'wait': {'agent_id', 'until', 'wait_s', 'cursor'},
+    'cancel': {'agent_id', 'include_children', 'why'},
+    'resume': {'agent_id', 'goal', 'from_session', 'checkpoint'},
+    'read_artifact': {'agent_id', 'artifact_id', 'path', 'offset', 'limit'},
+}
+
 # 状态机：唯一的真源（设计 §4.2）。终态集合里的状态不会再自己动。
 STATES = ('queued', 'running', 'completed', 'failed', 'waiting',
           'interrupted', 'cancelled', 'cancelling')
@@ -2407,7 +2422,13 @@ def _items(value, limit, count):
 
 
 def _action_fields(task):
-    """七操作的参数可能放在 arguments(JSON 字符串) 里，也可能在顶层。"""
+    """七操作的参数可能放在 arguments(JSON 字符串) 里，也可能在顶层。
+
+    取完之后**按 op 过滤**再返回：每个 op 认的参数集合见 ``OP_FIELDS``。
+    不过滤就会把 ``goal``（create 的合法参数）原样展开给 ``inspect()``，
+    变成 ``TypeError: inspect() got an unexpected keyword argument 'goal'``——
+    那是给工程师看的异常，不是「你需要补什么」。生产库里正是这个形态。
+    """
     raw = task.get('arguments')
     if isinstance(raw, str):
         raw = _safe_json(raw, {}) or {}
@@ -2437,6 +2458,13 @@ def _action_fields(task):
         raise AgentError('text_required', 'send 需要 text')
     if op == 'read_artifact' and not (fields.get('agent_id') or fields.get('artifact_id') or fields.get('path')):
         raise AgentError('artifact_required', 'read_artifact 需要 agent_id / artifact_id / path 之一')
+    allowed = OP_FIELDS.get(op)
+    if allowed is not None:
+        # 只留这个 op 真认的键。**不要**在这里放行 `project`/`conversation_ref` 这类
+        # DECISION 层面的通用字段：dispatch() 会把剩下的全部 **展开到方法签名上，
+        # 放行一个就多一种 TypeError（生产实测：先 'goal'，改完又冒出 'project'——
+        # model 每个动作都必须带 project，所以它每次都会撞上）。
+        fields = {key: value for key, value in fields.items() if key in allowed}
     return fields
 
 
