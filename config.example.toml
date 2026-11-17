@@ -82,6 +82,9 @@ defaults = {}
 # Idle polls draw once after the action sequence ends; real inputs stay immediate.
 idle_min_seconds = 600
 idle_random_max_seconds = 3600
+# Owner private chat: opportunities to act, not mandatory messages.
+owner_idle_min_seconds = 900
+owner_idle_max_seconds = 1800
 # Legacy settings retained for older configurations and non-idle cooldowns.
 idle_base_seconds = 900
 idle_max_seconds = 7200

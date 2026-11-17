@@ -47,8 +47,8 @@ class MotivationAndPeopleTests(unittest.IsolatedAsyncioTestCase):
         self.role.attention.finish(self.scope,self.root,{},'sequence-finished')
         rows=self.repo._all("SELECT * FROM role_wakes WHERE kind='idle_probe' AND state='pending'")
         self.assertEqual(len(rows),1)
-        self.assertGreaterEqual(rows[0]['due']-time.time(),599)
-        self.assertLessEqual(rows[0]['due']-time.time(),3600)
+        self.assertGreaterEqual(rows[0]['due']-time.time(),899)
+        self.assertLessEqual(rows[0]['due']-time.time(),1800)
         self.assertEqual(self.life.drive_state(self.scope).drives['exploration'].tension,before)
         self.assertFalse(self.repo._one('SELECT 1 FROM usage_calls'))
         self.assertFalse(self.repo._one('SELECT 1 FROM drive_settlements'))
@@ -277,9 +277,9 @@ class MotivationAndPeopleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.repo._one("SELECT 1 FROM role_wakes WHERE kind='idle_probe'"))
         with self.repo.tx():self.repo._exec("UPDATE role_wakes SET state='delivered'")
         with patch('life.resource_policy.time.time',return_value=10000),patch('life.resource_policy.random.SystemRandom') as rng:
-            rng.return_value.randint.return_value=3600
+            rng.return_value.randint.return_value=1800
             self.role.attention.settle_sequences()
-        self.assertEqual(self.repo._one("SELECT due FROM role_wakes WHERE kind='idle_probe'")['due'],13600)
+        self.assertEqual(self.repo._one("SELECT due FROM role_wakes WHERE kind='idle_probe'")['due'],11800)
 
 
 if __name__=='__main__':unittest.main()

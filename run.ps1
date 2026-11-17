@@ -11,6 +11,12 @@ $napdir = Join-Path $root 'napcat-onekey\NapCat.52230.Shell'
 
 if (-not (Test-Path $py)) { $py = 'python' }
 
+if (Test-Path -LiteralPath (Join-Path $root 'data\characters\primary-retired.json')) {
+    & $py -X utf8 -c "from pathlib import Path; from life.settings_web import ensure_server; ensure_server(Path.cwd())"
+    Write-Host '人物管理：http://127.0.0.1:6100/'
+    return
+}
+
 function Port-Up($p) {
     $c = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
     return ($c | Measure-Object).Count -gt 0

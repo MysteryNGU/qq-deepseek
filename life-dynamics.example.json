@@ -1,0 +1,19 @@
+{
+  "drives": {
+    "relatedness": {
+      "base_growth_per_hour": 0.075,
+      "recovery_hours": 2.0,
+      "recovery_growth_multiplier": 0.5
+    },
+    "intimacy": {
+      "base_growth_per_hour": 0.06,
+      "recovery_hours": 3.0,
+      "recovery_growth_multiplier": 0.4
+    },
+    "libido": {
+      "base_growth_per_hour": 0.075,
+      "recovery_hours": 3.0,
+      "recovery_growth_multiplier": 0.4
+    }
+  }
+}

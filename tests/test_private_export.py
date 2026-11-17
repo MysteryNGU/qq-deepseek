@@ -64,5 +64,37 @@ class PrivateExportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'先停止 Bot'):
             Exporter(self.root,self.root/'backups').write()
 
+    def test_multi_character_export_preserves_independent_state_and_voice_assets(self):
+        folder=self.root/'data/characters';folder.mkdir()
+        (folder/'registry.json').write_text(json.dumps({'xiaoyu':{'wanted':False},'firefly':{'wanted':False}}))
+        for identity in ('xiaoyu','firefly'):
+            root=folder/identity;(root/'data').mkdir(parents=True)
+            (root/'config.toml').write_text(f'owner=1\nlife_agent="{identity}"\napi_key="private-{identity}"\n')
+            (root/'persona.md').write_text('Persona '+identity)
+            (root/'data/voice.wav').write_bytes(b'fixed voice')
+            home=root/'data/dsh-home/sessions';home.mkdir(parents=True)
+            (home/'history.json').write_text(json.dumps({'memory':identity}))
+            with contextlib.closing(sqlite3.connect(root/'data/life.db')) as db:
+                db.execute('CREATE TABLE memories(text TEXT)')
+                db.execute('INSERT INTO memories VALUES(?)',(identity,));db.commit()
+        with contextlib.redirect_stdout(io.StringIO()):
+            path=Exporter(self.root,self.root/'backups',verify=True).write()
+        with zipfile.ZipFile(path) as archive:
+            for identity in ('xiaoyu','firefly'):
+                prefix=f'project/data/characters/{identity}'
+                self.assertIn(prefix+'/config.toml',archive.namelist())
+                self.assertIn(prefix+'/data/life.db',archive.namelist())
+                self.assertIn(prefix+'/data/voice.wav',archive.namelist())
+                self.assertIn(prefix+'/data/dsh-home/sessions/history.json',archive.namelist())
+            manifest=json.loads(archive.read('migration/manifest.json'))
+            self.assertEqual(manifest['scope'],'multi_character_private_state_and_assets')
+            self.assertEqual(sum(e['mode']=='sqlite_consistent_backup' for e in manifest['entries']),2)
+
+    def test_multi_character_export_refuses_a_wanted_running_person(self):
+        folder=self.root/'data/characters';folder.mkdir()
+        (folder/'registry.json').write_text(json.dumps({'xiaoyu':{'wanted':True}}))
+        with self.assertRaisesRegex(RuntimeError,'停止所有人物'):
+            Exporter(self.root,self.root/'backups').write()
+
 
 if __name__=='__main__':unittest.main()

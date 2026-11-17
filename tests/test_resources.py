@@ -72,14 +72,30 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
     def test_T02_T04_random_idle_has_one_identity_and_inclusive_bounds(self):
         delays = []
         with patch('life.resource_policy.random.SystemRandom') as rng:
-            rng.return_value.randint.side_effect=[600,3600,1234]
+            rng.return_value.randint.side_effect=[900,1800,1234]
             for i in range(3):
                 self.input()
                 result=self.role.rest(self.scope,dict(reflection_outcome='unchanged'),self.root)
                 delays.append(result['attention']['after_seconds'])
-            self.assertEqual(delays,[600,3600,1234])
-            rng.return_value.randint.assert_called_with(600,3600)
+            self.assertEqual(delays,[900,1800,1234])
+            rng.return_value.randint.assert_called_with(900,1800)
         self.assertEqual(self.life.repo._one("SELECT COUNT(*) AS n FROM role_wakes WHERE state='pending' AND kind='idle_probe'")['n'],1)
+
+    def test_owner_idle_pacing_is_configurable_and_other_scopes_keep_their_bounds(self):
+        from life.resource_policy import AttentionPlans
+        policy=ResourcePolicy.parse(dict(owner_idle_min_seconds=1200,owner_idle_max_seconds=1500))
+        self.role.attention=AttentionPlans(self.role,policy)
+        scopes=[self.scope,self.life.scope('qq:private:2','2'),self.life.scope('qq:group:3','1')]
+        with patch('life.resource_policy.random.SystemRandom') as rng:
+            rng.return_value.randint.side_effect=lambda low,high:low
+            for scope in scopes:
+                root=self.role.sessions.binding(scope)
+                self.role.attention.finish(scope,root,{},'end')
+                row=self.life.repo._one("SELECT due FROM role_wakes WHERE scope_id=? AND kind='idle_probe' AND state='pending'",(scope.scope_id,))
+                self.assertIsNotNone(row)
+            self.assertEqual([c.args for c in rng.return_value.randint.call_args_list],[(1200,1500),(600,3600),(600,3600)])
+        with self.assertRaises(ValueError):
+            ResourcePolicy.parse(dict(owner_idle_min_seconds=1500,owner_idle_max_seconds=1200))
 
     def test_random_timer_starts_after_turn_end_and_survives_repeated_ticks(self):
         self.role.sessions.apply_event(self.root['session_id'],dict(type='turn/start',seq=0,time=1000,data=dict(turn=1)))
@@ -90,11 +106,11 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.life.repo._one("SELECT 1 FROM role_wakes WHERE kind='idle_probe'"))
         self.role.sessions.apply_event(self.root['session_id'],dict(type='turn/end',seq=1,time=5000,data=dict(turn=1)))
         with patch('life.resource_policy.time.time',return_value=5000), patch('life.resource_policy.random.SystemRandom') as rng:
-            rng.return_value.randint.return_value=600
+            rng.return_value.randint.return_value=900
             self.role.attention.settle_sequences()
             self.role.attention.settle_sequences()
             rng.return_value.randint.assert_called_once()
-        self.assertEqual(self.life.repo._one("SELECT due FROM role_wakes WHERE kind='idle_probe'")['due'],5600)
+        self.assertEqual(self.life.repo._one("SELECT due FROM role_wakes WHERE kind='idle_probe'")['due'],5900)
 
     def test_T03_T07_explicit_short_schedule_survives_default_final_expression(self):
         self.input()
