@@ -369,7 +369,14 @@ def _capability(capability_ref, category, description, status, *, reason=None,
 
 
 def _dsh_endpoint(executor):
-    """沿执行器链找到真正持有 DSH 配置的那一层；拿不到就是未知（None）。"""
+    """沿执行器链找到真正持有 DSH 配置的那一层；拿不到就是未知（None）。
+
+    三态：True（可用）/ False（探测到不可用）/ None（读不到）。
+
+    **这份实现有一份拷贝在 `life/companion_world.py::_dsh_endpoint_probe`。**
+    事实层不能反向 import 本模块（会成环），所以复制；两边都留了指针，
+    并有测试断言行为一致。**改一边必须改另一边。**
+    """
     seen = 0
     while executor is not None and seen < 4:
         paths = getattr(executor, '_dsh_paths', None)
@@ -461,6 +468,36 @@ def _unknown_reason(what, detail=''):
     return head + '，所以现在不能确认它能不能用；这不能说明它坏了，也不能说明它没有。'
 
 
+def _world():
+    """惰性取事实层模块：避免模块加载期形成循环依赖。"""
+    from . import companion_world
+    return companion_world
+
+
+def _world_fact(fact_ref, build):
+    """取一条事实；构建失败就退回 unknown（不让事实层的问题拖垮能力判断）。"""
+    try:
+        value = build()
+        if isinstance(value, dict) and value.get('fact_ref'):
+            return value
+        return _world().unknown(fact_ref.split('.')[0], '事实层没有返回这条事实',
+                                source_ref='life/companion_world.py', fact_ref=fact_ref)
+    except Exception as error:  # noqa: BLE001 - 事实层异常要降级成 unknown，不能抛给调用方
+        return _world().unknown(fact_ref.split('.')[0], '%s: %s' % (type(error).__name__, error),
+                                source_ref='life/companion_world.py', fact_ref=fact_ref)
+
+
+def _world_detail(fact_ref, raw, *, fallback):
+    """只取事实的 detail（手机那两处用），构建不出来就用 fallback。"""
+    try:
+        value = _world().phone_context_fact(raw)
+        if isinstance(value, dict) and value.get('fact_ref') == fact_ref:
+            return str(value.get('detail') or fallback)
+    except Exception:  # noqa: BLE001
+        pass
+    return fallback
+
+
 def _offline_reason(core, kind, *, executor):
     """这个 kind 现在不可用的具体原因。**不知道就说不确定，不编原因**。
 
@@ -479,9 +516,12 @@ def _offline_reason(core, kind, *, executor):
             return _unknown_reason('手机通道', '执行器没给 phone_context'), 'unknown'
         devices = context.get('devices') or []
         if not devices:
-            return ('手机端最近 90 秒内没有上报过注册，所以我这边看不到在线设备；'
-                    '这表示手机现在连不上，不是我没有操作手机的能力。'
-                    '要让它恢复，在手机上打开小鱼 App 并保持前台即可。'), 'offline'
+            # 事实由事实层统一生成（含状态、来源、观察时间），这里只追加建议。
+            # 文案里不再写死秒数：注册窗口是 `companion_phone.RECENT_SECONDS`，
+            # 常量一改，写死的数字就会撒谎。精确值在 `raw` 里，需要时按需读取。
+            detail = _world_detail('phone.link', context, fallback='手机最近没有上报过注册，看不到在线设备')
+            return detail + '；这不表示我没有操作手机的能力。' \
+                            '要让它恢复，在手机上打开小鱼 App 并保持前台即可。', 'offline'
         if any(item.get('has_stream') for item in devices):
             return ('手机注册过但操作拿不到回执（可能被系统挂起或 App 在后台），'
                     '所以现在派活送不到；把 App 切回前台再试。'), 'offline'
@@ -489,23 +529,63 @@ def _offline_reason(core, kind, *, executor):
                 '即便派活也送不到，需要把 App 切回前台。'), 'offline'
     if kind == 'computer':
         # peer 是桌面客户端真实连没连；读不到就说不知道，不说"没连上"。
+        # 注意：这里问的是「能不能看屏幕/点鼠标」，和 body（小人做动作）是两条链路。
         peer, failure = _probe(lambda: getattr(_server_of(core), 'peer', None))
         if failure is not None:
             return _unknown_reason('桌面连接', '探测抛错 %s' % failure), 'unknown'
-        return ('桌面端没有连上（桌面客户端的 websocket 没连进来），'
-                '所以现在既看不到屏幕也不能点击。'), 'offline'
+        fact = _world_fact('computer.link', lambda: _world().computer_fact(peer))
+        if fact['state'] == 'unknown':
+            return (fact['detail'].replace('读不到，不能确认：', '') or '桌面连接状态读不到'), 'unknown'
+        return fact['detail'], fact['state']
     if kind == 'body':
-        connected, failure = _probe(lambda: bool(getattr(core, '_body_context', {}).get('connected')))
+        # body 走 `_body_context`（桌面桥推来的），**不是** server peer。
+        # 两者混用会把「看不到屏幕」说成「小人不能动」，反之亦然。
+        context, failure = _probe(lambda: getattr(core, '_body_context', None))
         if failure is not None:
             return _unknown_reason('桌面身体', '探测抛错 %s' % failure), 'unknown'
-        return '桌面身体形象没有连上，动作发过去没人接收。', 'offline'
+        fact = _world_fact('body.link', lambda: _world().body_fact(context))
+        if fact['state'] == 'unknown':
+            return (fact['detail'].replace('读不到，不能确认：', '') or '桌面身体状态读不到'), 'unknown'
+        return fact['detail'], fact['state']
     if kind == 'town':
-        return ('小镇没启用或没有保存接入码（town.config.enabled=false 或 code 为空）；'
-                '这是配置项，不是网络问题。'), 'needs_setup'
+        # 读 TownBridge 的真实状态（`core.town.state`），不再断言「没启用或没接入码」。
+        # 2026-11-18：小镇跑了 199 次动作却一直报 needs_setup——判据没读数据源。
+        fact = _world_fact('town.link', lambda: _world().town_fact(getattr(core, 'town', None)))
+        if fact['state'] == 'unknown':
+            return (fact['detail'].replace('读不到，不能确认：', '') or '小镇状态读不到'), 'unknown'
+        if fact['state'] == 'ready':
+            return '小镇现在是连着的。', 'ready'
+        return fact['detail'], fact['state']
     if kind == 'bilibili':
-        return 'B 站没有登录态（插件未配置或登录已失效），读不到内容也不能互动。', 'needs_setup'
+        # 三种原因分开说（插件没装 / 没登录 / 掉线），不再抹平成一句「没登录态」。
+        # `_bilibili` 挂在真正持有执行能力的那一层——服务模式下是 `RemoteExecutor.original`，
+        # 本地模式下就是 `ActionExecutor` 自己。
+        backend = None
+        node = executor
+        for _ in range(4):
+            if node is None:
+                break
+            backend = getattr(node, '_bilibili', None)
+            if backend is not None:
+                break
+            node = getattr(node, 'original', None)
+        if backend is None:
+            # 执行器上没有 B站后端：这是「读不到」，不是「没登录」。
+            return _unknown_reason('B站', '执行器上没有 bilibili 后端'), 'unknown'
+        fact = _world_fact('bilibili.status', lambda: _world().bilibili_fact(backend.status()))
+        if fact['state'] == 'unknown':
+            return (fact['detail'].replace('读不到，不能确认：', '') or 'B站状态读不到'), 'unknown'
+        if fact['state'] == 'ready':
+            return 'B站后端可用。', 'ready'
+        return fact['detail'], fact['state']
     if kind == 'dsh':
-        return '本机没有可用的 DSH 运行时。', 'needs_setup'
+        # 三态必须分开：None（读不到）≠ False（本机确实没有）。
+        fact = _world_fact('dsh.runtime', lambda: _world().dsh_fact(executor))
+        if fact['state'] == 'unknown':
+            return (fact['detail'].replace('读不到，不能确认：', '') or 'DSH 状态读不到'), 'unknown'
+        if fact['state'] == 'ready':
+            return '本机有可用的 DSH 运行时。', 'ready'
+        return fact['detail'], fact['state']
     return '执行器没有把它报成可用；具体原因我这边看不到。', 'unknown'
 
 
@@ -584,6 +664,34 @@ def watchdog_capability(core, *, now=None):
         status = 'offline'
         reason = ('这个守护现在是 %s，不在管事；改坏了不会自动换回去。' % (active or 'unknown'))
         scope = str(active or 'unknown')
+    # 以下只在按需读取时给，不进主上下文摘要。
+    # **必须随状态变化**（t7 R-03）：watchdog 停着的时候，如果这里照抄「会回滚」，
+    # 用户按需读到的是"我有保障"，而实际改坏了没人管——这正是今晚反复犯的错：
+    # 该说「现在不生效」的时候，不能给出让人误以为有保障的表述。
+    if status == 'ready':
+        what_it_does = ('重启后盯一段时间，起不来就换回上次能跑的源码版本并重新拉起，'
+                        '再给我留一条消息说刚才那次改动被丢弃了。')
+        when_it_acts = '只在我重启之后；正常运行期间它不动我。'
+        not_do = '不动 life.db、config.toml、人格文件——数据它一概不碰。'
+        limits = '只管源码快照，观察窗约一分钟；连续失败 3 次就停手等人处理，不再自动回滚。'
+    elif status == 'offline':
+        # 它能做这些事，但**现在没在做**——先说现状，再说能力，避免只读半句就误解。
+        what_it_does = ('**现在没有在做事**：这个守护没在运行（%s）。'
+                        '它本来能做的事是：我重启后盯一段时间，起不来就换回上次能跑的源码版本。'
+                        '此刻改坏了源码，它不会替我做任何事，要人手动恢复。'
+                        % (scope if scope != 'unknown' else '状态不明'))
+        when_it_acts = '它停着，所以任何时候都不会动——包括我改坏之后。'
+        not_do = '不动 life.db、config.toml、人格文件——这一条现在也成立，但前提是它没在跑。'
+        limits = ('它不运行，所以没有观察窗、也没有自动回滚次数可谈：'
+                  '在它被重新启用之前，源码改动全部没有兜底。')
+    else:
+        # 探测失败：不能说确定话，也不能给出任何"会回滚"的保证。
+        what_it_does = ('我读不到它的状态，所以**不能确认它会不会在我改坏之后把源码换回去**。'
+                        '它设计上负责这件事，但此刻是否在跑、是否还能接管，我这边无从得知；'
+                        '按最坏情况理解：不确定有兜底，就当没有。')
+        when_it_acts = '不知道。读不到它的运行状态，就无法判断它什么时候会动。'
+        not_do = '不知道它现在会不会动数据——这条我无法确认，所以不能说它一定不碰。'
+        limits = '读不到状态，观察窗、失败次数这些限制我也无法确认。'
     return dict(capability_ref='guard.watchdog', category='guard', node=NODE, status=status,
                 description='改坏源码时的自动回滚',
                 reason=reason, checked_at=_stamp(now), state_scope=scope,
@@ -595,12 +703,10 @@ def watchdog_capability(core, *, now=None):
                 what=('我改坏起不来时会换回上次能跑的版本' if status == 'ready'
                       else '我不知道有没有人替我兜底' if status == 'unknown'
                       else '现在没人替我兜底'),
-                # 以下只在按需读取时给，不进主上下文摘要。
-                what_it_does='重启后盯一段时间，起不来就换回上次能跑的源码版本并重新拉起，'
-                             '再给我留一条消息说刚才那次改动被丢弃了。',
-                when_it_acts='只在我重启之后；正常运行期间它不动我。',
-                what_it_does_not_do='不动 life.db、config.toml、人格文件——数据它一概不碰。',
-                limits='只管源码快照，观察窗约一分钟；连续失败 3 次就停手等人处理，不再自动回滚。',
+                what_it_does=what_it_does,
+                when_it_acts=when_it_acts,
+                what_it_does_not_do=not_do,
+                limits=limits,
                 enabled=enabled, active=active)
 
 
@@ -644,8 +750,9 @@ def _dispatch_caveat(core, kind, *, executor):
         # 不能照抄「注册过但没有活动连接」——那是另一种情形。
         return False, ('执行器把手机报成了可用，但我这边看不到任何在线设备；'
                        '现在派活很可能被拒，先确认手机上小鱼 App 在前台再操作。')
-    return False, ('手机在最近 90 秒内注册过（所以状态是在线），但它没有活动连接：'
-                   '现在派活会被拒（需要 App 在前台）。先让它回到前台再操作。')
+    return False, (_world_detail('phone.link', context,
+                                 fallback='手机注册过但没有活动连接')
+                   + '；现在派活会被拒（需要 App 在前台）。先让它回到前台再操作。')
 
 
 def capabilities(core, state=None, *, now=None):
@@ -696,7 +803,13 @@ def capabilities(core, state=None, *, now=None):
     node = NODE
     endpoint = _dsh_endpoint(executor)
     dsh_reason = None
-    dsh_status = 'ready' if endpoint else 'needs_setup'
+    # 三态：None（读不到）≠ False（本机确实没有）。以前这里 `if endpoint` 把两者都判成
+    # needs_setup，把「不知道」说成了「没有」——和 `_offline_reason` 的 dsh 分支同一个病。
+    if endpoint is None:
+        dsh_status = 'unknown'
+        dsh_reason = '读不到 dsh 路径探测结果，所以不能确认本机有没有 DSH 运行时。'
+    else:
+        dsh_status = 'ready' if endpoint else 'needs_setup'
     # dsh 的动作种类条目由下面这条统一登记（带 strict 原因），这里不再重复。
     kinds = [kind for kind in kinds if kind != 'dsh']
     if endpoint and mode == 'strict':
@@ -730,8 +843,12 @@ def capabilities(core, state=None, *, now=None):
     for channel in ('qq', 'wechat'):
         fact = facts.get(channel) or {}
         state_ = str(fact.get('state') or 'unknown')
-        status_ = 'ready' if state_ == 'connected' else ('offline' if state_ in ('disconnected', 'disabled')
-                                                        else 'needs_setup')
+        # 状态词统一来自事实层（`companion_world.channel_fact`），不再在这里另写一套：
+        # 以前这里判 `disabled` → offline，而 reason 文案说「不是掉线，是主动关的」——
+        # 判定和措辞用的不是同一份事实，正是今晚反复出现的那个根因。
+        world_fact = _world_fact('channel.' + channel,
+                                 lambda f=fact, c=channel: _world().channel_fact(c, f))
+        status_ = str(world_fact.get('state') or 'unknown')
         item = _capability(
             'channel.' + channel, 'channel', '消息通道：' + channel, status_,
             reason=None if state_ == 'connected' else channel_reason.get(state_, '状态未知。'),
@@ -892,7 +1009,8 @@ SHORT_STATE = {
     'action.phone': {('offline',): '手机未连', ('unknown',): '手机未连', ('ready',): '手机在线'},
     'action.computer': {('offline',): '桌面未连', ('ready',): '桌面已连'},
     'action.body': {('offline',): '身体未连', ('ready',): '身体已连'},
-    'action.town': {('needs_setup',): '小镇未启用'},
+    'action.town': {('needs_setup',): '小镇未启用', ('ready',): '小镇在线',
+                    ('offline',): '小镇暂停', ('unknown',): '小镇状态不明'},
     'action.bilibili': {('needs_setup',): 'B站未登录', ('ready',): 'B站已登录'},
     'action.dsh': {('needs_setup',): '后端代理不可用'},
     'agent.subagent': {('needs_setup',): '子 agent 待跑通', ('ready',): '子 agent 可用'},

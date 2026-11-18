@@ -3,17 +3,24 @@
 只读审计。目标不是给方案，是给**每条缺口的真实边界**：它现在断在哪个文件哪一行、
 服务端到底有没有这个数据、补它要动前端还是必须动服务端。
 
+> **引用约定**：本文所有「文件:行号」用带路径的写法，例如
+> `mobile/android/assets/index.html:154`、`life/companion_mobile.py:299`。
+> 原因是仓库存着同名文件（`life/settings_ui/index.html`、
+> `tools/stage-c/MainActivity.java` 等），裸文件名指不到唯一位置。
+> 自检命令：`python -B -X utf8 tools/verify-doc-line-refs.py docs/apk-gap-audit.md`
+
 **审计基线**
 
 | 项 | 值 | 怎么确认的 |
 |---|---|---|
-| 源码位置 | 云端 `/opt/qq-deepseek/mobile/android/` | 本机 `C:\Users\76328\qq-deepseek\mobile\android\` 有同名副本 |
+| 源码位置 | 云端 `/opt/qq-deepseek/mobile/android` | 本机 `mobile/android` 有同名副本 |
 | 发布包 | `/var/www/companion/downloads/Xiaoyu-0.4.7.apk` | — |
-| 发布包 vs 源码 | **一致**（`index.html`、`mobile-input.js` 字节级相同） | 解包比 sha256：`index.html` 37056B `0a267e61…`，`mobile-input.js` 11437B `0e144f45…` |
+| 发布包 vs 源码 | **一致**（`mobile/android/assets/index.html`、`mobile/android/assets/mobile-input.js` 字节级相同） | 解包比 sha256：`mobile/android/assets/index.html` 37056B `0a267e61…`，`mobile/android/assets/mobile-input.js` 11437B `0e144f45…` |
 | 本文件行号 | 对**源码和 0.4.7 发布包同时有效** | 同上 |
 | 服务端源码 | `/opt/qq-deepseek/life/companion_mobile.py`、`companion_phone.py` | 云端运行中 |
 
-审计方法：源码通读 + 云端实测（只读查询 `mobile.sqlite3` / `mobile-devices.json`，
+审计方法：源码通读 + 云端实测（只读查询运行时数据 `data/companion/mobile.sqlite3` 与
+`data/companion/mobile-devices.json`，都不在仓库里，
 直连 `http://127.0.0.1:8765` 打真实鉴权路径）。**下面每一条的「实测」都是真跑出来的，
 不是读代码推出来的**；凡是我没能实测的，明确写「未实测」并说明原因。
 
@@ -23,12 +30,12 @@
 
 | # | 缺口 | 结论 | 最小改动面 |
 |---|---|---|---|
-| 1 | 消息状态不可见 | **改前端即可**（服务端数据已在，只是前端不读） | `index.html` + `mobile-input.js`；服务端零改动 |
-| 2 | 草稿不持久 | **改前端即可** | `index.html`（localStorage）+ `MainActivity.java`（可选加固） |
+| 1 | 消息状态不可见 | **改前端即可**（服务端数据已在，只是前端不读） | `mobile/android/assets/index.html` + `mobile/android/assets/mobile-input.js`；服务端零改动 |
+| 2 | 草稿不持久 | **改前端即可** | `mobile/android/assets/index.html`（localStorage）+ `mobile/android/src/cn/xiaoyu/companion/MainActivity.java`（可选加固） |
 | 3 | 历史只有 60 条 | **必须改服务端**（前端没有别的地方能拿更多） | `companion_mobile.py`：`HISTORY_LIMIT` + 分页参数 |
-| 4 | 401 无法区分 | **两端都要改**：服务端先给可区分的错误码，前端才能照实说 | `companion_mobile.py` 鉴权 + `index.html:49` 文案 |
-| 5 | 运行详情缺陷 | **改前端即可**（两行） | `mobile-input.js:124`、`:127` |
-| 6 | 手机操作状态页 | **两端都要改**：服务端要暴露注册结果，前端要读 | `companion_phone.py` + `index.html:157` |
+| 4 | 401 无法区分 | **两端都要改**：服务端先给可区分的错误码，前端才能照实说 | `companion_mobile.py` 鉴权 + `mobile/android/assets/index.html:49` 文案 |
+| 5 | 运行详情缺陷 | **改前端即可**（两行） | `mobile/android/assets/mobile-input.js:124`、`:127` |
+| 6 | 手机操作状态页 | **两端都要改**：服务端要暴露注册结果，前端要读 | `companion_phone.py` + `mobile/android/assets/index.html:157` |
 
 一句话概括：**1、2、5 是纯前端**（服务端早就有数据，前端没读）；
 **3 是纯服务端**（数据被服务端砍掉了，前端无从补救）；
@@ -59,8 +66,8 @@ index.html:154 send()
 
 | 环节 | 位置 | 行号 |
 |---|---|---|
-| 生成消息 id | `index.html` | 153 `uuid()` |
-| 发出 | `index.html` | 154 |
+| 生成消息 id | `mobile/android/assets/index.html` | 153 `uuid()` |
+| 发出 | `mobile/android/assets/index.html` | 154 |
 | 服务端收下、落库 `accepted`、返回 202 | `companion_mobile.py` | 319–321 |
 | 异步处理 | `companion_mobile.py` | 323–335 |
 | 写终态 | `companion_mobile.py` | 334 |
@@ -72,7 +79,7 @@ index.html:154 send()
 **三处，逐个说：**
 
 **① HTTP 层只认「收下了」**
-`companion_mobile.py:321` 返回 `202 {accepted:true}`。`index.html:154` 的 `await api(...)`
+`companion_mobile.py:321` 返回 `202 {accepted:true}`。`mobile/android/assets/index.html:154` 的 `await api(...)`
 拿到 202 就当成成功，立刻清空输入框：
 
 ```js
@@ -91,13 +98,13 @@ snapshot['mobile_requests']=[dict(id=row[0],status=row[1]) for row in self.db.ex
     'SELECT id,status FROM requests WHERE device=? ORDER BY created DESC LIMIT 30',(device,))]
 ```
 
-**实测：前端代码里 `mobile_requests` 零引用。** 我 grep 了 `index.html` 和
-`mobile-input.js` 全文，只在 `index.html:137` 的 `onServerEvent` 里出现过
+**实测：前端代码里 `mobile_requests` 零引用。** 我 grep 了 `mobile/android/assets/index.html` 和
+`mobile/android/assets/mobile-input.js` 全文，只在 `mobile/android/assets/index.html:137` 的 `onServerEvent` 里出现过
 `mobile_request`（事件名，用于触发 `queueRefresh`），**没有任何地方读
 `state.mobile_requests`**。服务端把状态送到门口了，前端没开门。
 
 **③ `mobile_request` 事件被当成「该刷新了」**
-`index.html:137`：
+`mobile/android/assets/index.html:137`：
 
 ```js
 if(['message','ready','resync','snapshot','status','action_result','mobile_request'].includes(e.type)){
@@ -152,13 +159,13 @@ if(['message','ready','resync','snapshot','status','action_result','mobile_reque
 
 | 内存态 | 位置 | 生命周期 |
 |---|---|---|
-| 输入框文字 | `index.html:28` `<textarea id="text">` 的 DOM value | 页面重载即失 |
-| 待发图片 | `index.html:35` `let images=[]` | 页面重载即失 |
-| 幂等键 | `index.html:35` `let lastRequest=null` | 页面重载即失 |
+| 输入框文字 | `mobile/android/assets/index.html:28` `<textarea id="text">` 的 DOM value | 页面重载即失 |
+| 待发图片 | `mobile/android/assets/index.html:35` `let images=[]` | 页面重载即失 |
+| 幂等键 | `mobile/android/assets/index.html:35` `let lastRequest=null` | 页面重载即失 |
 
 ### Android 侧实际保存了什么
 
-`MainActivity.java:148`：
+`mobile/android/src/cn/xiaoyu/companion/MainActivity.java:148`：
 
 ```java
 @Override protected void onSaveInstanceState(Bundle state){
@@ -170,37 +177,37 @@ if(['message','ready','resync','snapshot','status','action_result','mobile_reque
 **只存了 `cameraUri`，即「相机正在拍的那张照片的临时 URI」。**
 输入框、已选图片、未完成请求，一个都没存。
 
-`onCreate` 也只恢复这一个（`MainActivity.java:46`）。
+`onCreate` 也只恢复这一个（`mobile/android/src/cn/xiaoyu/companion/MainActivity.java:46`）。
 
 ### 已有的一半能力
 
-`index.html:133-134` 已经在用 localStorage 缓存状态：
+`mobile/android/assets/index.html:133-134` 已经在用 localStorage 缓存状态：
 
 ```js
 const STATE_CACHE='xiaoyu.state.v1';
 function storeState(state){try{localStorage.setItem(STATE_CACHE,JSON.stringify({history:...(state.history||[]).slice(-60),...}))}catch(e){}}
 ```
 
-而且 `MainActivity.java:74` 已经开了 `setDomStorageEnabled(true)`。
+而且 `mobile/android/src/cn/xiaoyu/companion/MainActivity.java:74` 已经开了 `setDomStorageEnabled(true)`。
 **localStorage 是可用的，只是没拿来存草稿。**
 
 ### 最小侵入的持久化点
 
-**首选：纯前端，在 `index.html` 用 localStorage。**
+**首选：纯前端，在 `mobile/android/assets/index.html` 用 localStorage。**
 三个建议落点，都是现成函数旁边的几行：
 
 | 要保的 | 建议落点 | 为什么是这里 |
 |---|---|---|
-| 输入框文字 | `index.html:155` 的 `$('text').oninput` 里 | 已有一次输入回调，加一行 `localStorage.setItem` 即可 |
-| 待发图片 | `index.html:152` `onPickedImage` 和 151 `attachmentUI` | 图片数组唯一的两个写入口 |
-| 未完成请求 | `index.html:154` | `lastRequest` 生成处；它本来就是幂等键，重发时复用才不会重复 |
+| 输入框文字 | `mobile/android/assets/index.html:155` 的 `$('text').oninput` 里 | 已有一次输入回调，加一行 `localStorage.setItem` 即可 |
+| 待发图片 | `mobile/android/assets/index.html:152` `onPickedImage` 和 151 `attachmentUI` | 图片数组唯一的两个写入口 |
+| 未完成请求 | `mobile/android/assets/index.html:154` | `lastRequest` 生成处；它本来就是幂等键，重发时复用才不会重复 |
 
-**注意一个真实的坑**：图片是 base64（`MainActivity.java:256`，单张上限 8MB，
-`index.html:152` 最多 8 张）。整组塞进 localStorage 可能几十 MB，会撞配额。
+**注意一个真实的坑**：图片是 base64（`mobile/android/src/cn/xiaoyu/companion/MainActivity.java:256`，单张上限 8MB，
+`mobile/android/assets/index.html:152` 最多 8 张）。整组塞进 localStorage 可能几十 MB，会撞配额。
 建议草稿只存**文字**，图片重启后丢弃——这与「最小侵入」一致，也避免配额异常。
 
 **可选加固（需要改 Android）**：如果希望连「正在拍的那张照片」之外的进程被杀的
-恢复也可靠，可在 `MainActivity.java:148` 的 `onSaveInstanceState` 里补
+恢复也可靠，可在 `mobile/android/src/cn/xiaoyu/companion/MainActivity.java:148` 的 `onSaveInstanceState` 里补
 `state.putString("draft_text", ...)`。但这要求把 WebView 里的文字取出来，
 比 localStorage 方案重得多——**推荐先只做前端方案**。
 
@@ -245,7 +252,7 @@ for row in (snapshot.get('history') or [])[-history_limit:]:
 - 现有 `GET /mobile/state` 无参数 → 行为不变（默认 60）。
 - 新增 `GET /mobile/state?history_before=<timestamp|id>&history_limit=N` →
   `mobile_view` 多一个「取这段之前的」过滤。
-- 前端 `index.html:134` 的 `storeState` 已经在存 60 条（`.slice(-60)`），
+- 前端 `mobile/android/assets/index.html:134` 的 `storeState` 已经在存 60 条（`.slice(-60)`），
   说明前端本来就按 60 设计；分页要同时放宽它。
 
 **未实测的部分（说明理由）**：我没有真的发带分页参数的请求去验证，
@@ -297,14 +304,15 @@ for row in (snapshot.get('history') or [])[-history_limit:]:
 |---|---|---|
 | 从未配对 | **没有。** 服务端只存已配对设备的 token 哈希，查不到 ≠ 没配过 | **做不到**（除非改数据结构） |
 | 设备被移除 | **有。** `devices` 里有 `revoked` 字段（`companion_phone.py` 与配对逻辑使用），只是被合并进同一个 401 | **能区分**，需要拆开 |
-| token 过期 | **没有。** `companion_mobile.py:287-288` 发放 token 时只写 `id / name / created_at`，**没有任何过期时间**，`mobile-devices.json` 里也没有 `expires` 字段 | **做不到**——现在根本不存在「过期」这回事 |
+| token 过期 | **没有。** `companion_mobile.py:287-288` 发放 token 时只写 `id / name / created_at`，**没有任何过期时间**，运行时 `data/companion/mobile-devices.json` 里也没有 `expires` 字段 | **做不到**——现在根本不存在「过期」这回事 |
 
 **「token 过期」在当前实现里是一个不存在的情形。** 实测云端
-`mobile-devices.json` 只有 `id / name / created_at`（+ 可选的 `revoked`），没有过期时间。
+运行时 `data/companion/mobile-devices.json` 只有 `id / name / created_at`（+ 可选的 `revoked`），
+没有过期时间。
 
 ### 前端现在的说法
 
-`index.html:49`：
+`mobile/android/assets/index.html:49`：
 
 ```js
 p.reject(Error(status===401?'配对码无效或已用过，请检查后重试。':...))
@@ -319,7 +327,7 @@ p.reject(Error(status===401?'配对码无效或已用过，请检查后重试。
 **两端都要改。**
 - **服务端必须先给区分依据**：把 `:270` 那一句拆成至少三种不同的错误码
   （例：`device_revoked` / `token_unknown` / `malformed_token`）。这一步前端无法代劳。
-- **前端再照实说**：`index.html:49` 按错误码换文案。
+- **前端再照实说**：`mobile/android/assets/index.html:49` 按错误码换文案。
 - **「token 过期」要实现就得先在服务端加过期字段**——这超出了文案范围，是功能新增。
   如果不想引入过期机制，就该**从需求里去掉这一条**，否则前端只能继续编。
 
@@ -328,18 +336,18 @@ p.reject(Error(status===401?'配对码无效或已用过，请检查后重试。
 ## 5) 运行详情缺陷（已确认）
 
 用户说法是「发布包 line 124 的按钮处理函数没传参数」。**已在源码里核实，
-并且确认 0.4.7 发布包的 `mobile-input.js` 与源码字节一致，所以行号对得上。**
+并且确认 0.4.7 发布包的 `mobile/android/assets/mobile-input.js` 与源码字节一致，所以行号对得上。**
 
 ### 确切位置
 
-`mobile-input.js:124`：
+`mobile/android/assets/mobile-input.js:124`：
 
 ```js
 $('openRuntime').onclick=()=>{document.activeElement?.blur();$('overlay').style.display='none';
   $('runtimeOverlay').style.display='flex';renderObservability(latestState);refresh()};
 ```
 
-`mobile-input.js:127`（同一个毛病）：
+`mobile/android/assets/mobile-input.js:127`（同一个毛病）：
 
 ```js
 $('refreshRuntime').onclick=()=>refresh();
@@ -364,7 +372,7 @@ refresh(runtime)                        index.html:136
 
 ### 对照：唯一正确传参的地方
 
-`index.html:137`：
+`mobile/android/assets/index.html:137`：
 
 ```js
 if(e.type==='phase'){phaseRevision++;applyPhase(e.phase||{});if($('runtimeOverlay').style.display==='flex')refresh(true)}
@@ -374,8 +382,8 @@ if(e.type==='phase'){phaseRevision++;applyPhase(e.phase||{});if($('runtimeOverla
 
 ### 确切修改点
 
-- `mobile-input.js:124` → `refresh()` 改成 `refresh(true)`
-- `mobile-input.js:127` → `refresh()` 改成 `refresh(true)`
+- `mobile/android/assets/mobile-input.js:124` → `refresh()` 改成 `refresh(true)`
+- `mobile/android/assets/mobile-input.js:127` → `refresh()` 改成 `refresh(true)`
 
 ### 结论
 
@@ -393,10 +401,10 @@ if(e.type==='phase'){phaseRevision++;applyPhase(e.phase||{});if($('runtimeOverla
 真实判据分两层，**必须同时成立**：
 
 **第一层（设备侧）**：`PhoneService.current != null`
-`PhoneService.java:42`：`static boolean enabled(){return current!=null;}`
+`mobile/android/src/cn/xiaoyu/companion/PhoneService.java:42`：`static boolean enabled(){return current!=null;}`
 
-`current` 在这个服务被系统真正绑定成功后才赋值（`PhoneService.java:155-156` 的
-`onServiceConnected(){current=this;}`），`onDestroy` 时清空（`PhoneService.java:163-165`）。
+`current` 在这个服务被系统真正绑定成功后才赋值（`mobile/android/src/cn/xiaoyu/companion/PhoneService.java:155-156` 的
+`onServiceConnected(){current=this;}`），`onDestroy` 时清空（`mobile/android/src/cn/xiaoyu/companion/PhoneService.java:163-165`）。
 **这是「服务真的跑起来了」，不是「设置里显示已开启」。**
 
 **第二层（云端侧）**：`/mobile/device` 注册返回 200，云端 `PhoneControl.devices[id]`
@@ -413,11 +421,11 @@ self.devices[device]=dict(enabled=value.get('enabled') is True, ...,
 **所以「云端注册成功」的真正判据是：`context()` 的 `devices` 列表里出现这台手机，
 且它的 `operations` 非空。** 只看 `enabled` 不够——`operations` 为空时云端照样不派活。
 
-**注册结果本来就写在设备上**：`PhoneService.java:48-54` 的 `recordRegister()` 把
+**注册结果本来就写在设备上**：`mobile/android/src/cn/xiaoyu/companion/PhoneService.java:48-54` 的 `recordRegister()` 把
 `register_at` / `register_result` / `register_detail` 写进 SharedPreferences，
-`MainActivity.java:176-178` 已经通过 `config()` 把它们暴露给前端了。
+`mobile/android/src/cn/xiaoyu/companion/MainActivity.java:176-178` 已经通过 `config()` 把它们暴露给前端了。
 
-**但现在前端只用了一个布尔值**——`index.html:157`：
+**但现在前端只用了一个布尔值**——`mobile/android/assets/index.html:157`：
 
 ```js
 function phoneStatus(){const cfg=config();
@@ -425,7 +433,7 @@ function phoneStatus(){const cfg=config();
   ...
 ```
 
-`phone_enabled` 来自 `MainActivity.java:172` 的 `PhoneService.enabled()`，即第一层。
+`phone_enabled` 来自 `mobile/android/src/cn/xiaoyu/companion/MainActivity.java:172` 的 `PhoneService.enabled()`，即第一层。
 **第二层（注册结果 `register_result` / `register_detail`）已经在 `cfg` 里，
 前端一个字都没显示。**
 
@@ -433,17 +441,17 @@ function phoneStatus(){const cfg=config();
 
 | 停止什么 | 入口 | 位置 |
 |---|---|---|
-| 停止语音播放 | `Native.stopSpeech()` | `index.html:155` 输入时、`:154` 发送时、`mobile-input.js:15` 点击语音状态条时 |
+| 停止语音播放 | `Native.stopSpeech()` | `mobile/android/assets/index.html:155` 输入时、`:154` 发送时、`mobile/android/assets/mobile-input.js:15` 点击语音状态条时 |
 | 停止手机操作 | **不存在前端入口** | 只能去系统设置关无障碍服务 |
 
-`MainActivity.java:204`：`stopSpeech(){runOnUiThread(()->speech.stop());}` ——
+`mobile/android/src/cn/xiaoyu/companion/MainActivity.java:204`：`stopSpeech(){runOnUiThread(()->speech.stop());}` ——
 **只有语音，没有「停止手机操作」的桥方法。**
 
 ### 能否区分「停止语音播放」和「停止手机操作」
 
 **现状：天然区分，因为后者根本没有入口。**
 
-- 语音：有独立状态条（`index.html:28` `#speechStatus`）+ 点击停止（`mobile-input.js:15`）
+- 语音：有独立状态条（`mobile/android/assets/index.html:28` `#speechStatus`）+ 点击停止（`mobile/android/assets/mobile-input.js:15`）
   + 自动停止时机。语义清楚。
 - 手机操作：**没有停止入口**。用户想让它停，只能进系统设置关无障碍。
 
@@ -480,7 +488,7 @@ function phoneStatus(){const cfg=config();
 1. **分页参数**（第 3 条）：服务端没有该参数，无法端到端验证。结论基于三处代码事实。
 2. **token 过期**（第 4 条）：系统里不存在过期机制，无法实测一个不存在的状态。
 3. **真机无障碍开启/关闭**：我没有手机，无法实测 `PhoneService.current` 的变化。
-   第 6 条第一层判据来自代码（`PhoneService.java:42`、`:155-156`、`:163-165`），非真机观测。
+   第 6 条第一层判据来自代码（`mobile/android/src/cn/xiaoyu/companion/PhoneService.java:42`、`:155-156`、`:163-165`），非真机观测。
 4. **0.4.7 包内 `classes.dex` 与源码的一致性**：只比对了 Web 资源
-   （`index.html`、`mobile-input.js`）字节一致；Java 部分未反编译比对，
+   （`mobile/android/assets/index.html`、`mobile/android/assets/mobile-input.js`）字节一致；Java 部分未反编译比对，
    因此第 2、6 条涉及的 Java 行为以源码为准，未在发布包内验证。

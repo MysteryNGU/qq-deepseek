@@ -71,7 +71,7 @@ OPS = ('create', 'send', 'inspect', 'wait', 'cancel', 'resume', 'read_artifact')
 # 表外的键在 _action_fields 里就被丢掉，不会走到 AgentManager 的方法签名上。
 # 改任何一个方法的签名，这张表要跟着改（tests/test_capability_cognition.py 会核对）。
 OP_FIELDS = {
-    'create': {'goal', 'deliverables', 'acceptance', 'workspace', 'node_requirements',
+    'create': {'goal', 'command', 'deliverables', 'acceptance', 'workspace', 'node_requirements',
                'scope', 'budget', 'parent_task_ref', 'idempotency_key', 'context_refs',
                'node', 'node_reason', 'resume_session_id'},
     'send': {'agent_id', 'text', 'message_id', 'intent'},
@@ -831,7 +831,7 @@ class AgentManager:
     def create(self, goal, *, deliverables=(), acceptance=(), workspace=None, node_requirements=None,
                scope='private', budget=None, parent_task_ref=None, idempotency_key=None,
                context_refs=(), project='', conversation_ref='', node=None, node_reason='',
-               resume_session_id='', _action_id=None):
+               resume_session_id='', command='', _action_id=None):
         """登记一个子 agent 并立刻返回 ``queued``；执行由 ``ActionExecutor`` 在后台接头。
 
         幂等键是 ``idempotency_key``（缺省是规范化的 goal + 交付物 + 工作区）：
@@ -842,6 +842,7 @@ class AgentManager:
         goal = str(goal or '').strip()
         if not goal:
             raise AgentError('goal_required', 'create 需要 goal：要达成什么、在哪做、怎样算做完。')
+        command = str(command or '').strip()
         deliverables = _items(deliverables, 200, 12)
         acceptance = _items(acceptance, 400, 12)
         workspace, workspace_root = self.workspace_path(workspace)
@@ -862,6 +863,18 @@ class AgentManager:
                              % (limits['max_depth'], depth + 1), depth=depth)
         origin = ORIGINS.get(str(node or '').strip().lower()) if node else None
         choice = self._choose_node(node, origin, node_reason)
+        # t11: a node=work task is handed to the command backend, which runs
+        # action['command'] (see _run_worker). A goal-only task therefore fails
+        # two seconds later with 'command backend needs a command' - syntax OK,
+        # execution failed, and the model never learns what it did wrong.
+        # Refuse it here instead, and say what to use next time.
+        if choice['origin'] == 'work' and not command:
+            raise AgentError(
+                'command_required_for_work_node',
+                'node=work 要在 command 里写具体命令（例如 command="pytest -q" 或 '
+                'command="python build.py"）；只想让它按目标自动把事情做完，用 node=dsh；'
+                '新建文件这类小活，用 node=echo。',
+                node='work', goal=goal[:120])
         budget_policy = budget if isinstance(budget, dict) else {}
         # 模式来源：本次动作显式带的 > 配置里的（真实 SpendingPolicy）> off。
         # 上限从部署配置里读，缺的进 missing_limits——不当 0、不假装有。
@@ -899,7 +912,7 @@ class AgentManager:
                       waiting_for='', recover_when='', cancel_reason='', attempt=1, resumed_from='',
                       session_id=str(resume_session_id or ''), message_id='',
                       checkpoint=json.dumps(dict(
-                          deliverables=deliverables, acceptance=acceptance,
+                          deliverables=deliverables, acceptance=acceptance, command=command,
                           context_refs=[str(item)[:200] for item in (context_refs or [])][:8],
                           workspace_root=workspace_root, node_reason=choice.get('reason') or '',
                           action_id=_action_id or ''), ensure_ascii=False),
@@ -1958,18 +1971,23 @@ class AgentManager:
 
         进程树归这个协程所有（``ProcessTree``），取消时连子孙一起停；跑在
         独立工作目录里，绝不把 cwd 缺省成 home。
+
+        跑的是 ``action['command']``，其次台账里的 ``checkpoint['command']``
+        （create 已把它记下来，重启或续跑还能取到）。**不用 goal 兜底**：
+        goal 是自然语言，把它当命令跑等于把意图当命令——goal 恰好是 ``ls``
+        就真的 ls 了。没有 command 的活已经在 ``create()`` 里被拒。
         """
         requested = action.get('workspace')
         shared = self.workspace_path(requested)[0]
         cwd = Path(shared) if shared and Path(shared).is_dir() else workdir
         if not cwd.is_dir():
             raise AgentError('workspace_missing', '工作目录不存在：%s' % cwd)
+        script = str(action.get('command') or (checkpoint or {}).get('command') or '')
         lock_path = folder_lock_path(cwd, self.home)
         with FileLock(lock_path):
             return await self._spawn(row, dict(agent_id=row['id'], requested_at=_now(),
                                                workspace=str(cwd)),
-                                     workdir=workdir, cwd=str(cwd),
-                                     script=str(action.get('command') or ''))
+                                     workdir=workdir, cwd=str(cwd), script=script)
 
     async def _run_stub(self, row, action, workdir, checkpoint):
         return await self._spawn(row, dict(agent_id=row['id'], requested_at=_now(), workspace=str(workdir)),
@@ -2435,9 +2453,10 @@ def _action_fields(task):
     fields = dict(raw) if isinstance(raw, dict) else {}
     for key in ('op', 'agent_id', 'message_id', 'text', 'intent', 'wait_s', 'cursor', 'until',
                 'why', 'include_children', 'artifact_id', 'path', 'offset', 'limit', 'goal',
-                'deliverables', 'acceptance', 'workspace', 'node', 'node_reason', 'scope',
-                'budget', 'parent_task_ref', 'idempotency_key', 'context_refs', 'project',
-                'conversation_ref', 'conversation', 'query', 'resume_session_id', 'from_session'):
+                'command', 'deliverables', 'acceptance', 'workspace', 'node', 'node_reason',
+                'scope', 'budget', 'parent_task_ref', 'idempotency_key', 'context_refs',
+                'project', 'conversation_ref', 'conversation', 'query', 'resume_session_id',
+                'from_session'):
         value = task.get(key)
         if value not in (None, '') and fields.get(key) in (None, ''):
             fields[key] = value

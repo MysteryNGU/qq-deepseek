@@ -103,11 +103,17 @@ class _Agents:
         return result
 
     def create(self, key, **extra):
+        # t11: `create` with no node now defaults to the host-command backend
+        # (``work``), which needs a real `command` — a goal alone is refused.
+        # These contract cases are about the ledger/state machine, not about the
+        # command backend, so they ask for the offline stub backend explicitly
+        # instead of silently relying on the old "goal is also the script" default.
         arguments = dict(goal="offline contract goal", deliverables=["report.md"],
                          acceptance=["report exists"], workspace=str(self.manager.home
                                                                   if hasattr(self.manager, "home") else "."),
                          node_requirements=["local"], scope="private", budget={"mode": "off"},
                          parent_task_ref=None, idempotency_key=key, context_refs=[])
+        arguments.setdefault("node", "echo")
         arguments.update(extra)
         return self.call("create", **arguments)
 

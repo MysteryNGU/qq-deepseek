@@ -44,6 +44,7 @@ from . import companion_evidence as evidence
 from . import companion_experience as experience_log
 from . import companion_presence as presence
 from .companion_awareness import build as build_awareness, public_view
+from . import companion_p32
 
 
 class DecisionStateError(ValueError):
@@ -65,6 +66,19 @@ _ERROR_KINDS = {
     'TooManyRedirects': '重定向过多',
     'InvalidURL': '网址格式无效',
 }
+
+# P33 饥饿阈值（秒）。**只用于告警，不阻断任何流程**：见 docs/p33-wake-explainability-design.md §10。
+# 依据 2026-11-18 实测：有 3 条 kind=agent 动作停在 queued 最久 2.6 小时而无人发现。
+# 阈值先宽后严——台账样本只有 2 条（都 <54s），观察一周再收紧。
+STARVATION_SECONDS = {
+    'user_message': 30.0,      # 合并窗口默认 2.5 秒，30 秒是它的 12 倍
+    'project_due': 300.0,      # 到期 5 分钟没被认领
+    'agent_action': 60.0,      # 未认领的子 agent 行动——今晚卡住的正是这个
+    'agent_task': 60.0,        # 台账 running 但 60 秒无状态变化
+    'bilibili': 600.0,         # 社交消息不如项目紧急，且自带重试
+}
+# 同类唤醒事件在这个窗口内只记一次，避免 companion_activity 被刷屏。
+WAKE_LOG_DEDUPE_SECONDS = 60.0
 
 
 def parse_object(text):
@@ -346,6 +360,8 @@ DECISION = {
         'reply': {'type': 'string'},
         'share_town': {'type':'boolean'},
         'share_bilibili': {'type':'boolean'},
+        # 「剩下没发的气泡不要了」：已开口的照常发，后面排着的收回。只收气泡，不取消模型调用。
+        'silence_pending': {'type':'boolean'},
         'delivery': {'type':'object','additionalProperties':False,'required':['targets'],
             'properties':{'targets':{'type':'array','maxItems':16,'items':{'type':'string','pattern':r'^(desktop|qq|all|mobile:[A-Za-z0-9_-]{1,80})$'}}}},
         'images': {'type':'array', 'items':{'type':'string'}},
@@ -618,6 +634,137 @@ class Companion:
                 (uuid.uuid4().hex, self.life.agent_id, kind, text, encode(details), time.time()))
         self._emit(kind, text, **details)
 
+    # ---------------------------------------------------------------- 唤醒可解释性（P33）
+    # 只读盘点 + 追加记录，**不改变任何调度顺序**：这些函数没有任何调用点会因返回值改变分支。
+
+    def _starvation_snapshot(self, now=None):
+        """盘点「有谁在等、等了多久」。纯读，不写库，可被每 5 秒的 probe 安全调用。
+
+        形状统一成 world 事实：fact_ref/subject/state/source_ref/observed_at/age_s/detail。
+        ``state`` 只用既有词表（ready/offline/unknown），饥饿另用 ``starved`` 布尔
+        —— 不发明第四套状态词（见 docs/world-state-audit.md §4）。
+
+        ``raw`` 只给按需读取用，**不进主上下文**（主上下文只给 state + detail）。
+        """
+        now = time.time() if now is None else float(now)
+        facts = []
+
+        def fact(ref, subject, state, source, age, detail, **raw):
+            facts.append(dict(fact_ref=ref, subject=subject, state=state,
+                              source_ref=source, observed_at=_iso_time(now),
+                              age_s=None if age is None else round(float(age), 1),
+                              detail=detail, raw=raw,
+                              starved=bool(age is not None and age > STARVATION_SECONDS.get(subject, 1e9))))
+
+        # 1) 用户消息：最早一条还在批次里等
+        try:
+            batch = list(getattr(self, '_input_batch', []) or [])
+            if batch:
+                oldest = min(float(part.get('at') or now) for part in batch)
+                fact('queue.user_message', 'user_message', 'ready',
+                     'life/companion.py#_input_batch', now - oldest,
+                     '%d 条消息在合并窗口里等待' % len(batch), count=len(batch))
+        except Exception as error:  # noqa: BLE001 - 盘点失败只让这一条未知
+            fact('queue.user_message', 'user_message', 'unknown',
+                 'life/companion.py#_input_batch', None, '读不到待处理消息：%s' % type(error).__name__)
+
+        # 2) 项目到期：due() 只给最早的；要看到「还有谁在等」需要 all_candidates
+        try:
+            due = self.followthrough.due(autonomy=self.active,
+                                         delegated_refs=self.town.pending_project_refs())
+            if due:
+                age = now - float(due.get('due_at') or now)
+                fact('queue.project_due', 'project_due', 'ready',
+                     'life/companion_followthrough.py#FollowThrough.due', age,
+                     '项目到期未处理：%s' % str(due.get('goal') or '')[:60], ref=due.get('ref'))
+        except Exception as error:  # noqa: BLE001
+            fact('queue.project_due', 'project_due', 'unknown',
+                 'life/companion_followthrough.py#FollowThrough.due', None,
+                 '读不到到期项目：%s' % type(error).__name__)
+
+        # 3) B站来信：到了 due 还没处理
+        try:
+            incoming = self.bilibili_social.pending(limit=50)
+            if incoming:
+                ages = [now - float(item.get('next_due') or item.get('created') or now) for item in incoming]
+                fact('queue.bilibili', 'bilibili', 'ready',
+                     'life/companion_bilibili_social.py#pending', max(ages),
+                     '%d 条 B 站来信待处理' % len(incoming), count=len(incoming))
+        except Exception as error:  # noqa: BLE001
+            fact('queue.bilibili', 'bilibili', 'unknown',
+                 'life/companion_bilibili_social.py#pending', None,
+                 '读不到 B 站来信：%s' % type(error).__name__)
+
+        # 4) 子 agent：台账里 running/waiting 但很久没变状态
+        try:
+            row = self.repo._one(
+                "SELECT id,status,updated FROM companion_agent_tasks WHERE agent=? "
+                "AND status IN ('running','waiting','cancelling') ORDER BY updated ASC LIMIT 1",
+                (self.life.agent_id,))
+            if row:
+                age = now - float(row['updated'] or now)
+                fact('queue.agent_task', 'agent_task', 'ready',
+                     'companion_agent_tasks#updated', age,
+                     '子 agent %s 已 %s 秒没有状态变化' % (row['id'][:12], int(age)),
+                     agent_id=row['id'], status=row['status'])
+        except Exception as error:  # noqa: BLE001
+            fact('queue.agent_task', 'agent_task', 'unknown',
+                 'companion_agent_tasks#updated', None,
+                 '读不到子 agent 台账：%s' % type(error).__name__)
+
+        # 5) 子 agent：actions 里 kind=agent 但还没被 worker 领走（2026-11-18 实测卡了 2.6 小时）
+        try:
+            row = self.repo._one(
+                "SELECT id,status,updated FROM companion_actions WHERE agent=? "
+                "AND status IN ('pending','queued') "
+                "AND COALESCE(json_extract(action,'$.kind'),'')='agent' ORDER BY updated ASC LIMIT 1",
+                (self.life.agent_id,))
+            if row:
+                age = now - float(row['updated'] or now)
+                fact('queue.agent_action', 'agent_action', 'ready',
+                     'companion_actions#kind=agent', age,
+                     '子 agent 行动 %s 停在 %s 已 %s 秒' % (row['id'][:12], row['status'], int(age)),
+                     action_id=row['id'], status=row['status'])
+        except Exception as error:  # noqa: BLE001
+            fact('queue.agent_action', 'agent_action', 'unknown',
+                 'companion_actions#kind=agent', None,
+                 '读不到待领子 agent 行动：%s' % type(error).__name__)
+
+        starved = [item for item in facts if item['starved']]
+        return dict(generated_at=_iso_time(now), facts=facts,
+                    starved=[dict(fact_ref=item['fact_ref'], age_s=item['age_s'],
+                                  detail=item['detail']) for item in starved],
+                    starved_count=len(starved),
+                    thresholds=dict(STARVATION_SECONDS))
+
+    def _wake_log(self, trigger, chosen, why, candidates=None, *, now=None):
+        """记一条 ``wake``：为什么醒、谁在等、为什么先处理这个、等了多久。
+
+        **只在真正唤醒时调用**。每拍都写库会把 companion_activity 撑爆，
+        所以这里有两道门：同一秒只写一条、同类 60 秒内只写一次。
+        两道门都只影响"记不记"，不影响任何调度判断。
+        """
+        now = time.time() if now is None else float(now)
+        try:
+            if now - float(self._state('last_wake_log_at', 0) or 0) < 1.0:
+                return None
+            key = 'wake_log_at:' + str(trigger)
+            if now - float(self._state(key, 0) or 0) < WAKE_LOG_DEDUPE_SECONDS:
+                return None
+            with self.repo.tx():
+                self._save('last_wake_log_at', now)
+                self._save(key, now)
+            detail = dict(trigger=trigger, chosen=chosen, why=why,
+                          candidates=list(candidates or [])[:4],
+                          waited_s=None if not isinstance(chosen, dict) or chosen.get('age_s') is None
+                          else round(float(chosen['age_s']), 1))
+            self._audit('wake', '唤醒：' + str(trigger), **detail)
+            return detail
+        except Exception:  # noqa: BLE001 - 记录失败不能拖垮唤醒本身
+            log.exception('唤醒记录写入失败，本轮唤醒照常继续')
+            return None
+
+
     @staticmethod
     def _bubble_delay(text):
         return min(5.0,1.0+len(text)/45)
@@ -774,7 +921,19 @@ class Companion:
         ]
         if self.life.memory_index.adapter:
             self._background.append(asyncio.create_task(self._supervise('memory_index',self._index_memories())))
-        await self.town.start()
+        # 小镇桥是**附属功能**：它起不来不该拖垮整个启动（2026-11-18）。
+        # 以前这里直接 await，一旦抛错就冒到 `start()`，而上面已把 `_started=True`，
+        # 重试会被 `start()` 开头的 `if self._started: return` 挡掉——桥永远起不来，
+        # 而且没有日志、没人知道。现在失败只记审计，其余功能照常。
+        try:
+            await self.town.start()
+        except Exception as error:  # noqa: BLE001 - 附属功能失败不能中断启动
+            log.exception('小镇桥启动失败，其他功能照常')
+            try:
+                self._audit('error', '小镇桥启动失败，其他功能照常运行',
+                            task='town', error=type(error).__name__, detail=str(error)[:300])
+            except Exception:  # noqa: BLE001 - 审计失败也不能中断启动
+                log.exception('记录小镇启动失败时出错')
         await self.bilibili_social.start()
         # B站原始视频是临时中间产物，流程结束时已删；这里兜「进程被 kill、机器重启」
         # 这类没走完 finally 的残渣，避免几天后又把磁盘塞满。失败只记日志，不挡启动。
@@ -885,6 +1044,16 @@ class Companion:
         elif due:probe['blocked']='candidate_ready'
         elif isinstance(next_wake,(int,float)) and next_wake>now:probe['blocked']='waiting_next_wake'
         else:probe['blocked']='no_candidate'
+        # P33：**只增加字段**，不改上面任何判断。原 probe 回答「为什么这一拍没触发」，
+        # 这里补「还有谁在等、等了多久」——它能回答原 probe 答不了的那个问题。
+        # 纯读，不写库；盘点失败只让这一段未知，不影响已有的 blocked 结论。
+        try:
+            starvation = self._starvation_snapshot(now)
+            probe['starvation'] = starvation
+            probe['starvation_alert'] = starvation['starved']
+        except Exception as error:  # noqa: BLE001 - 盘点失败不能影响调度探测
+            probe['starvation'] = dict(error=type(error).__name__)
+            probe['starvation_alert'] = []
         with self.repo.tx():
             self._save('scheduler_probe_at',now)
             self._save('last_scheduler_probe',probe)
@@ -1380,6 +1549,15 @@ class Companion:
                             updated=_iso_time(row['updated'])))
         return out
 
+    def _world_facts(self):
+        """把各个 world 状态入口收成同一形状的事实。
+
+        适配器只读现有返回值、不改它们；读不到就是 unknown，不编成"不可用"。
+        形状见 life/companion_world.py——主上下文只取 brief()，raw 留给按需读取。
+        """
+        from . import companion_world
+        return companion_world.collect(self)
+
     def _self_process_facts(self, kinds):
         """我自己这份程序的事实：跑在哪、源码在哪、改完怎么生效。
 
@@ -1519,7 +1697,13 @@ class Companion:
         recalled = material['recall']
         kinds = self.executor.available_kinds() if hasattr(self.executor, 'available_kinds') else ['command']
         kinds = list(kinds)
-        if self.town.config.enabled and self.town.config.code:
+        # 配置事实 ≠ 运行状态（2026-11-18）：`config.enabled` 只说明「有人把它配好了」，
+        # 不代表桥已经连上。以前只看配置，于是「配置好但桥没起」时 town 会进 kinds、
+        # 能力目录说「能用（去小镇和角色互动）」，而 `town_fact()` 说「不能确认」——
+        # 两处不一致，且方向是**最危险的**那种：让她以为能用，用户去试才失败。
+        # 这里加一个运行状态门槛，让目录与事实层同源。
+        if (self.town.config.enabled and self.town.config.code
+                and self.town.state in ('connecting', 'online', 'paused', 'reconnecting')):
             kinds.append('town')
         if self._body and self._body_context.get('connected'):
             kinds.append('body')
@@ -1555,6 +1739,12 @@ class Companion:
         # 这些是程序知道的事实，不该让她每次靠猜（2026-11-18 对照：用户在 D1
         # 问「改完怎么生效」，她答不出「要重启」这条已知事实）。
         state['self_process'] = self._self_process_facts(kinds)
+        # 她在上一轮回答时被打断过：把这件事带进这一轮，让她知道该先回应哪句。
+        interjection = companion_p32.interjection_view(getattr(self, '_interjections', []) or [])
+        if interjection:
+            state['interjection'] = interjection
+            # 消费即清空：只影响紧接着的这一轮，不会每次醒来都重复出现。
+            self._interjections = []
         state['town'] = self.town.context()
         state['phone_context'] = self.executor.phone_context() if hasattr(self.executor,'phone_context') else dict(connected=False,devices=[])
         town_status = self.town.snapshot()
@@ -1764,6 +1954,13 @@ class Companion:
             with self.repo.tx():
                 self._save('last_user_endpoint',dict(source=source,event_id=event.id,last_message_at=time.time()))
         self._latest_dialogue = event.id
+        # 她在回答时又说话：记成插话事实，不打断当前模型调用，由下一轮 _messages 渲染。
+        if companion_p32.should_record_interjection(
+                answering=self._batch is not None, text=text, source_kind=source.get('kind')):
+            if not hasattr(self, '_interjections'):
+                self._interjections = []
+            self._interjections.append(dict(text=text.strip()[:400], at=time.time(),
+                                            source=source.get('kind') or 'unknown'))
         if interjection:
             for request in self._model_requests:
                 if not request.done() and self._model_requests[request]!='bilibili_read':
@@ -2468,7 +2665,14 @@ class Companion:
                         ephemeral=immediate,
                         source_event_ids=[source.id],origin_source_event_ids=[source.id])
                 if project['status']!='active':
-                    raise ValueError('行动所属项目需要处于 active 状态')
+                    # 项目不是 active（waiting/paused/completed）时不能派新动作，但**不能因此
+                    # 丢掉整轮**：她已经说出口的话和已经确认的行动回执都是既成事实。
+                    # 2026-11-18 实测：这条 raise 让一轮对话整轮失声（用户看到"发话没回复"）。
+                    # 与 _guard_decision 的处理一致——放弃这个动作，保留回复。
+                    self._audit('activity', '这个行动所属的项目现在不是 active，已跳过该动作并保留回复。',
+                                project=action.get('project'), project_status=project['status'],
+                                action_kind=action.get('kind'))
+                    continue
                 identity = stable_id('companion-action', source.id, str(index), encode(action))
                 self.repo._exec('INSERT OR IGNORE INTO companion_actions VALUES(?,?,?,?,?,?,?,?,?)',
                     (identity, self.life.agent_id, ref, source.id, encode(action), 'pending', None, time.time(), time.time()))
@@ -2493,11 +2697,13 @@ class Companion:
             recollection=self._state('last_recollection') or {}
             shared_ref=recollection.get('source_ref')
             sharing_recollection=bool(shared_ref and shared_ref in (decision.get('communication') or {}).get('basis_refs',[]))
+            keep_texts, dropped, silenced = companion_p32.decide_bubbles(
+                bubbles, silence_pending=decision.get('silence_pending') is True)
             segments=[dict(text=text,turn_id=source.id,part=index,parts=len(bubbles),
                 message_id=delivery_ledger.message_id(source.id,index),
                 images=attached if index==0 else [],delivery=delivery,
                 **(dict(recollection_ref=shared_ref,recollection_at=recollection.get('at')) if sharing_recollection else {}))
-                for index,text in enumerate(bubbles)]
+                for index,text in enumerate(keep_texts)]
             for segment in segments:
                 # 先登记发送意图，再进 outbox；同一 message_id 不会产生第二个气泡。
                 self._queue_delivery(dict(mid=segment['message_id'], turn_id=source.id,
@@ -2505,6 +2711,9 @@ class Companion:
                                           images=segment['images'], channels=delivery['targets'],
                                           conversation_ref=str((route.get('input_source') or {})
                                                                .get('conversation_id') or '')))
+            if silenced:
+                audit = companion_p32.silence_audit(dropped, kept=len(keep_texts))
+                self._audit(audit['kind'], audit['text'], turn_id=source.id, **audit['details'])
             pending.extend(segments)
             if pending and self._state('bubble_ready_at',0)<=time.time():
                 first=pending.pop(0)
@@ -2988,14 +3197,23 @@ class Companion:
         也会把共享的事件唤醒消耗掉，另一方就要多等一拍。
         """
         while True:
-            if await self._agent_pending_one():
+            # 三条路共用一次「睡到唤醒」：任何一条干了活就立刻重来，
+            # 都没有活才睡。_worker() 曾经内部自带 while True 并在 _wake 上
+            # 永久等待，导致进了普通行动那条就再也不会回来检查子 agent——
+            # 模型派出的 kind=agent 行动会一直停在 pending（t15 补的入口等于没有）。
+            did = (await self._agent_pending_one()) or (await self._agent_worker_one()) \
+                or (await self._worker())
+            if did:
                 continue
-            if await self._agent_worker_one():
-                continue
-            await self._worker()
+            self._wake.clear()
+            await self._wake.wait()
 
     async def _agent_pending_one(self):
         """把模型提交的 pending ``kind=agent`` 行动领走并交给执行器。
+
+        状态词要认两个：``_commit`` 写动作时用 ``pending``，但历史上有过把子 agent
+        台账的 ``queued`` 误写进 actions 表的情况（2026-11-18 实测 3 条卡了 2.6 小时）。
+        两个都认，才不会让动作在一个"看起来像、但 SQL 不认"的状态上永远等着。
 
         t15 定位的最后一环：``_worker()`` 的 SQL 本来就排除 agent，``_agent_worker_one()``
         只读台账，两边之间没有转移，所以模型派出的子 agent 永远停在 pending。这里补上
@@ -3004,7 +3222,7 @@ class Companion:
         """
         row = self.repo._one(
             "SELECT a.* FROM companion_actions a JOIN meta m ON m.k='action_task:'||a.project_ref "
-            "WHERE a.agent=? AND a.status='pending' AND (? OR json_extract(m.v,'$.origin')='user') "
+            "WHERE a.agent=? AND a.status IN ('pending','queued') AND (? OR json_extract(m.v,'$.origin')='user') "
             "AND COALESCE(json_extract(a.action,'$.kind'),'')='agent' ORDER BY a.created LIMIT 1",
             (self.life.agent_id, self.active))
         if not row:
@@ -3119,21 +3337,23 @@ class Companion:
             return 'self'
 
     async def _worker(self):
-        """普通行动：领一件跑一件，跑完回结果轮；空闲时睡到下一次唤醒。"""
-        while True:
+        """普通行动：有活就领一件做完返回 True；没活返回 False（由 _workers 统一睡）。
+
+        以前这里自带 while True 并在 self._wake 上等待，主循环一进来就再也
+        回不去检查子 agent 台账，kind=agent 的行动永远停在 pending。
+        """
+        if True:
             row = self.repo._one("SELECT a.* FROM companion_actions a JOIN meta m ON m.k='action_task:'||a.project_ref "
-                "WHERE a.agent=? AND a.status='pending' AND (? OR json_extract(m.v,'$.origin')='user')"
+                "WHERE a.agent=? AND a.status IN ('pending','queued') AND (? OR json_extract(m.v,'$.origin')='user')"
                 " AND COALESCE(json_extract(a.action,'$.kind'),'')!='agent' ORDER BY a.created LIMIT 1",
                 (self.life.agent_id, self.active))
             if not row:
-                self._wake.clear()
-                await self._wake.wait()
-                continue
+                return False
             project = self.tasks.get(row['project_ref'], self.scope.scope_id)
             if not project or project['status']!='active':
                 with self.repo.tx():
                     self.repo._exec("UPDATE companion_actions SET status='cancelled',updated=? WHERE id=?", (time.time(), row['id']))
-                continue
+                return True
             action = json.loads(row['action'])
             with self.repo.tx():
                 self.repo._exec("UPDATE companion_actions SET status='running',updated=? WHERE id=?", (time.time(), row['id']))
@@ -3181,11 +3401,11 @@ class Companion:
                 requested = self.repo._one('SELECT kind,source_kind FROM events WHERE id=?',(row['source'],))
                 direct_query = action.get('op')=='status' and requested and requested['kind']=='message' and requested['source_kind']=='user_report'
                 if not direct_query:
-                    continue
+                    return True
             if project and project.get('ephemeral') and result.get('completion')=='accepted':
                 # Queued expressions have no new outcome to reason about yet.
                 # Keep the receipt for the next conversation, without a retry loop.
-                continue
+                return True
             if project and (project['status']=='active' or project.get('ephemeral')) and (self.active or project.get('origin')=='user'):
                 try:
                     receipt = ('项目行动有了实际结果，请判断是否继续：%s。这次动作的目标是：%s'
@@ -3220,6 +3440,8 @@ class Companion:
                     log.exception('结果轮认知失败，结果保留供下次唤醒')
                     self._audit('error', '结果轮认知失败：' + type(sys.exc_info()[1]).__name__,
                                 action_id=row['id'], project=action.get('project'))
+            # 这件活已经做完（不论是否触发续行），告诉主循环继续看下一件。
+            return True
 
     def _settle(self, row, result):
         status = result.get('status', 'failed')
@@ -3298,6 +3520,22 @@ class Companion:
         result['observability']['current_state']=presence.build(self)
         result['observability']['background']=self.background_health()
         result['observability']['scheduler']=self._state('last_scheduler_probe')
+        try:
+            from . import companion_world as _world
+            result['observability']['world']=[_world.brief(item) for item in self._world_facts()]
+        except Exception as error:
+            # 观测不参与主流程：这里坏了只记原因，不影响快照其它部分。
+            result['observability']['world']=dict(error=type(error).__name__)
+        # P33：饥饿告警提到顶层，运行详情一眼能看到「有没有事件一直等不到」。
+        # 只给 state + detail，**不带 raw**——raw 是给程序用的，不是给人看的。
+        try:
+            snapshot=self._starvation_snapshot()
+            result['observability']['starvation']=dict(
+                generated_at=snapshot['generated_at'], starved_count=snapshot['starved_count'],
+                starved=snapshot['starved'], thresholds=snapshot['thresholds'],
+                note='只告警，不阻断：这些阈值不会改变任何调度顺序。')
+        except Exception as error:  # noqa: BLE001
+            result['observability']['starvation']=dict(error=type(error).__name__)
         # Owner diagnostics: what the host holds for the phone right now, without dispatching.
         if hasattr(self.executor,'phone_context'):
             from .companion_phone_view import phone_link

@@ -1,0 +1,31 @@
+a5911a0972eb88b7074dab52e9f6f58b
+
+## 当前状态（2026-11-18 01:50 登记）
+
+> **注意**：本文件是某一时刻的快照。t13 正在写 `life/companion.py`，
+> 本地 md5 会持续变化。判断「现在是不是分叉」请看测试
+> `test_local_matches_cloud_baseline_or_says_so` 的输出，不要只看本文。
+> 本文件的价值是**记录差异的性质**（谁多哪一块），不是记录当下的 md5。
+
+| 哪一边 | md5 | 行数 |
+|---|---|---|
+| 本地工作区 | a5911a0972eb88b7074dab52e9f6f58b | 3379 |
+| 云端生产 | c32c180e1bd7463cd522b8cbc966433e | 3343 |
+
+**diff 结果：双向分叉，两边各有一块对方没有的改动。**
+
+### 只有本地有（42 行）
+'node 决定它在哪儿干：dsh 交给后端代理按目标自己完成（多步活用它）；'
+
+### 只有云端有（6 行）
+"WHERE a.agent=? AND a.status IN ('pending','queued') AND (? OR json_extract(m.v,'$.origin')='user') "
+
+### 结论
+合并时**两边都要保留**，不能单向覆盖：
+- 本地那块是 dsh node 语义说明（t11 的 A 步，部分完成）
+- 云端那块是 queued 状态词修复（captain 的 bug fix）
+
+`md5 不同` 本身不说明谁更新——**只有逐行 diff 才能看出「不同但互补」**。
+这也是这份文件要记「哪一边多什么」而不是只记 md5 的原因。
+
+合并完成后：删掉本文件，并把 tests/test_wake_explainability.py 的 CLOUD_MD5 更新为新基线。
