@@ -231,24 +231,10 @@ def http_ok(url, timeout=5, token_file=None):
 
 
 def journal_errors(unit, since_epoch):
-    """只认「启动期就坏了」的痕迹，不认业务层的失败。
-
-    2026-11-18 实测：她自己的一次 agent inspect 失败打了 Traceback，
-    旧判据把整条服务判成坏了并触发回滚（restored: []，什么也没还原），
-    还给她写了一条"你的修改让服务起不来"的假消息。
-
-    收窄后只认三类：模块导入失败、启动阶段抛错、进程级崩溃信号。
-    业务异常（任务失败、工具报错）不算服务坏了——那是功能问题，不是进程问题。
-    """
     out = subprocess.run(['journalctl', '-u', unit, '--since', f'@{int(since_epoch)}', '--no-pager'],
                          capture_output=True, text=True).stdout
-    fatal = (
-        'ImportError', 'ModuleNotFoundError', 'SyntaxError',
-        '\u542f\u52a8\u5931\u8d25',          # 启动失败
-        'startup failed',
-        'Main process exited, code=exited, status=1/FAILURE',
-    )
-    return [line for line in out.splitlines() if any(token in line for token in fatal)]
+    return [line for line in out.splitlines()
+            if 'Traceback' in line or 'CRITICAL' in line or '\u542f\u52a8\u5931\u8d25' in line]
 
 
 def cognition_turns(home, since):
@@ -377,10 +363,10 @@ def evaluate(state, now=None):
         return dict(verdict='failed', reason=f'{len(errors)} journal error(s): {errors[0][:160]}')
     turns = cognition_turns(state['home'], since)
     if turns is None:
-        # 读不到就不猜：进程起来了、/alive 通了、没有致命报错，就该判健康。
-        return dict(verdict='healthy', reason='cognition probe unavailable (not a failure)')
-    # 「这一窗没有认知活动」不是故障：她安静一会儿是正常的（夜里、等外部回执）。
-    # 2026-11-18 实测这条分支产生过 2 次误判。认知活动只做记录，不参与判定。
+        return dict(verdict='pending', reason='cognition probe unavailable')
+    if turns < 1:
+        return dict(verdict='failed' if expired else 'pending',
+                    reason=f'no cognition turn in {round(now - since)}s')
     return dict(verdict='healthy', reason=f'turns={turns}')
 
 

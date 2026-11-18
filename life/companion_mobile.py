@@ -4,6 +4,7 @@ import collections
 import hashlib
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,8 @@ import uuid
 
 from aiohttp import web
 from PIL import Image
+
+log = logging.getLogger('companion.mobile')
 
 
 def private_json(path,value):
@@ -64,10 +67,13 @@ def prior_used(path):
 
 
 HISTORY_LIMIT = 60
-HISTORY_FIELDS = ('id', 'role', 'content', 'created', 'source', 'delivery')
+# 分页时上游最多取这么多：`_recent` 的默认上限是 100，要翻得更早必须一起传。
+HISTORY_MAX = 500
+HISTORY_FIELDS = ('id', 'role', 'content', 'created', 'source', 'delivery', 'cursor')
 IMAGE_FIELDS = ('handle', 'name', 'mime')
-LIFE_ITEM_FIELDS = ('display_text', 'reflection', 'text', 'time_label', 'day_label', 'created',
-                    'technical', 'before', 'after', 'reason', 'question', 'next_idea', 'goal')
+LIFE_ITEM_FIELDS = ('id', 'kind', 'display_text', 'reflection', 'text', 'time_label', 'day_label',
+                    'created', 'technical', 'before', 'after', 'reason', 'question', 'next_idea',
+                    'goal', 'source_ids', 'source_ref', 'age')
 
 
 def _trim_items(items, limit):
@@ -76,6 +82,60 @@ def _trim_items(items, limit):
         if isinstance(item, dict):
             rows.append({key: item[key] for key in LIFE_ITEM_FIELDS if key in item})
     return rows
+
+
+CAPABILITY_READY_LIMIT = 3      # 可用最多 3 条
+CAPABILITY_OFFLINE_LIMIT = 3    # 不可用最多 3 条
+
+
+def _capability_brief(snapshot):
+    """手机端能力入口：可用 ≤3 + 不可用 ≤3，只带 name/status/reason。
+
+    数据来自 `companion_awareness.capabilities()`，由 state handler 预先放进
+    `snapshot['_capability_brief']`（那里才拿得到 core）。
+
+    **status 原样输出**：`needs_setup` 和 `offline` 必须能被前端区分——
+    翻译成一个「不可用」就丢掉了「是没配好，还是配好了但掉线」这个区别，
+    而用户下一步该做什么完全取决于是哪一种。
+    """
+    rows = snapshot.get('_capability_brief')
+    if not isinstance(rows, list):
+        return []
+    usable, rest = [], []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get('capability_ref'):
+            continue
+        brief = dict(name=row.get('capability_ref'), status=row.get('status'),
+                     reason=row.get('reason'))
+        (usable if row.get('status') == 'ready' else rest).append(brief)
+    return usable[:CAPABILITY_READY_LIMIT] + rest[:CAPABILITY_OFFLINE_LIMIT]
+
+
+def _collect_capability_brief(core, snapshot=None):
+    """state handler 里调用：把能力目录整理成精简行。
+
+    与 `companion_awareness.capabilities()` **同一份数据**，所以手机看到的
+    status 和模型读到的完全一致——两处各算一套正是今晚反复出现的那个根因。
+
+    `snapshot` 已经在外层算过一次就直接用；只有没给时才自己算（能力目录
+    需要 `available_actions`，那是快照里的执行器事实）。
+    """
+    if core is None:
+        return None
+    try:
+        from . import companion_awareness as awareness
+        state = snapshot if isinstance(snapshot, dict) else core.snapshot(include_image_data=False)
+        items = awareness.capabilities(core, state=state)
+    except Exception:  # noqa: BLE001 - 能力目录坏了不该弄坏整个 /mobile/state
+        log.warning('能力目录读取失败', exc_info=True)
+        return None
+    rows = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(dict(capability_ref=item.get('capability_ref'),
+                         status=item.get('status'), reason=item.get('reason')))
+    return rows or None
 
 
 def mobile_view(snapshot, *, runtime=False, history_limit=HISTORY_LIMIT):
@@ -93,6 +153,9 @@ def mobile_view(snapshot, *, runtime=False, history_limit=HISTORY_LIMIT):
         refs = [ref for ref in (row.get('image_refs') or []) if isinstance(ref, dict)]
         item['image_refs'] = [{key: ref[key] for key in IMAGE_FIELDS if key in ref} for ref in refs]
         history.append(item)
+    # 再往前的游标：最旧那条的 ingest_seq。用它请求 `?before=` 就能接着往前翻。
+    history_before = next((row.get('cursor') for row in history
+                           if isinstance(row.get('cursor'), (int, float))), None)
 
     life = snapshot.get('life') or {}
     trimmed_life = {
@@ -118,6 +181,11 @@ def mobile_view(snapshot, *, runtime=False, history_limit=HISTORY_LIMIT):
 
     view = dict(
         history=history,
+        history_before=history_before,
+        history_limit=history_limit,
+        # 能力入口（P36-6）：可用 ≤3 + 不可用 ≤3，状态词原样带给手机。
+        # 读不到就是 [] —— 前端据此显示「这次没拿到能力清单」，不显示一个假的全绿。
+        capabilities=_capability_brief(snapshot),
         life=trimmed_life,
         notes=notes,
         projects=projects,
@@ -130,6 +198,65 @@ def mobile_view(snapshot, *, runtime=False, history_limit=HISTORY_LIMIT):
     if runtime:
         view['observability'] = snapshot.get('observability')
     return view
+
+
+def _safe_json(text, default):
+    try:
+        value = json.loads(text) if isinstance(text, str) and text.strip() else default
+    except (TypeError, ValueError):
+        return default
+    return value if value is not None else default
+
+
+def _basename(path):
+    return str(path or '').replace('\\', '/').rsplit('/', 1)[-1]
+
+
+def _agent_path_readable(path, home):
+    """产物路径对手机能不能读：只报事实（在不在、是不是在 home 里），不猜权限。
+
+    手机端拿到的是「可读/不可读」，不是文件内容——正文走桌面或 `command`，
+    这里不新开一条把任意文件吐给手机的通道。
+    """
+    if not path:
+        return False
+    try:
+        target = Path(str(path))
+        if not target.is_absolute():
+            target = Path(home) / target
+        home_root = Path(home).resolve()
+        target = target.resolve()
+        return target.is_file() and target.is_relative_to(home_root)
+    except (OSError, ValueError):
+        return False
+
+
+APK_DOWNLOAD_DIR = Path('/var/www/companion/downloads')
+VERSION_RE = re.compile(r'Xiaoyu-(\d+\.\d+\.\d+)')
+
+
+def _apk_version(download_dir=None):
+    """从发布目录里最大的那份 Xiaoyu-x.y.z.apk 推出当前版本。
+
+    读不到就如实报 `version: null` + 原因，绝不编一个版本号给前端比对——
+    编了等于让每台手机都提示一次假更新。
+    """
+    folder = Path(download_dir or APK_DOWNLOAD_DIR)
+    try:
+        names = [entry.name for entry in folder.iterdir() if entry.is_file()]
+    except OSError as error:
+        return dict(version=None, apk=None, reason='读不到发布目录：%s' % type(error).__name__)
+    found = [(VERSION_RE.search(name), name) for name in names]
+    found = [(match, name) for match, name in found if match]
+    if not found:
+        return dict(version=None, apk=None, reason='发布目录里没有 Xiaoyu-x.y.z.apk')
+    match, name = max(found, key=lambda item: tuple(int(part) for part in item[0].group(1).split('.')))
+    try:
+        size = (folder / name).stat().st_size
+    except OSError:
+        size = None
+    return dict(version=match.group(1), apk=name, bytes=size,
+                url='/downloads/' + name, folder=str(folder))
 
 
 class MobileAPI:
@@ -162,6 +289,8 @@ class MobileAPI:
         server.app.router.add_post('/mobile/im/wechat/logout',self.im_wechat_logout)
         server.app.router.add_post('/mobile/im/test',self.im_test)
         server.app.router.add_get('/mobile/pairing',self.pairing_state)
+        server.app.router.add_get('/mobile/tasks',self.tasks)
+        server.app.router.add_get('/mobile/version',self.version)
 
     def device_name(self,device):
         info=next((value for value in self.devices.values() if value.get('id')==device),{})
@@ -291,13 +420,91 @@ class MobileAPI:
         return web.json_response(dict(token=token,device_id=identity))
 
     async def state(self,request):
+        # 历史分页（APK 需求 3）：`?before=<ingest_seq>` 取更早一页；不传时行为与以前完全一致。
         runtime=request.query.get('runtime')=='1'
-        snapshot=mobile_view(self.server.snapshot(include_image_data=False),runtime=runtime)
+        raw_before=request.query.get('before')
+        before=None
+        if raw_before not in (None,''):
+            try:before=int(raw_before)
+            except (TypeError,ValueError):raise web.HTTPBadRequest(text='before must be an integer cursor')
+        limit=HISTORY_LIMIT
+        raw_limit=request.query.get('limit')
+        if raw_limit not in (None,''):
+            try:limit=max(1,min(int(raw_limit),HISTORY_MAX))
+            except (TypeError,ValueError):raise web.HTTPBadRequest(text='limit must be an integer')
+        snapshot_raw=(self.server.snapshot(include_image_data=False,history_limit=limit,history_before=before)
+                      if (before is not None or raw_limit not in (None,''))
+                      else self.server.snapshot(include_image_data=False))
+        # 能力目录需要 core（mobile_view 只拿得到快照），在这里算好塞进私有键，
+        # 顺手把手上的 snapshot_raw 传进去，省掉一次重复的快照构造（那要 0.8–2.5 秒）。
+        snapshot_raw['_capability_brief']=_collect_capability_brief(
+            getattr(self.server,'core',None), snapshot_raw)
+        snapshot=mobile_view(snapshot_raw,runtime=runtime,history_limit=limit)
         device=request['mobile_device']
         source=self.device_source(device)
         snapshot['mobile_device']=dict(id=device,name=source.get('name','手机'))
         snapshot['mobile_requests']=[dict(id=row[0],status=row[1]) for row in self.db.execute('SELECT id,status FROM requests WHERE device=? ORDER BY created DESC LIMIT 30',(device,))]
         return web.json_response(snapshot,headers={'Cache-Control':'no-store'})
+
+    async def tasks(self,request):
+        """交办事项的进展、阻碍、结果、产物（APK 需求 7）。
+
+        `verification` 与 `status` 是两件事：`status='completed'` 只说明它说做完了，
+        `verification='passed'` 才有证据。这里原样分开给，前端不许合成一个「已完成」。
+        """
+        core=getattr(self.server,'core',None)
+        if core is None:raise web.HTTPServiceUnavailable(text='core not ready')
+        scope_id=getattr(getattr(core,'scope',None),'scope_id','')
+        rows=core.repo._all(
+            "SELECT id,task_ref,project,status,verification,goal,origin,node,failure,result,"
+            "checkpoint,created,updated FROM companion_agent_tasks WHERE agent=? ORDER BY created DESC LIMIT ?",
+            (core.life.agent_id,50))
+        tasks=[]
+        for row in rows:
+            checkpoint=_safe_json(row['checkpoint'],{}) or {}
+            failure=_safe_json(row['failure'],{}) or {}
+            result=_safe_json(row['result'],{}) or {}
+            artifacts=[]
+            for item in (result.get('artifacts') or []):
+                if not isinstance(item,dict):continue
+                path=str(item.get('path') or '')
+                artifacts.append(dict(id=item.get('id'),name=item.get('deliverables') or _basename(path),
+                                      path=path,bytes=item.get('bytes'),
+                                      readable=_agent_path_readable(path,core.home),
+                                      sha256=item.get('sha256')))
+            tasks.append(dict(
+                id=row['id'],task_ref=row['task_ref'],project=row['project'],
+                goal=str(row['goal'] or '')[:400],
+                status=row['status'],verification=row['verification'],
+                claimed_done=row['status']=='completed',
+                verified=row['verification']=='passed',
+                node=row['node'],origin=row['origin'],
+                blocked=dict(code=failure.get('code'),reason=str(failure.get('reason') or '')[:400])
+                        if failure else None,
+                summary=str(result.get('summary') or '')[:600],
+                outcome=result.get('outcome'),
+                artifacts=artifacts,
+                workspace=checkpoint.get('workspace_root') or '',
+                created=row['created'],updated=row['updated']))
+        projects=core.repo._all("SELECT v FROM meta WHERE k LIKE 'action_task:%'")
+        project_rows=[]
+        for row in projects:
+            value=_safe_json(row['v'],{}) or {}
+            if value.get('scope_id')!=scope_id:continue
+            project_rows.append(dict(key=value.get('ref') or value.get('key'),goal=value.get('goal'),
+                                     status=value.get('status'),next_step=value.get('next_step'),
+                                     blocked_on=value.get('blocked_on'),
+                                     last_receipt=(value.get('last_receipt') or {}).get('action_id'),
+                                     updated=value.get('updated')))
+        project_rows.sort(key=lambda item: -(item.get('updated') or 0))
+        return web.json_response(dict(ok=True,tasks=tasks,projects=project_rows[:40],
+                                      note='status=completed 表示它说做完了；verified 才是核验通过。'),
+                                 headers={'Cache-Control':'no-store'})
+
+    async def version(self,request):
+        """当前安装包版本，给前端做更新提示（APK 需求 8）。"""
+        value=_apk_version()
+        return web.json_response(dict(ok=True,**value),headers={'Cache-Control':'no-store'})
 
     def device_source(self,device):
         info=next((value for value in self.devices.values() if value['id']==device),{})
@@ -307,8 +514,19 @@ class MobileAPI:
         try:
             data=await request.json();identity=str(uuid.UUID(str(data.get('id',''))))
             text=data.get('text','');images=data.get('images',[])
+            refs=data.get('refs')
+            if refs is None:
+                refs=[]
+            elif not isinstance(refs,list) or len(refs)>6 or not all(
+                    isinstance(item,dict) and isinstance(item.get('id'),str) and item['id'].strip()
+                    and isinstance(item.get('kind',''),str) for item in refs):
+                raise ValueError()
+            # 只留两个字段：前端不该能把任意形状塞进消息载荷，后端也不猜别的键。
+            refs=[dict(kind=str(item.get('kind') or '').strip()[:32],id=item['id'].strip()[:120])
+                  for item in refs]
             if not isinstance(text,str) or len(text)>65536 or not isinstance(images,list) or len(images)>8 or not (text.strip() or images):raise ValueError()
-            digest=hashlib.sha256(json.dumps(dict(text=text,images=images),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            # 幂等键把 refs 也算进去：同一句「看看这个」点了不同条目，是两条不同的请求。
+            digest=hashlib.sha256(json.dumps(dict(text=text,images=images,refs=refs),sort_keys=True,separators=(',',':')).encode()).hexdigest()
         except (ValueError,AttributeError,TypeError):raise web.HTTPBadRequest(text='Invalid chat request')
         device=request['mobile_device']
         old=self.db.execute('SELECT digest,status FROM requests WHERE device=? AND id=?',(device,identity)).fetchone()
@@ -326,7 +544,7 @@ class MobileAPI:
                 self.db.execute('UPDATE requests SET status=?,updated=? WHERE device=? AND id=?',
                                 ('accepted',time.time(),device,identity))
                 self.db.commit()
-                self.server.spawn(self._chat(device,identity,text,images))
+                self.server.spawn(self._chat(device,identity,text,images,refs))
                 return web.json_response(dict(id=identity,accepted=True,retried=True,previous=old_status),status=202)
             # 其余状态（completed / accepted）**故意不重跑**：
             #   completed —— 回复已经产出，重跑会重复回复；
@@ -337,14 +555,18 @@ class MobileAPI:
             return web.json_response(dict(id=identity,accepted=True,duplicate=True,status=old_status),status=202)
         now=time.time()
         self.db.execute('INSERT INTO requests VALUES(?,?,?,?,?,?)',(device,identity,digest,'accepted',now,now));self.db.commit()
-        self.server.spawn(self._chat(device,identity,text,images))
+        self.server.spawn(self._chat(device,identity,text,images,refs))
         return web.json_response(dict(id=identity,accepted=True),status=202)
 
-    async def _chat(self,device,identity,text,images):
+    async def _chat(self,device,identity,text,images,refs=None):
         status='completed'
         try:
             if getattr(self.server.core,'supports_message_routing',False):
-                await self.server.core.chat(text,images,source=self.device_source(device))
+                accepts_refs='refs' in getattr(self.server.core.chat,'__code__').co_varnames
+                if refs and accepts_refs:
+                    await self.server.core.chat(text,images,source=self.device_source(device),refs=refs)
+                else:
+                    await self.server.core.chat(text,images,source=self.device_source(device))
             elif images:await self.server.core.chat(text,images)
             else:await self.server.core.chat(text)
         except asyncio.CancelledError:status='interrupted';raise

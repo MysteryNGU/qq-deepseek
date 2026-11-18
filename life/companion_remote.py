@@ -214,18 +214,29 @@ class CompanionServer:
         return web.json_response(dict(ok=True, phone_link=phone_link(self.mobile)),
                                  headers={'Cache-Control': 'no-store'})
 
-    def snapshot(self, include_image_data=False):
+    def snapshot(self, include_image_data=False, *, history_limit=None, history_before=None):
         # 构造一次 snapshot 要 0.8–2.5 秒；同一轮里桌面、手机、状态页会重复要它。
         # 缓存 2 秒并在 emit 时失效，避免为了"刚发的一条消息"每次都重算整包。
-        if not include_image_data:
+        # 带分页参数的那一页不进缓存：它是另一份数据，混进来会把首屏串成旧页。
+        paged = history_limit is not None or history_before is not None
+        if not include_image_data and not paged:
             cached = getattr(self, '_snapshot_cache', None)
             if cached is not None and time.monotonic() - cached[0] < 2.0:
                 return cached[1]
         options=dict(include_image_data=include_image_data) if getattr(self.core,'supports_snapshot_images',False) else {}
+        if paged:
+            # 只有真支持分页的那一版 core 才传：老 core 收到多余参数会直接 TypeError。
+            try:
+                accepts = 'history_limit' in self.core.snapshot.__code__.co_varnames
+            except AttributeError:
+                accepts = False
+            if accepts:
+                options['history_limit'] = history_limit
+                options['history_before'] = history_before
         qq=self.im.qq.snapshot() if self.im is not None and self.im.qq is not None else dict(enabled=False,state='disabled')
         im=self.im.snapshot() if self.im is not None else dict(channels=dict(qq=qq),error='')
         value=dict(self.core.snapshot(**options), qq=qq, im=im)
-        if not include_image_data:
+        if not include_image_data and not paged:
             self._snapshot_cache = (time.monotonic(), value)
         return value
 

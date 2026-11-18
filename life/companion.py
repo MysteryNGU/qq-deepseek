@@ -1170,11 +1170,16 @@ class Companion:
         self._wake.set()
         self._audit('status', '自主活动已开启。' if self.active else '自主活动已暂停，仍然可以聊天。', active=self.active)
 
-    def _recent(self, limit=100, *, include_images=True, image_budget=16*1024*1024):
+    def _recent(self, limit=100, *, include_images=True, image_budget=16*1024*1024, before=None):
+        """最近的消息，可带游标 ``before`` 取更早的一页。
+
+        ``before`` 是上一次返回里最旧那条的 ``created``（秒级浮点，同一秒会落到
+        ``ingest_seq`` 一起比，避免同秒消息被跳过或重复）。不传时行为与以前完全一致。
+        """
         floor = reset_boundary(self.repo, self.scope)
         # Older delivery receipts omitted the audience when their turn was absent.
         # The confirmed ledger and owner actor recover only that private reply route.
-        rows = self.repo._all("SELECT e.id,e.payload,e.received_at FROM events e WHERE e.agent_id=? AND e.conversation_id=? "
+        rows = self.repo._all("SELECT e.id,e.payload,e.received_at,e.ingest_seq FROM events e WHERE e.agent_id=? AND e.conversation_id=? "
             "AND (e.audience_policy_id=? OR (e.audience_policy_id='' AND e.kind='delivered_segment' "
             "AND e.actor_id=? AND e.conversation_id=? AND EXISTS(SELECT 1 FROM deliveries d "
             "WHERE d.id=json_extract(e.payload,'$.delivery_id') AND d.scope_id=? AND d.recipient=e.conversation_id "
@@ -1182,12 +1187,17 @@ class Companion:
             "AND (e.kind='message' OR (e.kind='delivered_segment' "
             "AND e.source_kind='self_output' AND json_extract(e.payload,'$.confirmed')=1)) "
             "AND e.redacted_at IS NULL AND e.received_at>=? "
-            "ORDER BY e.ingest_seq DESC LIMIT ?", (*self.scope.private_key, self.scope.audience_policy_id,
-                str(self.cfg.owner), 'qq:private:'+str(self.cfg.owner), self.scope.scope_id, floor, limit))
+            "%s"
+            "ORDER BY e.ingest_seq DESC LIMIT ?" % ("AND e.ingest_seq < ? " if before is not None else ""),
+            (*self.scope.private_key, self.scope.audience_policy_id,
+                str(self.cfg.owner), 'qq:private:'+str(self.cfg.owner), self.scope.scope_id, floor,
+                *((int(before),) if before is not None else ()), limit))
         result=[]
         for row in rows:
             payload=json.loads(row['payload'])
             item=dict(id=row['id'],role=payload.get('role','user'),content=payload.get('text',''),created=row['received_at'])
+            # 翻页游标：同秒消息靠 ingest_seq 分辨，前端把它原样回传即可（APK 需求 3）。
+            item['cursor']=row['ingest_seq']
             item['source']=payload.get('source',dict(kind='internal'))
             if item['role']=='assistant':item['delivery']=payload.get('delivery',dict(targets=['all']))
             item.update({key:payload[key] for key in ('turn_id','part','parts') if key in payload})
@@ -1418,6 +1428,86 @@ class Companion:
             with self.repo.tx():
                 self._save(key,result)
         return result
+
+    REF_LIMIT = 6
+
+    @staticmethod
+    def _current_refs(current):
+        """这一轮用户点选的条目：来自消息 payload 的 ``refs``（APK 点条目续聊）。
+
+        没有就返回空——**不传 refs 时整条路径不发生**，行为与以前完全一致。
+        """
+        try:
+            payload = getattr(current, 'payload', None)
+            if isinstance(payload, str):
+                payload = json.loads(payload or '{}')
+            refs = (payload or {}).get('refs') if isinstance(payload, dict) else None
+        except (ValueError, TypeError):
+            return []
+        return [item for item in (refs or []) if isinstance(item, dict) and item.get('id')][:6]
+
+    def _ref_material(self, refs):
+        """用户亲手点选的引用：只读、只在本轮拼一次，**不进检索排序**。
+
+        形状：``[{"kind": "...", "id": "..."}]``（前端定稿）。能点到的东西只有三类
+        来源，按 id 反查：
+          * ``companion_activity`` 的 id（今天 / 惦记 / 想起一件事 / 写给你 / 往日）
+          * ``companion_actions`` 的 id（做过的那件事）
+          * ``events`` 的 id（某句话）
+        查不到就**明说查不到**，不拿相近的东西顶替——她不知道用户点的是哪一条，
+        就会答非所问，还显得像是记住了。
+        """
+        rows = []
+        for item in (refs or [])[:self.REF_LIMIT]:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get('kind') or '').strip()[:32]
+            ident = str(item.get('id') or '').strip()[:120]
+            if not ident:
+                continue
+            found = self._ref_lookup(ident)
+            rows.append(dict(kind=kind or found.get('kind') or 'unknown',
+                             id=ident, found=found.get('found'), text=found.get('text'),
+                             at=found.get('at'), what=found.get('what')))
+        return rows
+
+    def _ref_lookup(self, ident):
+        """按 id 在三个来源里找一条：返回 found/text/at/what，找不到就是 found=False。"""
+        try:
+            row = self.repo._one('SELECT id,type,text,created FROM companion_activity WHERE id=? AND agent=?',
+                                 (ident, self.life.agent_id))
+            if row:
+                return dict(found=True, what='activity', at=_iso_time(row['created']),
+                            text=str(row['text'] or '')[:600], kind=row['type'])
+            row = self.repo._one('SELECT id,status,action,result,created FROM companion_actions WHERE id=? AND agent=?',
+                                 (ident, self.life.agent_id))
+            if row:
+                action = {}
+                try:
+                    action = json.loads(row['action'] or '{}')
+                except ValueError:
+                    action = {}
+                result = {}
+                try:
+                    result = json.loads(row['result'] or '{}')
+                except ValueError:
+                    result = {}
+                return dict(found=True, what='action', at=_iso_time(row['created']),
+                            text=str(result.get('output') or action.get('goal') or '')[:600],
+                            kind=str(action.get('kind') or ''))
+            row = self.repo._one('SELECT id,payload,received_at FROM events WHERE id=? AND agent_id=?',
+                                 (ident, self.life.agent_id))
+            if row:
+                try:
+                    payload = json.loads(row['payload'] or '{}')
+                except ValueError:
+                    payload = {}
+                return dict(found=True, what='message', at=_iso_time(row['received_at']),
+                            text=str(payload.get('text') or '')[:600],
+                            kind='message')
+        except Exception:  # noqa: BLE001 - 引用查不到不该弄坏这一轮对话
+            log.warning('引用条目查找失败', exc_info=True)
+        return dict(found=False, what=None, text=None, at=None, kind=None)
 
     def _recollection_cues(self):
         """Real material only: today, ambient, and her own open interests."""
@@ -1689,12 +1779,16 @@ class Companion:
             history=list(reversed(recent)), projects=project_candidates, today=self._today_material(),
             recall=recall_candidates, notes=note_candidates, ambient=self._ambient_material(),
             growth=self._growth_material(growth_clues),
-            recollection=self._recollection_material())
+            recollection=self._recollection_material(),
+            refs=self._ref_material(self._current_refs(current)) if self._current_refs(current) else [])
         material, self._last_material = assemble_life_material(candidates, profile=profile)
         history = list(reversed(material['history']))
         selected = material['notes']
         projects = material['projects']
         recalled = material['recall']
+        # 用户点选的条目：独立一栏，和 recall 不混。混进去会被当成「检索到的旧材料」，
+        # 她就会用「我记得你说过」的语气回答，却不知道是用户刚点的这一条。
+        selected_refs = material.get('refs') or []
         kinds = self.executor.available_kinds() if hasattr(self.executor, 'available_kinds') else ['command']
         kinds = list(kinds)
         # 配置事实 ≠ 运行状态（2026-11-18）：`config.enabled` 只说明「有人把它配好了」，
@@ -1716,6 +1810,7 @@ class Companion:
         state = dict(time=time.strftime('%Y-%m-%d %H:%M:%S %z'), home=str(self.home),
             available_actions=kinds, notes=selected, projects=projects,
             autonomous_activity=self.active, recalled=recalled,
+            **(dict(selected_refs=selected_refs) if selected_refs else {}),
             today=material['today'], ambient=material['ambient'], growth=material['growth'],
             recollection=material['recollection'])
         state['situation'] = ('这轮手上有活：材料给得宽，可以连着做几步；做过的细节留在回执里，'
@@ -1934,7 +2029,7 @@ class Companion:
                         before=len(query), after=len(messages[-1]['content']), ceiling=ceiling)
         return messages
 
-    async def chat(self, text, images=None, *, source=None):
+    async def chat(self, text, images=None, *, source=None, refs=None):
         if not isinstance(text, str):
             raise ValueError('请输入文字或发送图片。')
         if self._closed:
@@ -1949,7 +2044,11 @@ class Companion:
         if interjection:
             # 只有明确的“停/别说了”才打断她正在说的话；普通补充会等这一段说完。
             self._cancel_pending_bubbles('interjection')
-        event, _ = self.life.ingest(self.scope,'message','user_report',text,role='user',payload=dict(images=attached,source=source))
+        event, _ = self.life.ingest(self.scope,'message','user_report',text,role='user',payload=dict(
+            images=attached,source=source,
+            **(dict(refs=[dict(kind=str(r.get('kind') or '')[:32], id=str(r.get('id'))[:120])
+                          for r in refs[:self.REF_LIMIT] if isinstance(r,dict) and r.get('id')])
+               if refs else {})))
         if source['kind']!='internal':
             with self.repo.tx():
                 self._save('last_user_endpoint',dict(source=source,event_id=event.id,last_message_at=time.time()))
@@ -3479,7 +3578,7 @@ class Companion:
             self._record_usage(dict(usage=result.get('usage'), model=result.get('model', self.cfg.model),
                                     seconds=result.get('seconds')), 'executor')
 
-    def snapshot(self, *, include_image_data=True):
+    def snapshot(self, *, include_image_data=True, history_limit=None, history_before=None):
         continuation = self.followthrough.due(now=float('inf'),autonomy=self.active,
                                              delegated_refs=self.town.pending_project_refs())
         records = [json.loads(r['usage']) for r in self.repo._all('SELECT usage FROM companion_usage WHERE agent=?',
@@ -3493,9 +3592,18 @@ class Companion:
             for r in self.repo._all('SELECT * FROM companion_activity WHERE agent=? ORDER BY created DESC LIMIT 100', (self.life.agent_id,))]
         actions = [dict(r) for r in self.repo._all('SELECT * FROM companion_actions WHERE agent=? ORDER BY created DESC LIMIT 30',
                                                 (self.life.agent_id,))]
+        # 历史分页（APK 需求 3）：``history_limit``/``history_before`` 只影响这一页，
+        # 不传时走原来的默认值 —— 桌面、状态页、手机首屏拿到的都还是同一份。
+        history_options = {}
+        if history_limit is not None:
+            history_options['limit'] = max(1, min(int(history_limit), 500))
+        if history_before is not None:
+            history_options['before'] = int(history_before)
+        history = self._recent(image_budget=16*1024*1024 if include_image_data else 0,
+                               **history_options)
         result = dict(name=self.cfg.name, active=self.active,
                     last_user_endpoint=self._state('last_user_endpoint'),
-                    history=self._recent(image_budget=16*1024*1024 if include_image_data else 0), notes=self._notes(),
+                    history=history, notes=self._notes(),
                     projects=self._projects(), usage=usage, activity=activity, actions=actions,
                     phase=self._phase(),
                     spending=self.spending.snapshot(),

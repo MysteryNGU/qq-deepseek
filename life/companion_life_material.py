@@ -21,6 +21,9 @@ SLOTS = {
     'ambient': 200,       # 时间、真实连接、新事件、可用天气
     'recollection': 150,  # 一条有线索、可以忽略或留待分享的旧事
     'growth': 320,        # 她自己形成的兴趣、表达习惯、自我理解（带依据和范围）
+    # 用户亲手点选的条目（APK 点一段经历继续聊）。它排在第一位，**永远不会被
+    # 别的槽挤掉**：用户点的东西没被模型看见，等于这个手势没发生。
+    'refs': 600,
 }
 
 # 工具模式（真正读代码、跑命令、改文件的那种回合）需要同时看见整条任务线：
@@ -35,10 +38,13 @@ TOOL_SLOTS = {
     'ambient': 2000,
     'recollection': 1000,
     'growth': 1600,
+    'refs': 4000,
 }
 
 # Fill order decides who keeps a shared item when two slots match it.
-ORDER = ('history','projects','today','recall','notes','growth','ambient','recollection')
+# ``refs`` 第一位：用户手点的那几条必须先进，否则会被 history 的大预算挤出去
+# （_keys 会把同 id 判成重复，先进的那份留下）。
+ORDER = ('refs','history','projects','today','recall','notes','growth','ambient','recollection')
 TOTAL_CAP = sum(SLOTS.values())            # 4720
 TOOL_TOTAL_CAP = sum(TOOL_SLOTS.values())  # 77600
 
