@@ -44,9 +44,26 @@ class AmbientCollector:
             except Exception:
                 phone = {}
         devices = phone.get('devices') or []
-        entries.append(_entry('phone', 'device',
-            ('手机已连接' if devices else '手机当前未连接'),
-            now=now, ttl=CONNECTION_TTL, details=dict(device='phone', connected=bool(devices))))
+        # 她的眼睛：每轮都把「手机现在有什么」摊开——在线台数、操作项、
+        # 已打开的工作区（id/尺寸）。判断归她，这里只报告世界。
+        text = '手机已连接' if devices else '手机当前未连接'
+        details = dict(device='phone', connected=bool(devices))
+        if devices:
+            first = devices[0] if isinstance(devices[0], dict) else {}
+            operations = [str(item) for item in (first.get('operations') or [])]
+            workspaces = [item for item in (first.get('workspaces') or []) if isinstance(item, dict)]
+            details.update(operations=operations,
+                           workspace_state=first.get('workspace_state') or 'unknown',
+                           workspaces=[{key: item[key] for key in
+                                        ('workspace_id', 'session_id', 'width', 'height', 'package', 'activity', 'state')
+                                        if key in item} for item in workspaces[:4]])
+            parts = ['%d 台在线' % len(devices), '%d 项操作' % len(operations)]
+            if workspaces:
+                parts.append('工作区 ' + '、'.join(str(item.get('workspace_id')) for item in workspaces))
+            elif first.get('workspace_state'):
+                parts.append('工作区状态 ' + str(first.get('workspace_state')))
+            text = '手机已连接：' + '，'.join(parts)
+        entries.append(_entry('phone', 'device', text, now=now, ttl=CONNECTION_TTL, details=details))
         return entries
 
     def _social(self, now):

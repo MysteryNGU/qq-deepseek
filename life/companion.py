@@ -40,10 +40,11 @@ from .companion_motivation import CompanionMotivation, MotivationError, FIELD as
 from .companion_motivation import CHOICES as MOTIVATION_CHOICES, ATTENTION_INSTRUCTIONS
 from .companion_followthrough import FollowThrough, FollowThroughError, FIELD as ENGAGEMENT
 from . import companion_delivery as delivery_ledger
+from . import companion_batches as batch_ledger
 from . import companion_evidence as evidence
 from . import companion_experience as experience_log
 from . import companion_presence as presence
-from .companion_awareness import build as build_awareness, public_view
+from .companion_awareness import build as build_awareness, public_view, batches_summary as awareness_batches_summary
 from . import companion_p32
 
 
@@ -77,6 +78,39 @@ STARVATION_SECONDS = {
     'agent_task': 60.0,        # 台账 running 但 60 秒无状态变化
     'bilibili': 600.0,         # 社交消息不如项目紧急，且自带重试
 }
+
+# 日常活动不是任务（2026-11-20）。她想去泡一会儿水、钓一会儿鱼，不该先有一个项目；
+# 某个项目暂停也不该连带让她连水都泡不了。所以休闲动作在项目不是 active 时一律
+# 归到「日常」，而不是报「项目不是 active」把整轮动作卡掉。
+# 反过来说，work/command/dsh 这类干活的动作仍然必须挂在 active 的项目上：
+# 主人暂停一项任务后，她不能换个名义接着做。
+DAILY_PROJECT = '日常'
+LEISURE_KINDS = ('town', 'bilibili')
+
+
+def _daily_goal():
+    return '日常活动：想做什么就做什么，不算任务，也不用完成'
+
+
+def _bigrams(text):
+    text = ''.join(str(text or '').split())
+    return {text[index:index + 2] for index in range(len(text) - 1)} or ({text} if text else set())
+
+
+def _goal_conflict(goal, paused_goals):
+    """新项目跟「主人暂停的项目」太像时，不能换个名字接着做。
+
+    只用字面 bigram 重合度（交集/较短一方），不做语义判断：宁可放过一次，
+    也不误伤一个全新的兴趣。返回冲突的旧目标，没有冲突返回空串。
+    """
+    fresh = _bigrams(goal)
+    for paused in paused_goals or []:
+        old = _bigrams(paused)
+        if not old or not fresh:
+            continue
+        if len(fresh & old) / max(1, min(len(fresh), len(old))) >= 0.62:
+            return str(paused)[:60]
+    return ''
 # 同类唤醒事件在这个窗口内只记一次，避免 companion_activity 被刷屏。
 WAKE_LOG_DEDUPE_SECONDS = 60.0
 
@@ -170,12 +204,80 @@ def json_brief(value, depth=0):
     return str(value)
 
 
+# 记忆索引 unknown 回收开关。
+#   关：历史 unknown 不再被主动推回队列（新资源仍正常扫、正常索引）。
+#   开：每轮捞回 reconcile_unknown(limit=2) 条重试。
+# 2026-11-19 默认关的原因：本地 embedding 服务（127.0.0.1:8231，bge-small-zh-v1.5
+# CPU 推理）串行 6/6 成功、并发两路就间歇 HTTPError；一次性放开积压会烧满 CPU。
+# 打开条件：确认 8231 的安全并发数，或给 build 加上限流。
+RECONCILE_UNKNOWN_ENABLED = False
+
+# 记忆索引每轮最多处理几个 job（2026-11-19）。
+# 原来每轮只处理 1 个然后固定 sleep 5 秒：实测 5 job/分钟，剩余 14353 条要 47.8 小时，
+# 而 embedding+companion 合计只占 18.5% 的 2 核 —— 瓶颈是循环节奏不是算力。
+# 一轮多个 job、有活就不退避；发往 8231 的请求仍由 _EMBEDDING_IO_LOCK 串行化。
+# 2026-11-19 从 4 降到 2：4 的时候三个 30 秒窗口实测 CPU 58.1%/72.6%/72.6%，
+# 超过 30% 红线（2 核机器，8231 单线程推理是 CPU-bound）。
+# 降到 2 换取红线内运行；代价是速率下降，完成时间按实测重算。
+# 2026-11-20：v3 重建要处理 16922 条。原值 2 配合 sleep 5s 只有 13.6 条/分。
+# 提到 8 并减少空闲 sleep，同时保留 CPU 自检降速（见 _index_memories 尾部）。
+INDEX_BATCH_PER_ROUND = 8
+
+
+_CPU_SAMPLE = {'at': 0.0, 'total': 0.0}
+
+
+def _process_cpu_percent():
+    """This process's CPU usage as a percentage, measured between two samples.
+
+    Returns 0 when the gap since the previous sample is under 0.5s, to avoid
+    division noise. Used only to slow indexing down under load.
+    """
+    try:
+        import resource
+        import time as _t
+        now = _t.monotonic()
+        used = resource.getrusage(resource.RUSAGE_SELF)
+        total = used.ru_utime + used.ru_stime
+        prev_at, prev_total = _CPU_SAMPLE['at'], _CPU_SAMPLE['total']
+        _CPU_SAMPLE.update(at=now, total=total)
+        if not prev_at or now - prev_at < 0.5:
+            return 0.0
+        return 100.0 * (total - prev_total) / (now - prev_at)
+    except Exception:
+        return 0.0
+
 _CHANGING_OPS = ('open', 'close', 'set', 'delete', 'start', 'stop', 'send', 'write',
                  'upload', 'apply', 'create', 'cancel', 'run', 'exec', 'remove', 'move')
 
 
 _PAYLOAD_KEYS = ('summary', 'output', 'text', 'content', 'results', 'items', 'links',
                  'data', 'detail', 'message', 'error', 'note', 'receipt')
+
+
+def _with_boundary(text, result):
+    """回执里带上边界事实：哪条生效、哪一步没有发生、原始原因。
+
+    只转述事实，不替她下结论（不写「你不需要」「这不代表失败」）。
+    """
+    facts = result.get('boundary') if isinstance(result, dict) else None
+    if not facts:
+        return text
+    rows = []
+    for fact in facts[:2]:
+        if not isinstance(fact, dict):
+            continue
+        label = fact.get('label') or fact.get('rule') or '边界'
+        piece = str(label)
+        if fact.get('step_not_taken'):
+            piece += '：' + str(fact['step_not_taken'])
+        if fact.get('reason'):
+            piece += '（原因：' + str(fact['reason'])[:80] + '）'
+        rows.append(piece)
+    if not rows:
+        return text
+    joined = '；'.join(rows)
+    return (text + '；' if text else '') + '边界事实：' + joined
 
 
 def result_view(result, limit=600, op=''):
@@ -205,15 +307,17 @@ def result_view(result, limit=600, op=''):
         text = ' '.join(str(text).split())[:limit]
         if note and key != 'note' and note.strip() and note.strip() not in text:
             text += '（' + ' '.join(note.split())[:120] + '）'
+        text = _with_boundary(text, result)
         return text[:limit]
     if status in ('completed', 'succeeded'):
         verb = str(op or '').lower()
         if any(word in verb for word in _CHANGING_OPS):
-            return '完成了（成功回执本身是事实，只是没有附带内容）'
-        return '完成了，但没有返回内容；这不算拿到了信息'
+            return _with_boundary('完成了（成功回执本身是事实，只是没有附带内容）', result)
+        return _with_boundary('完成了，但没有返回内容；这不算拿到了信息', result)
     if status == 'failed':
-        return '失败了，但没有给出原因'
-    return ''
+        return _with_boundary('失败了，但没有给出原因', result)
+    # 没有任何正文时，边界事实本身就是这条回执的全部内容（例如被取消的排队动作）。
+    return _with_boundary('', result)
 
 
 # ---------------------------------------------------------------- 模型输出容错提取
@@ -345,15 +449,63 @@ AGENT_INSTRUCTIONS = (
     'agent 是「起一个子 agent 独立做完一件事」：用 kind=agent、op、arguments(JSON字符串)。'
     'create 要 goal（做什么、在哪做、怎样算做完）、node（dsh/work/echo）、deliverables、acceptance；'
     '回执里有 agent_id、task_ref，状态是 queued——它已经挂上，主角色不用原地等，也不要说成做完了。'
-    '之后用 inspect{agent_id} 看状态与验证，wait{agent_id,wait_s:0} 立刻看一眼有没有结果，'
-    'send{agent_id,message_id,text} 追加要求（同一个 message_id 只送达一次），'
-    'cancel{agent_id} 停掉并报告不可撤销的副作用，resume{agent_id} 生成新的一次尝试（历史保留），'
-    'read_artifact{agent_id,artifact_id} 读证据原文。'
+    '之后每个操作都用 op 加 arguments(JSON字符串)：inspect 看状态与验证，'
+    'arguments 写 {"agent_id":"…"}；wait 立刻看一眼有没有结果，'
+    'arguments 写 {"agent_id":"…","wait_s":0}；'
+    'send 追加要求，arguments 写 {"agent_id":"…","message_id":"…","text":"…"}'
+    '（同一个 message_id 只送达一次）；'
+    'cancel 停掉并报告不可撤销的副作用，arguments 写 {"agent_id":"…"}；'
+    'resume 生成新的一次尝试（历史保留），arguments 写 {"agent_id":"…"}；'
+    'read_artifact 读证据原文，arguments 写 {"agent_id":"…","artifact_id":"…"}。'
     '状态只有 queued/running/completed/failed/waiting/interrupted/cancelled；completed 只说明它说做完了，'
     'verification 另算：passed 才有证据。waiting 必须写明 waiting_for 与 recover_when。'
     '同时在跑的最多 3 件，第 4 件排队而不是失败；嵌套最多 2 层。'
     '子 agent 的结论只是一份说法，文件改动按哈希核对，不能把 queued 或 accepted 当成已完成。'
 )
+
+def _strip_fence(text):
+    """剥掉 ```json ... ``` 围栏和后面多余的解释，只留 JSON 主体。
+
+    用于截断场景：整段能 json.loads 才算数，所以这里只做"去掉外层包皮"，
+    不做任何补全——补出来的东西不能当证据。
+    """
+    if not isinstance(text, str):
+        return None
+    body = text.strip()
+    if body.startswith('```'):
+        newline = body.find('\n')
+        if newline < 0:
+            return None
+        body = body[newline + 1:]
+        end = body.rfind('```')
+        if end >= 0:
+            body = body[:end]
+    body = body.strip()
+    if not body.startswith('{'):
+        return None
+    # 截到最后一个配平的 }：多出来的解释文字不要
+    depth = 0
+    in_string = False
+    escape = False
+    for index, ch in enumerate(body):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return body[:index + 1]
+    return None
+
 
 DECISION = {
     'type': 'object', 'required': ['reply'], 'additionalProperties':False, 'properties': {
@@ -362,6 +514,9 @@ DECISION = {
         'share_bilibili': {'type':'boolean'},
         # 「剩下没发的气泡不要了」：已开口的照常发，后面排着的收回。只收气泡，不取消模型调用。
         'silence_pending': {'type':'boolean'},
+        # 她自己决定这一轮用哪种模式：life 生活（简易工具说明）、tool 干活（详细说明）。
+        # 不传就用当前保存的模式——她可以主动切到 tool 专心干活，也可以切回 life 陪着说话。
+        'work_mode': {'type': 'string', 'enum': ['life', 'tool']},
         'delivery': {'type':'object','additionalProperties':False,'required':['targets'],
             'properties':{'targets':{'type':'array','maxItems':16,'items':{'type':'string','pattern':r'^(desktop|qq|all|mobile:[A-Za-z0-9_-]{1,80})$'}}}},
         'images': {'type':'array', 'items':{'type':'string'}},
@@ -375,7 +530,7 @@ DECISION = {
                 'origin': {'enum': ['user', 'self']}, 'status': {'enum': ['active', 'waiting', 'paused', 'done', 'cancelled']},
                 'next_step': {'type': 'string'}}}},
         'actions': {'type': 'array', 'items': {'type': 'object', 'additionalProperties':False, 'required': ['kind', 'project'],
-            'properties': {'kind': {'enum': ['command', 'work', 'dsh', 'agent', 'computer', 'body', 'bilibili','phone','town','web','skill','memory','growth']}, 'project': {'type': 'string'},
+            'properties': {'kind': {'enum': ['command', 'work', 'dsh', 'agent', 'computer', 'body', 'bilibili','phone','town','web','browser','skill','memory','growth','task','ask']}, 'project': {'type': 'string'},
                            'command': {'type': 'string'}, 'goal': {'type': 'string'}, 'cwd': {'type': 'string'},
                            'op': {'type':'string'}, 'arguments': {'type':'string'}}}},
         'wake_after': {'type': 'number', 'minimum': 0},
@@ -391,7 +546,10 @@ REPORTS={'type':'array','maxItems':4,'items':{'type':'object','additionalPropert
     'required':['text','state'],'properties':{
         'text':{'type':'string','minLength':1},'project_ref':{'type':'string'},
         'basis_refs':{'type':'array','items':{'type':'string'}},
-        'state':{'enum':['planned','running','observed','completed']}}}}
+        # 2026-11-20：加 failed/blocked——动作失败时她此前没有任何 state 可用，
+        # 结果是 7 天 3087 条输出里 reports 一条都没填过（整个机制处于死状态）。
+        # 失败也是事实，而且是最需要被摆出来的事实。
+        'state':{'enum':['planned','running','observed','completed','failed','blocked']}}}}
 DECISION['properties']['letter'] = {'type':'object','additionalProperties':False,
     'required':['text'],'properties':{'text':{'type':'string','minLength':1,'maxLength':4000}}}
 DECISION['properties']['speak_body'] = {'type':'string','maxLength':60}
@@ -438,10 +596,13 @@ def _ago(value):
 # 它必须和人格、方法、工具说明、本轮输入一起留在这个天花板之下。
 # Leave room for the complete persona/tool instructions AND the 4400-token
 # life material budget. An 8k whole-request limit erased almost all memories.
-REQUEST_TOKEN_CEILING = 16000
+# 2026-11-18：改用 opencode-go 套餐后按订阅计费、token 不再逐次付费，
+# 上游模型上下文 1,000,000。原来的 16,000 是在按量付费时刻意压出来的，
+# 代价是会忘掉前文（"刚才那下没接上"多半就是这个）。放宽到 200,000 / 500,000。
+REQUEST_TOKEN_CEILING = 200000
 # 工具回合要同时看见目标、读过的文件、失败回执和自己的笔记，否则每步都失忆、
 # 反复重读同一段代码。写代码的回合单独放开，生活/对话回合不受影响。
-TOOL_REQUEST_CEILING = 100000
+TOOL_REQUEST_CEILING = 500000
 
 
 
@@ -504,6 +665,8 @@ class Companion:
         self._execution_origin = None
         self._execution_project = None
         self._requests = set()
+        # 结果轮认知在后台跑（不阻塞 worker 领下一件），这里登记以便收尾。
+        self._result_turns = set()
         self._model_requests = {}
         self._interrupted_requests = set()
         self._latest_dialogue = None
@@ -515,6 +678,10 @@ class Companion:
         self._input_last_at = 0.0
         self._input_ready = asyncio.Event()
         self._batch = None
+        # 事件与投递分离：这一轮实际装载进请求的批次（模型请求成功才写台账）。
+        self._turn_batches = []
+        # 解析失败时设置：这一轮交付的是系统署名通知，不是她的台词（_commit 消费一次）。
+        self._system_notice = None
         self._closed = False
         self._started = False
         self._last_error = ''
@@ -617,6 +784,183 @@ class Companion:
         row = self.repo._one('SELECT v FROM meta WHERE k=?', ('companion:'+self.life.agent_id+':'+key,))
         return json.loads(row['v']) if row else default
 
+    def _apply_work_mode(self, requested, source=None):
+        """应用她自己选的模式（life/tool）。不传就保持原样，向后兼容。
+
+        写进 meta 表（重启仍在），并留一条 activity 审计——
+        「她什么时候自己决定去干活了」这件事，主人应该看得见。
+        """
+        if requested not in ('life', 'tool'):
+            return str(self._state('work_mode', 'life') or 'life')
+        previous = str(self._state('work_mode', 'life') or 'life')
+        self._save('work_mode', requested)
+        if requested != previous:
+            text = ('她自己切到了工具模式：接下来会拿详细的工具参数干活。'
+                    if requested == 'tool'
+                    else '她自己切回了生活模式：工具说明回到简易版。')
+            try:
+                self._audit('activity', text, reason='work_mode',
+                            from_mode=previous, to_mode=requested,
+                            turn_id=getattr(source, 'id', None))
+            except TypeError:
+                self._audit('activity', text)
+        return requested
+
+    def _remember_recovered_actions(self, actions, purpose):
+        """截断但整段结构完整、行动照常派出——把这件事记下来，下一轮告诉她。
+
+        为什么必须说：静默恢复会让她以为「截断就是失败」，
+        下次遇到截断她会重来一遍。把事实摆出来，她才能建立正确预期。
+        """
+        try:
+            brief = []
+            for item in actions or []:
+                if not isinstance(item, dict):
+                    continue
+                brief.append(dict(kind=item.get('kind') or '',
+                                  op=item.get('op') or '',
+                                  goal=str(item.get('goal') or item.get('command') or '')[:120]))
+            if not brief:
+                return
+            self._save('truncated_recovered', dict(
+                at=time.time(), purpose=purpose, count=len(brief), actions=brief))
+            # 取证用：state 读完就清，事后查不到「今天救回过几次、救回了什么」。
+            # 如果哪次恢复错了（把本该丢的半截计划派出去），这是唯一能回查的线索。
+            # 写 activity 而不是 log：要能被 memory/query 从历史里翻出来。
+            self._audit('activity',
+                        '输出被截断（finish_reason=length），但决定在截断前已经完整：'
+                        '恢复了 %d 个行动' % len(brief),
+                        recovered=brief, purpose=purpose, finish_reason='length',
+                        kind_tag='truncated_recovered')
+        except Exception:
+            pass
+
+    def _truncated_recovered_fact(self):
+        """上一轮截断但行动已恢复：陈述事实，读过一次就清。"""
+        saved = self._state('truncated_recovered') or None
+        if not isinstance(saved, dict) or not saved.get('actions'):
+            return None
+        rows = saved.get('actions') or []
+        parts = []
+        for item in rows[:5]:
+            label = item.get('kind') or ''
+            if item.get('op'):
+                label += ' op=' + str(item['op'])
+            goal = str(item.get('goal') or '').strip()
+            parts.append('%s（%s）' % (label, goal) if goal else label)
+        text = ('上一轮你的输出被截断（额度用尽），但决定在截断前已经完整，'
+                '所以这些行动照常派出了：%s。共 %d 件。'
+                '截断不等于失败——只有结构残缺时行动才会被丢弃。'
+                % ('、'.join(parts), int(saved.get('count') or len(rows))))
+        self._save('truncated_recovered', None)
+        return dict(text=text, count=int(saved.get('count') or len(rows)),
+                    at=saved.get('at'), source_ref='life/companion.py#_truncated_recovered_fact')
+
+    def _remember_dropped_actions(self, result, purpose, source):
+        """截断导致这轮的行动没执行——把「哪些行动」记下来，下一轮摆给她看。
+
+        只记录事实：kind/op/goal 摘要。不写建议、不自动重放——
+        半截计划不能真的派出去（那是原有的保守），但沉默是不对的。
+        """
+        try:
+            raw = (result.get('message') or {}).get('content')
+            if not isinstance(raw, str) or not raw.strip():
+                return
+            # 截断的 JSON 解析不出来，用已知的 reply 之外再扫 actions 不可靠；
+            # 这里只在能解析出结构时才记（_salvage_reply 的调用方已确保是失败路径）。
+            import json as _json
+            try:
+                value = _json.loads(raw)
+            except (TypeError, ValueError):
+                value = None
+            if not isinstance(value, dict):
+                return
+            actions = value.get('actions') or []
+            if not isinstance(actions, list) or not actions:
+                return
+            brief = []
+            for item in actions:
+                if not isinstance(item, dict):
+                    continue
+                brief.append(dict(kind=item.get('kind') or '',
+                                  op=item.get('op') or '',
+                                  goal=str(item.get('goal') or item.get('command') or '')[:120]))
+            if not brief:
+                return
+            self._save('truncated_actions', dict(
+                at=time.time(), purpose=purpose,
+                source=getattr(source, 'id', None),
+                count=len(brief), actions=brief))
+        except Exception:
+            # 记录失败不能影响这一轮的交付
+            pass
+
+    def backfill_empty_error_details(self, *, dry_run=False):
+        """把历史 error 记录里 details='{}' 的，补上「当时没记」。
+
+        2026-11-18 之前，状态保存失败那条路径不传 details，
+        于是库里留下一批 `{}`——她查到是空白，看不出是"没原因"还是"查不到"。
+
+        这里不编造原因（异常对象早就不存在了），只陈述事实：
+        这条写于修复之前，原因当时没有记录。**"当时没记"本身就是一个事实。**
+        """
+        rows = self.repo._all(
+            "SELECT id, created, details FROM companion_activity "
+            "WHERE type='error' AND (details='{}' OR details IS NULL OR details='') "
+            "ORDER BY created")
+        changed = []
+        for row in rows:
+            changed.append(row['id'])
+            if dry_run:
+                continue
+            try:
+                payload = dict(
+                    reason='这条记录写于 2026-11-18 修复之前，失败原因当时没有记录（异常对象已不存在）。',
+                    backfilled=True, backfilled_at=time.time(), backfill_scope='empty_details')
+                self.repo._exec(
+                    "UPDATE companion_activity SET details=? WHERE id=?",
+                    (json.dumps(payload, ensure_ascii=False), row['id']))
+            except Exception:
+                log.warning('回填空 details 失败 id=%s', row['id'], exc_info=True)
+        if changed and not dry_run:
+            self._audit('activity', '历史失败记录已补写「当时没记」：%d 条' % len(changed),
+                        ids=changed[:40], scope='empty_details')
+        return changed
+
+    def _consume_truncated_actions(self):
+        """这一轮真的送出去了，才把那条事实标记为已告知。
+
+        只清「时间戳仍是当时那一批」的：期间若又有新的截断写进来，不一起抹掉。
+        """
+        at = getattr(self, '_pending_truncated_at', None)
+        self._pending_truncated_at = None
+        if at is None:
+            return
+        saved = self._state('truncated_actions') or None
+        if isinstance(saved, dict) and saved.get('at') == at:
+            self._save('truncated_actions', None)
+
+    def _truncated_actions_fact(self):
+        """把「上一轮有行动被打断」变成一条可读的事实；读过一次就清掉。"""
+        saved = self._state('truncated_actions') or None
+        if not isinstance(saved, dict) or not saved.get('actions'):
+            return None
+        rows = saved.get('actions') or []
+        parts = []
+        for item in rows[:5]:
+            label = item.get('kind') or ''
+            if item.get('op'):
+                label += ' op=' + str(item['op'])
+            goal = str(item.get('goal') or '').strip()
+            parts.append('%s（%s）' % (label, goal) if goal else label)
+        text = ('上一轮你生成的决定因为输出被截断（额度用尽）没有执行，'
+                '里面这些行动一件都没跑：%s。共 %d 件。这是记录里的事实。'
+                % ('、'.join(parts), int(saved.get('count') or len(rows))))
+        # 只读不清：清必须等「这一轮真的送出去了」——否则请求失败时
+        # 消息没到、事实却已被消费（和 ask 认领时机错是同一类）。
+        return dict(text=text, count=int(saved.get('count') or len(rows)),
+                    at=saved.get('at'), source_ref='life/companion.py#_truncated_actions_fact')
+
     def _save(self, key, value):
         self.repo._exec('INSERT OR REPLACE INTO meta VALUES(?,?)',
             ('companion:'+self.life.agent_id+':'+key, encode(value)))
@@ -633,6 +977,125 @@ class Companion:
             self.repo._exec('INSERT INTO companion_activity VALUES(?,?,?,?,?,?)',
                 (uuid.uuid4().hex, self.life.agent_id, kind, text, encode(details), time.time()))
         self._emit(kind, text, **details)
+
+    # ---------------------------------------------------------------- 边界事实（t13）
+    # 「边界生效了，但没告诉她」和「借她的嘴说话」是同一类代判：程序替她做了判断，却没留下
+    # 她能看到的事实。这里只陈述三件事——哪条规则、哪一步没有发生、原始原因；
+    # 不写「你不需要」「这不代表失败」这类替她下的结论。
+    BOUNDARY_RULES = {
+        'budget': '预算边界生效',
+        'authorization': '授权边界生效',
+        'quiet_hours': '静默时段生效',
+        'silent_delivery': '静默投递生效',
+        'duplicate': '防重复生效',
+        'project_not_active': '项目状态边界生效',
+        'project_missing': '项目不存在',
+        'parse_failed': '系统：本轮模型输出无法解析',
+        'model_request_failed': '系统：模型请求失败',
+        'delivery_failed': '系统：投递失败',
+        'executor_exception': '系统：执行器异常',
+    }
+    # 系统故障和程序边界分开署名：前者是「系统出的问题」，后者是「规则按设计生效」。
+    SYSTEM_RULES = {'parse_failed', 'model_request_failed', 'delivery_failed', 'executor_exception'}
+
+    @staticmethod
+    def _boundary_rule_of(code, error):
+        """把执行器拒绝的原因归类到边界规则：只知道原因，别的都不猜。"""
+        text = ('%s %s %s' % (code or '', type(error).__name__, str(error)[:160])).lower()
+        if any(word in text for word in ('budget', 'spend', 'quota', '预算', '额度')):
+            return 'budget'
+        if any(word in text for word in ('authoriz', 'permission', 'forbidden', 'denied', 'scope',
+                                         '授权', '越权')):
+            return 'authorization'
+        return 'executor_exception'
+
+    def _boundary_fact(self, rule, *, step_not_taken='', reason='', refs=(), extra=None,
+                       source=None, attribution=None):
+        """一条边界/系统事实。只记录发生了什么、什么没有发生，不评价她该不该做。"""
+        rule = str(rule or '')
+        fact = dict(rule=rule, label=self.BOUNDARY_RULES.get(rule, rule),
+                    attribution=attribution or ('system' if rule in self.SYSTEM_RULES else 'boundary'),
+                    effective=True, at=time.time(),
+                    step_not_taken=str(step_not_taken or ''),
+                    reason=str(reason or '')[:240],
+                    refs=[str(ref) for ref in refs if ref][:6],
+                    source_ref=getattr(source, 'id', None))
+        if extra:
+            for key, value in extra.items():
+                fact.setdefault(key, value)
+        return fact
+
+    def _record_boundary(self, fact):
+        """写审计，并作为事件进入下一轮她能看到的材料（复用 t10 的批次台账，不新建表）。"""
+        if not fact:
+            return None
+        details = {key: value for key, value in fact.items() if key != 'at'}
+        details['at'] = _iso_time(fact.get('at'))
+        self._audit('boundary', fact.get('label') or fact.get('rule') or '边界事实', **details)
+        try:
+            from . import companion_batches as batch_ledger
+            event = batch_ledger.make_event(
+                event_id=batch_ledger.event_id_for('boundary', fact.get('rule'), fact.get('at'),
+                                                   *(fact.get('refs') or [''])),
+                source_type='boundary', title=str(fact.get('label') or fact.get('rule')),
+                detail='%s；没有发生：%s；原始原因：%s' % (
+                    fact.get('label') or fact.get('rule'),
+                    fact.get('step_not_taken') or '（未写明）',
+                    fact.get('reason') or '（未提供）'),
+                source_ref=(fact.get('refs') or [''])[0],
+                occurred_at=fact.get('at'), payload=dict(boundary=fact),
+                affects_current_action=False)
+            batch_ledger.record(self, [event])
+        except Exception:  # noqa: BLE001 - 台账写不上不能反过来弄坏这一轮
+            log.warning('边界事实写入批次台账失败', exc_info=True)
+        return fact
+
+    def _boundary(self, rule, **kwargs):
+        return self._record_boundary(self._boundary_fact(rule, **kwargs))
+
+    def _attach_boundary(self, result, rule, **kwargs):
+        """把边界事实挂进这次动作的结果（回执可查），并单独记账。"""
+        fact = self._boundary_fact(rule, **kwargs)
+        if isinstance(result, dict):
+            result.setdefault('boundary', [])
+            result['boundary'].append(fact)
+        return self._record_boundary(fact)
+
+    def _quiet_window_text(self):
+        return str(getattr(self.cfg, 'quiet_hours', '') or '').strip()
+
+    def _cancel_queued_action(self, row, *, reason='project_not_active', project_status=None):
+        """排队中的行动因项目状态被取消：把原因写进 result，并留下边界事实。
+
+        以前这两处只改 status='cancelled'，既没审计也没原因——她自己都分不清
+        「还在排队」和「永远不会跑」。历史行不回填，只保证新产生的可解释。
+        """
+        try:
+            raw_result = row['result']
+        except (KeyError, IndexError, TypeError):
+            raw_result = None
+        try:
+            existing = json.loads(raw_result) if raw_result else {}
+        except (TypeError, ValueError):
+            existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        try:
+            action_id, source_ref, project_ref = row['id'], row['source'], row['project_ref']
+        except (KeyError, IndexError, TypeError):
+            action_id, source_ref, project_ref = None, None, None
+        fact = self._boundary_fact(
+            'project_not_active', step_not_taken='这个排队中的动作没有执行',
+            reason=str(reason or 'project_not_active'),
+            refs=[action_id, source_ref],
+            extra=dict(project_ref=project_ref, project_status=project_status,
+                       action_status='cancelled'))
+        existing['boundary'] = list(existing.get('boundary') or []) + [fact]
+        with self.repo.tx():
+            self.repo._exec("UPDATE companion_actions SET status='cancelled',result=?,updated=? WHERE id=?",
+                            (encode(existing), time.time(), action_id))
+        self._record_boundary(fact)
+        return fact
 
     # ---------------------------------------------------------------- 唤醒可解释性（P33）
     # 只读盘点 + 追加记录，**不改变任何调度顺序**：这些函数没有任何调用点会因返回值改变分支。
@@ -788,7 +1251,11 @@ class Companion:
         """Caller commits this visible message and its outbox removal together."""
         images=wire_images(self.home,bubble['images'])
         metadata={key:bubble[key] for key in ('turn_id','part','parts','delivery')}
-        metadata['source']=dict(kind='internal')
+        metadata['source']=dict(kind='internal',
+                                **({'system_notice': True} if bubble.get('system_notice') else {}))
+        if bubble.get('system_notice'):
+            # 这条是系统署名的故障通知，不是她说过的话：历史里也要能分辨出来。
+            metadata['system_notice']=True
         event,_=self.life.ingest(self.scope,'message','self_output',bubble['text'],role='assistant',
             actor_id=self.life.agent_id,external_id='companion-bubble:'+bubble['turn_id']+':'+str(bubble['part']),
             source_event_ids=[bubble['turn_id']],payload=dict(images=bubble['images'],**metadata))
@@ -828,6 +1295,11 @@ class Companion:
                 with self.repo.tx():self._save('bubble_outbox',pending[1:])
                 self._audit('activity','有段落结果未知，已停止自动重发，留待下一轮判断。',
                             message_id=mid,turn_id=head['turn_id'],part=head['part'])
+                self._boundary('duplicate', step_not_taken='没有自动重发这一段（结果未知）',
+                               reason='上一条结果未知，自动重发会变成重复气泡',
+                               refs=[mid, head.get('turn_id')],
+                               extra=dict(message_id=mid, turn_id=head.get('turn_id'),
+                                          part=head.get('part')))
                 continue
             if current==delivery_ledger.CANCELLED:
                 with self.repo.tx():self._save('bubble_outbox',pending[1:])
@@ -844,6 +1316,13 @@ class Companion:
                 with self.repo.tx():self._save('bubble_outbox',pending[1:])
                 self._audit('error','后续气泡未发布：'+type(error).__name__,turn_id=head['turn_id'],
                             part=head['part'],message_id=mid,reason=type(error).__name__)
+                # 投递失败是系统的问题：署名 system，并说清哪一步没发生（这一段没发出去）。
+                self._boundary('delivery_failed',
+                               step_not_taken='这一段没有发布出去',
+                               reason='%s: %s' % (type(error).__name__, str(error)[:160]),
+                               refs=[mid, head.get('turn_id')],
+                               extra=dict(message_id=mid, turn_id=head.get('turn_id'),
+                                          part=head.get('part')))
 
     def _phase(self):
         executing=self._execution is not None and not self._execution.done()
@@ -905,6 +1384,16 @@ class Companion:
                             agent_ids=recovered)
         except Exception:
             log.exception('子 agent 重启收尾失败，台账保留原状')
+        # 终态却没有证据可核验的历史任务：每次启动顺手归类成 unverified。
+        # 幂等（只处理 verification='pending' 且已终结的行），失败不拖垮启动。
+        # 2026-11-18 之前这是零调用方的死代码，5 条回填靠一次性脚本——重启后新产生的又会挂住。
+        try:
+            reclassified = self.agents.backfill_unverified()
+            if reclassified:
+                self._audit('activity', '启动时把已终结但无证据的子 agent 任务归为 unverified。',
+                            count=len(reclassified), ids=reclassified[:40])
+        except Exception:
+            log.exception('启动时归类 unverified 失败，台账保留原状')
         stranded = delivery_ledger.reconcile_on_start(self.repo, agent_id=self.life.agent_id)
         if stranded:
             self._audit('activity', '上次退出时有消息停在发送中，已记为结果未知，未自动重发。',
@@ -946,23 +1435,72 @@ class Companion:
         self._emit('status', '已在本机醒来，可以聊天。')
 
     async def _index_memories(self):
-        """Maintain the existing rebuildable index without blocking cognition on a rebuild."""
+        """Maintain the existing rebuildable index without blocking cognition on a rebuild.
+
+        2026-11-19：一次 scan_enqueue 实测 208ms（CTE 展开 14080 行 61.5ms + 主查询 152.5ms），
+        而它每 5 秒无条件跑一次；扫描结果为空时（scanned=0，cursor 已到末尾）也照扫，
+        白占 CPU。这里让"没扫到东西"的那一轮退避，扫到就立刻回到 5 秒。
+        """
         index=self.life.memory_index
         last_cleanup=0
+        idle=0
+        # 积压处理进度：每 50 条记一次，避免"看着不动"和"其实在跑"分不清
+        # （2026-11-19：1000+ 条积压时没有任何进度可观测）。
+        done_count=0
+        failed_count=0
         while not self._closed:
             try:
+                # 运行时可暂停：停索引做隔离测量 / 排查时用（2026-11-19）。
+                # 放一个标记文件即暂停，删掉即恢复，不用重启服务。
+                if self._index_pause_flag():
+                    await asyncio.sleep(5)
+                    continue
                 if self.spending.background_allowed():
-                    index.scan_enqueue(limit=100)
-                    lease=index.claim_next(ttl=120)
-                    if lease:
+                    # unknown 回收（见 RECONCILE_UNKNOWN_ENABLED 的说明）。
+                    # 实现后发现真正的堵点在别处：本地 embedding 服务并发能力不足，
+                    # 一次放开 1000+ 条积压会把它打爆（CPU 101%）。默认关，打开改一行。
+                    if RECONCILE_UNKNOWN_ENABLED:
+                        try:
+                            index.reconcile_unknown(limit=2)
+                        except Exception:
+                            log.exception('记忆索引的 unknown 回收未完成；本轮继续')
+                    progress=index.scan_enqueue(limit=100)
+                    # scanned=0 表示这一轮没有新东西可入队；这时退避，避免空转全价。
+                    # idle 由本轮是否真的处理了 job 决定（见下面的 worked），
+                    # 原来看 scanned：只要入队了但 claim 领不到，就会一直 0 → 空转。
+                    # 一轮最多处理 INDEX_BATCH_PER_ROUND 个 job，中间不 sleep。
+                    worked=0
+                    for _slot in range(INDEX_BATCH_PER_ROUND):
+                        lease=index.claim_next(ttl=120)
+                        if not lease:
+                            break
                         try:
                             await index.build(lease)
+                            done_count+=1
+                            worked+=1
                         except Exception as error:
+                            failed_count+=1
                             if self.life.jobs.current(lease):
-                                retryable=getattr(error,'code','') in {'embedding_temporarily_unavailable','embedding_budget_unavailable'}
+                                # 可重试：provider 未起、预算暂不可用、generation 刚轮转过
+                                # （下一次会用新的 billing_key）。
+                                # 不可重试：embedding_rejected_input（4xx，客户端算错）、
+                                # embedding_generation_exhausted（轮转过 MAX_GENERATION 次，
+                                # 上游有问题）——判 paused 比无限重试诚实（2026-11-19）。
+                                retryable=getattr(error,'code','') in {
+                                    'embedding_temporarily_unavailable','embedding_budget_unavailable',
+                                    'embedding_generation_advanced'}
                                 self.life.jobs.finish(lease,'pending' if retryable else 'paused',
                                                       delay=60 if retryable else 0,error=getattr(error,'code',type(error).__name__))
                             raise
+                    idle = 0 if worked else min(idle+1, 5)
+                if done_count+failed_count >= 50:
+                    try:
+                        self._audit('activity', '记忆索引进度：成功 %d，失败 %d（本次运行累计）'
+                                    % (done_count, failed_count))
+                    except Exception:
+                        log.exception('记录索引进度失败')
+                    done_count=0
+                    failed_count=0
                 if time.monotonic()-last_cleanup>=60:
                     index.adapter.cleanup()
                     index.retire_replaced_generations()
@@ -971,7 +1509,18 @@ class Companion:
                 raise
             except Exception:
                 log.exception('记忆索引暂未完成；原始经历与对话继续')
-            await asyncio.sleep(5)
+            # 2026-11-20：有活干时不再固定等 5 秒，改为按本进程 CPU 压力自适应；
+            # 没活干（idle>0）时仍退避 5 → 10 → 20 → 40 → 60 秒，避免空转全价。
+            if idle:
+                await asyncio.sleep(min(60, 5 * (2 ** max(0, idle - 1))))
+            else:
+                # 生产保护：本进程 CPU 高时降速，不把 nproc=2 的机器拖垮。
+                await asyncio.sleep(2 if _process_cpu_percent() > 60 else 1)
+
+    def _index_pause_flag(self):
+        """记忆索引的运行时可暂停开关：标记文件存在即暂停。"""
+        import os
+        return os.path.exists(self.home / 'data' / 'index_pause')
 
     async def _supervise(self, name, coro):
         """包一层观测：任务死了要看得见，但不自动重启。
@@ -1225,7 +1774,11 @@ class Companion:
             (self.life.agent_id, floor))]
 
     def _projects(self):
-        return [json.loads(r['v']) for r in self.repo._all("SELECT v FROM meta WHERE k LIKE 'action_task:%' "
+        # 2026-11-19：原来用 `k LIKE 'action_task:%'`，SQLite 的 LIKE 默认区分大小写，
+        # 无法走 k 上的索引 → 每次全表扫 meta（19894 行）耗时约 120ms，
+        # 而调度器每秒调 1~2 次 → 主线程 12%。/alive 与 /rpc chat 同事件循环，
+        # 实测 /alive 最长 19.7 秒。GLOB 可以用范围扫描，实测 2.13ms（51 倍）。
+        return [json.loads(r['v']) for r in self.repo._all("SELECT v FROM meta WHERE k GLOB 'action_task:*' "
             "AND json_extract(v,'$.scope_id')=? AND COALESCE(json_extract(v,'$.ephemeral'),0)=0 "
             "ORDER BY rowid DESC", (self.scope.scope_id,))]
 
@@ -1648,6 +2201,53 @@ class Companion:
         from . import companion_world
         return companion_world.collect(self)
 
+    def _version_control(self, source_root):
+        """源码版本控制事实。读不到就返回 None，不编。
+
+        她问"我改了什么"需要三样：当前是哪个版本、改动提交了没有、跑着的是不是这一版。
+        这三样都能从 git 只读命令拿到；拿不到（没有 git / 不是仓库 / 超时）就返回 None，
+        让她知道"查不到"而不是看到编出来的空值。
+        """
+        import subprocess
+
+        root = source_root
+        if not root:
+            return None
+
+        def _git(*args):
+            try:
+                out = subprocess.run(['git', *args], cwd=root, capture_output=True,
+                                     text=True, timeout=3)
+                if out.returncode != 0:
+                    return None
+                return out.stdout.strip()
+            except Exception:
+                return None
+
+        head = _git('rev-parse', '--short', 'HEAD')
+        if not head:
+            return None
+        branch = _git('rev-parse', '--abbrev-ref', 'HEAD')
+        status = _git('status', '--porcelain')
+        if status is None:
+            dirty, dirty_files = None, None
+        else:
+            lines = [line for line in status.splitlines() if line[:2] != '??']
+            dirty, dirty_files = bool(lines), len(lines)
+        return dict(
+            tool='git',
+            head=head,
+            branch=branch,
+            dirty=dirty,
+            dirty_files=dirty_files,
+            last_commit=_git('log', '-1', '--format=%cI'),
+            note=('看自己改了什么：git -C <source_root> status --porcelain 看未提交改动，'
+                  'git -C <source_root> log --oneline -5 看最近提交。'
+                  '当前进程载入的是启动那一刻的代码（restart_to_take_effect=True），'
+                  '改完必须重启才生效；dirty=True 说明工作区有未提交的改动，'
+                  '它们即使重启也只在磁盘上，没有进入任何提交。'),
+            source_ref='life/companion.py#_version_control')
+
     def _self_process_facts(self, kinds):
         """我自己这份程序的事实：跑在哪、源码在哪、改完怎么生效。
 
@@ -1664,6 +2264,24 @@ class Companion:
             source_root = str(Path(_self.__file__).resolve().parents[1])
         except Exception:
             source_root = None
+        # 她现在用的是哪家服务商、哪个模型——这也是"我自己这份程序的事实"。
+        # 2026-11-18 实测：换到 opencode-go 后她自己答"看不到服务商和模型名"，
+        # 因为这一项从来没下发过。读不到就写 null，不替她编一个。
+        model_facts = None
+        try:
+            from . import providers as _providers
+            provider_id, error = _providers.resolve(self.cfg)
+            if provider_id:
+                entry = _providers.get(provider_id) or {}
+                model_facts = dict(provider=provider_id, label=entry.get('label'),
+                                   model=getattr(self.cfg, 'model', None))
+            elif error:
+                # 认不出是哪家：如实说认不出，不猜。
+                model_facts = dict(provider=None, label=None,
+                                   model=getattr(self.cfg, 'model', None),
+                                   problem=str(error)[:200])
+        except Exception:
+            model_facts = None
         return dict(
             unit='companion.service',
             source_root=source_root,
@@ -1671,6 +2289,8 @@ class Companion:
             # 能不能写自己的源码，以 work 通道是否真的可用为准（不打包票）。
             can_write_own_source=('work' in kinds),
             restart_to_take_effect=True,
+            version_control=self._version_control(source_root),
+            model=model_facts,
             effect_note=('改完源码不会自动生效：进程已经把旧代码载进内存了，'
                          '必须 systemctl restart companion.service 才用上新版本。'),
             source_ref='life/companion.py#_self_process_facts')
@@ -1692,9 +2312,82 @@ class Companion:
         delivery=payload.get('reply_delivery') or dict(targets=targets)
         return dict(input_source=source,reply_delivery=delivery)
 
-    def _messages(self, current, reason, observation=None, *, route=None, source_ref=None, wake_kind=None, attention=None, purpose=None):
+    def available_kinds(self):
+        """执行器这一轮真的能接的动作种类（能力目录与上下文共用同一份事实）。
+
+        配置事实 ≠ 运行状态（2026-11-18）：`config.enabled` 只说明「有人把它配好了」，
+        不代表桥已经连上。以前只看配置，于是「配置好但桥没起」时 town 会进 kinds、
+        能力目录说「能用」，而 `town_fact()` 说「不能确认」——两处不一致，且方向是
+        最危险的那种：让她以为能用，用户去试才失败。这里加运行状态门槛。
+
+        2026-11-20：抽成方法，是因为 `/mobile/state` 的能力目录以前拿不到
+        `available_actions`，手机端把 web/command/memory 这些**真正可用**的种类
+        全显示成 unknown——「能看到 → 能提交」的链就是从这儿断的。
+        """
+        kinds = list(self.executor.available_kinds() if hasattr(self.executor, 'available_kinds') else ['command'])
+        if (self.town.config.enabled and self.town.config.code
+                and self.town.state in ('connecting', 'online', 'paused', 'reconnecting')):
+            kinds.append('town')
+        if self._body and self._body_context.get('connected'):
+            kinds.append('body')
+        # 预算模式：off 不管；bounded_estimate 只是限并发/时长/次数并在执行处记账，
+        # dsh 照常可用；只有 strict（要求完整逐次计费）才不给 dsh——
+        # 因为 DSH 结构上拿不到逐次 usage，静默藏起来等于假装没有这个能力。
+        if (getattr(self.spending.policy, 'enabled', False)
+                and spending_mode(self.spending.policy) == 'strict'):
+            kinds = [kind for kind in kinds if kind != 'dsh']
+        return kinds
+
+    # ---------------------------------------------------------- 事件与投递分离
+    def _prepare_batches(self, source, purpose, observation=None):
+        """收事件、定批次：这一轮要装载哪几批。
+
+        只做「记录 + 决定送哪批」，不发送任何消息、不改投递状态机。没选中的事件仍是
+        ``pending``（见 ``life/companion_batches.py``），下一轮或重启后继续，不会消失。
+        """
+        try:
+            events = batch_ledger.collect(
+                self, current=source if purpose=='dialogue' else None,
+                observation=observation, batch=getattr(self,'_batch',None), purpose=purpose)
+            batch_ledger.record(self, events)
+            self._turn_batches = batch_ledger.select(
+                self, wake_reason=(getattr(source,'text','') or '')[:80],
+                conversation=purpose=='dialogue', purpose=purpose)
+        except Exception:  # noqa: BLE001 - 批次坏了不能弄坏这一轮
+            log.warning('批次装载失败，本轮按无批次继续', exc_info=True)
+            self._turn_batches = []
+        return self._turn_batches
+
+    def _settle_batches(self, decision_id):
+        """模型请求**成功**之后才写「本批已送达」台账；失败或取消不写。"""
+        batches = list(getattr(self,'_turn_batches',[]) or [])
+        self._turn_batches = []
+        if not batches:
+            return []
+        try:
+            return batch_ledger.deliver(self, batches, decision_id)
+        except Exception:  # noqa: BLE001 - 台账写失败不能反过来弄坏这一轮回答
+            log.warning('批次送达台账写入失败', exc_info=True)
+            return []
+
+    def _drop_batches(self, decision_id, reason=''):
+        """这一轮没送成：记一次尝试，事件保持 pending，下一轮续接（不冒充已处理）。"""
+        batches = list(getattr(self,'_turn_batches',[]) or [])
+        self._turn_batches = []
+        if not batches:
+            return None
+        try:
+            return batch_ledger.fail(self, batches, decision_id, reason=reason)
+        except Exception:  # noqa: BLE001
+            log.warning('批次失败台账写入失败', exc_info=True)
+            return None
+
+    def _messages(self, current, reason, observation=None, *, route=None, source_ref=None, wake_kind=None, attention=None, purpose=None, batches=None):
         # 工具回合（读代码、跑命令、改文件）需要完整工程上下文；生活回合保持紧凑。
-        tool_mode = purpose == 'work'
+        # 她也可以自己切到工具模式（自己挑的活、或者她说要干活），切换结果存在 meta 里、重启仍在。
+        # 注意：字符串比较必须用 ==，不能用 is——'tool' is 'tool' 依赖驻留，不可靠。
+        forced_mode = str(self._state('work_mode', 'life') or 'life')
+        tool_mode = purpose == 'work' or forced_mode == 'tool'
         ceiling = TOOL_REQUEST_CEILING if tool_mode else REQUEST_TOKEN_CEILING
         profile = 'tool' if tool_mode else 'life'
         if observation and observation.get('bilibili_event'):
@@ -1769,7 +2462,8 @@ class Companion:
                                                   else ranked.get(x.get('resource_ref'),len(ranked))))
         self._last_material_extra=dict(recall_route=getattr(self,'_recall_status','text_only'),
                                        semantic_coverage=getattr(self,'_recall_coverage','unavailable'),
-                                       semantic_candidates=sum('semantic' in x.get('match_routes',[]) for x in (getattr(self,'_recall_prefetch',[]) or [])))
+                                       semantic_candidates=sum('semantic' in x.get('match_routes',[])
+                                                               for x in (getattr(self,'_recall_prefetch',[]) or [])))
         if not current:
             self.recollection.pick(cues=self._recollection_cues()[:3])
         growth_clues = []
@@ -1789,24 +2483,7 @@ class Companion:
         # 用户点选的条目：独立一栏，和 recall 不混。混进去会被当成「检索到的旧材料」，
         # 她就会用「我记得你说过」的语气回答，却不知道是用户刚点的这一条。
         selected_refs = material.get('refs') or []
-        kinds = self.executor.available_kinds() if hasattr(self.executor, 'available_kinds') else ['command']
-        kinds = list(kinds)
-        # 配置事实 ≠ 运行状态（2026-11-18）：`config.enabled` 只说明「有人把它配好了」，
-        # 不代表桥已经连上。以前只看配置，于是「配置好但桥没起」时 town 会进 kinds、
-        # 能力目录说「能用（去小镇和角色互动）」，而 `town_fact()` 说「不能确认」——
-        # 两处不一致，且方向是**最危险的**那种：让她以为能用，用户去试才失败。
-        # 这里加一个运行状态门槛，让目录与事实层同源。
-        if (self.town.config.enabled and self.town.config.code
-                and self.town.state in ('connecting', 'online', 'paused', 'reconnecting')):
-            kinds.append('town')
-        if self._body and self._body_context.get('connected'):
-            kinds.append('body')
-        # 预算模式：off 不管；bounded_estimate 只是限并发/时长/次数并在执行处记账，
-        # dsh 照常可用；只有 strict（要求完整逐次计费）才不给 dsh——
-        # 因为 DSH 结构上拿不到逐次 usage，静默藏起来等于假装没有这个能力。
-        if (getattr(self.spending.policy, 'enabled', False)
-                and spending_mode(self.spending.policy) == 'strict'):
-            kinds = [kind for kind in kinds if kind!='dsh']
+        kinds = self.available_kinds()
         state = dict(time=time.strftime('%Y-%m-%d %H:%M:%S %z'), home=str(self.home),
             available_actions=kinds, notes=selected, projects=projects,
             autonomous_activity=self.active, recalled=recalled,
@@ -1834,6 +2511,15 @@ class Companion:
         # 这些是程序知道的事实，不该让她每次靠猜（2026-11-18 对照：用户在 D1
         # 问「改完怎么生效」，她答不出「要重启」这条已知事实）。
         state['self_process'] = self._self_process_facts(kinds)
+        # 上一轮有行动因为截断没执行：把事实摆出来，让她自己判断要不要再来一次。
+        recovered = self._truncated_recovered_fact()
+        if recovered:
+            state['truncated_recovered'] = recovered
+        dropped = self._truncated_actions_fact()
+        if dropped:
+            state['truncated_actions'] = dropped
+            # 先记下「这一批」，等请求成功后再清（见 _consume_truncated_actions）
+            self._pending_truncated_at = dropped.get('at')
         # 她在上一轮回答时被打断过：把这件事带进这一轮，让她知道该先回应哪句。
         interjection = companion_p32.interjection_view(getattr(self, '_interjections', []) or [])
         if interjection:
@@ -1854,6 +2540,20 @@ class Companion:
         shown={(item.get('key') or item.get('ref')) for key in ('review_projects','own_projects','interests')
                for item in state['continuity'][key]}
         state['projects']=[p for p in projects if p['key'] not in shown]
+        # 相似项目只列候选：合不合并由她决定（程序不替她并、也不覆盖旧项目）。
+        merge_candidates = self._state('project_merge_candidates') or []
+        if merge_candidates:
+            state['project_merge_candidates'] = [
+                dict(at=_iso_time(item.get('at')), proposed_key=item.get('proposed_key'),
+                     proposed_goal=item.get('proposed_goal'),
+                     candidates=[dict(ref=row.get('ref'), goal=row.get('goal'),
+                                      status=row.get('status'), recent=row.get('recent'),
+                                      match=row.get('match'))
+                                 for row in (item.get('candidates') or [])[:3]])
+                for item in merge_candidates[-2:]]
+            state['project_merge_candidates_note'] = (
+                '这只是候选：要合并就用 project_ref 明确引用其中一个；'
+                '不合并就保持各自独立。程序不会替你合并，也不会覆盖旧项目。')
         state['motivation'] = self.motivation.context(attention=attention)
         # 带时间的只读投影：身体、情绪底色、手上事项、约定与未送达表达。
         # 驱动候选仍由 motivation 承载；这里不重复同一事实。
@@ -1863,6 +2563,16 @@ class Companion:
         presence_state['current_activity'] = [row for row in presence_state['current_activity']
                                               if row.get('ref') not in shown_refs][:2]
         state['current_state'] = presence_state
+        # P44 B-1：GUIDES['ask'] 承诺「下一轮能在 current_state.questions 里看到」，
+        # 以前没有任何代码产出这个键——把不知道说成知道。现在真产出它。
+        # 失败隔离：提问记录坏了不该弄坏一整轮对话。
+        try:
+            from .companion_ask import PendingQuestions
+            state['current_state']['questions'] = PendingQuestions(self).questions_view()
+        except Exception:  # noqa: BLE001
+            log.warning('问题投影失败', exc_info=True)
+            # 读不到就明说读不到，不要给一个空数组让她以为"没有问过"。
+            state['current_state']['questions'] = dict(error='这一轮读不到提问记录')
         # 运行事实投影：账号、当前的人与会话、关注、能力摘要、在办的事。只读、失败隔离。
         awareness = build_awareness(self, state=state, current=current,
                                     wake_kind=wake_kind or ('user' if current else 'timer'),
@@ -1883,6 +2593,46 @@ class Companion:
                 detail=last_timer.get('detail')) if last_timer else None,
             next_attention_at=_iso_time(self._state('next_wake')),
             next_attention_in=_ago(self._state('next_wake')))
+        # 事件与投递分离：这一轮真的装进请求的批次写在这里。每条事件在批次里各自一条，
+        # 只是共用「同一窗口、同一话题」的背景；没展开的仍在 pending，下一轮再送。
+        # 被预算挤掉的批次不写进来也不写台账（见下面的 fit 循环与 _settle_batches）。
+        batches = [dict(item) for item in (batches or [])]
+
+        def apply_batches(items):
+            if items:
+                state['batches'] = items
+                state['wake']['batches'] = [dict(
+                    batch_id=item['batch_id'], level=item['level'],
+                    level_name=item.get('level_name'), topic=item.get('topic'),
+                    events=len(item.get('events') or []),
+                    unexpanded=item.get('unexpanded_count') or 0) for item in items]
+                state['wake']['batches_note'] = (
+                    '这些是已经发生、这一轮才送到你眼前的事；每条独立，'
+                    '不要把几件事读成一件。未展开的还在，不会丢。')
+            else:
+                state.pop('batches', None)
+                state['wake'].pop('batches', None)
+                state['wake'].pop('batches_note', None)
+
+        apply_batches(batches)
+        if batches:
+            # 送达前最后一刻重读投递状态：装批到这一行之间那条消息可能已经发出去了
+            # （2026-11-21 01:25 事故）。只改视图里的文案/状态，不触发重发。
+            try:
+                batch_ledger.refresh_views(self, batches)
+            except Exception:  # noqa: BLE001 - 刷新失败仍可用旧事实，不能因此不送
+                log.warning('批次视图刷新失败', exc_info=True)
+        if batches:
+            # awareness 投影是在批次确定之前建的；这里把同一段投影补成**本轮实际装载**的批次，
+            # 不留一个恒空的 this_turn（评审 F3）。不重跑其它探测，只更新这一段。
+            try:
+                summary_batches = awareness_batches_summary(self, state)
+                if isinstance(awareness, dict):
+                    awareness['batches'] = summary_batches
+                if isinstance(state.get('awareness'), dict):
+                    state['awareness']['batches'] = summary_batches
+            except Exception:  # noqa: BLE001 - 补一段投影失败不能弄坏这一轮
+                log.warning('批次摘要补写失败', exc_info=True)
         state['bilibili'] = self.bilibili_social.context()
         state['pending_town_projects'] = self.town.pending_project_refs()
         if current and current.payload.get('images'):
@@ -1958,7 +2708,7 @@ class Companion:
         unavailable = [dict(kind=item.get('kind'), reason=item.get('reason'))
                        for item in (offline_reasons(self, kinds) or [])
                        if isinstance(item, dict)]
-        instructions=persona+'\n\n'+METHOD+'\n'+MOTIVATION_INSTRUCTIONS+'\n'+ATTENTION_INSTRUCTIONS+'\n'+tool_instructions_with_offline(kinds, unavailable)+'\n'+AGENT_INSTRUCTIONS
+        instructions=persona+'\n\n'+METHOD+'\n'+MOTIVATION_INSTRUCTIONS+'\n'+ATTENTION_INSTRUCTIONS+'\n'+tool_instructions_with_offline(kinds, unavailable, brief=not tool_mode)+'\n'+AGENT_INSTRUCTIONS
         def pack():
             state['context_reading']=dict(history_messages=len(history),recalled_items=len(material['recall']),notes=len(material['notes']),today_items=len(material['today']),meaning='本轮实际装入；不是数据库总数')
             # Previous assistant messages demonstrate the actual wire format.
@@ -1990,6 +2740,18 @@ class Companion:
             awareness = relaxed
             messages=pack()
             request_tokens=sum(estimate_tokens(m['content']) for m in messages)
+        # 批次正文同样占请求体：超上限时从最低优先级的批次开始整批让位。让掉的批次
+        # 不写进 state、更不会写「已送达」台账——它们仍是 pending，下一轮再送。
+        while request_tokens>ceiling and batches:
+            batches=batches[:-1]
+            apply_batches(batches)
+            messages=pack()
+            request_tokens=sum(estimate_tokens(m['content']) for m in messages)
+        # 只有真正留在请求里的批次才允许在模型成功后记账（见 _settle_batches）。
+        self._turn_batches=list(batches)
+        self._last_material['batches']=dict(loaded=len(batches),
+            events=sum(len(item.get('events') or []) for item in batches),
+            levels=[item.get('level') for item in batches])
         self._last_material['request_tokens'] = request_tokens
         self._last_material['request_ceiling'] = ceiling
         self._last_material['counts']=state['context_reading']
@@ -1998,6 +2760,25 @@ class Companion:
             self._last_material_extra['recall_route']='semantic_loaded'
         self._last_material['recall']=dict(self._last_material.get('recall') or {},
                                            **getattr(self,'_last_material_extra',{}))
+        # 2026-11-19 (design section 5): the recall record must live at a TOP-LEVEL key.
+        # assemble() rewrites report['recall'] = dict(used, cap, dropped) for every slot,
+        # and record_load only persists dict entries, so a slot-level merge is lost.
+        # Top-level dict keys survive both. Counts only: no query text, no message bodies.
+        trace=dict(getattr(self,'_recall_trace',{}) or {})
+        trace['status']=getattr(self,'_recall_status','text_only')
+        trace['coverage']=getattr(self,'_recall_coverage','unavailable')
+        trace['semantic_items']=sum('semantic' in x.get('match_routes',[])
+                                    for x in (getattr(self,'_recall_prefetch',[]) or []))
+        _idx=getattr(getattr(self.life,'life_recall',None),'index',None)
+        trace['index']=dict(model=getattr(_idx,'model_key',None),
+                            chunker=getattr(_idx,'chunker_version',None))
+        # Must live inside the 'recall' slot entry: record_load keeps only dict
+        # entries carrying 'used', so a separate top-level key is dropped
+        # (measured). This merge runs after every assemble(), so it survives.
+        recall_slot=dict(self._last_material.get('recall') or {})
+        recall_slot.setdefault('used', 0)
+        recall_slot['routes_detail']=trace
+        self._last_material['recall']=recall_slot
         self._last_material['refs']=_material_refs(material, current)
         # 按需读取要看到「本轮实际装进请求体的那一段」，而不是重新拼一遍。
         self._last_awareness = awareness
@@ -2053,6 +2834,22 @@ class Companion:
             with self.repo.tx():
                 self._save('last_user_endpoint',dict(source=source,event_id=event.id,last_message_at=time.time()))
         self._latest_dialogue = event.id
+        # P40 ③：主人这条消息如果对应一个挂着的问题，就在这里认领成答案。
+        # 放在 ingest 之后、本轮回话之前，所以她**这一轮**就知道答的是哪个问题，
+        # 而不是等下一轮才后知后觉。
+        if source.get('kind') != 'internal':
+            try:
+                from .companion_ask import PendingQuestions
+                claimed = PendingQuestions(self).answer(text)
+                if claimed.get('matched'):
+                    self._answered_question = claimed
+                    self._audit('activity', '主人回答了一个挂着的问题。',
+                                question=str(claimed.get('question') or '')[:200],
+                                answer=str(claimed.get('answer') or '')[:200],
+                                waited=claimed.get('waited'),
+                                answered_late=bool(claimed.get('answered_late')))
+            except Exception:  # noqa: BLE001 - 认领失败不该弄坏这一轮对话
+                log.warning('问题答案认领失败', exc_info=True)
         # 她在回答时又说话：记成插话事实，不打断当前模型调用，由下一轮 _messages 渲染。
         if companion_p32.should_record_interjection(
                 answering=self._batch is not None, text=text, source_kind=source.get('kind')):
@@ -2155,18 +2952,33 @@ class Companion:
             with self.repo.tx():self._save('cognition_failures',0)
             return result
         except Exception as error:
+            # 这一轮没成：批次只记一次尝试，事件仍是 pending，下一轮续接（不冒充已处理）。
+            self._drop_batches(getattr(source,'id',''), reason=type(error).__name__)
             from .companion_failures import record_failure
             record_failure(self,source,purpose,error)
             raise
         finally:
             self._requests.discard(task)
 
-    async def _prefetch_recall(self, query, excluded):
+    async def _prefetch_recall(self, query, excluded, purpose=None):
         """语义召回走异步路线；不可用或超时都只是少一路候选，不拖住聊天。"""
+        # 2026-11-19（设计 §2）：先把本轮召回状态清空，再判断要不要跑。
+        # 此前非 dialogue 分支在上面的清空之前 return，_messages 仍读实例字段，
+        # 会把上一轮 dialogue 的候选带进这一轮。
         self._recall_prefetch = []
         self._recall_status = 'text_only'
         self._recall_coverage = 'unavailable'
+        self._recall_trace = dict(requested_mode=None, effective_mode=None, skip_reason=None,
+                                  routes={}, candidates=0, authorized=0, returned=0,
+                                  query_embed_ms=None, total_ms=None)
+        # 语义补充只在用户对话轮有意义：activity/work/town 等内部轮次占多数，
+        # 且它们走同一条注定超时的路径（search mode=auto 6~9s，timeout 0.8s）。
+        if purpose is not None and purpose != 'dialogue':
+            self._recall_status = 'skipped_non_dialogue'
+            self._recall_trace['skip_reason'] = 'non_dialogue'
+            return
         if not query:
+            self._recall_trace['skip_reason'] = 'empty_query'
             return
         recall = getattr(self.life, 'life_recall', None)
         if recall is None or not getattr(getattr(recall, 'index', None), 'adapter', None):
@@ -2174,24 +2986,45 @@ class Companion:
             return
         try:
             ctx = recall.access.bind(self.scope)
+            # mode 统一由 life_recall.resolve_mode 解析：这里不再写死 'auto'，
+            # 否则环境变量（生产 override）管不到这条入口，text 下还会白算一次 embedding。
+            self._recall_trace['requested_mode'] = None
+            started = time.monotonic()
             packet = await asyncio.wait_for(
                 # Retrieval includes provenance and cursors; it is not the model's
                 # context allowance. Compact candidates into the existing recall
                 # slot afterwards, rather than spending that slot on API metadata.
-                recall.search_async(ctx, query, budget=8000, limit=8, mode='auto',
+                recall.search_async(ctx, query, budget=8000, limit=8, mode=None,
                                     exclude=list(excluded),diagnostics=True),
-                timeout=2.0)
+                # 2026-11-19: search(mode=auto) measured 6-9s; 2.0 always times out.
+                # 0.8 saves 1.2s of useless waiting and can still succeed on small sets.
+                timeout=0.8)
+            self._recall_trace['total_ms'] = round((time.monotonic() - started) * 1000, 1)
             items = packet.get('items') if isinstance(packet, dict) else packet
             self._recall_prefetch = [item for item in (items or []) if isinstance(item, dict)]
-            self._recall_coverage = packet.get('coverage',{}).get('semantic','unavailable')
+            coverage = packet.get('coverage') if isinstance(packet, dict) else None
+            self._recall_coverage = (coverage or {}).get('semantic', 'unavailable')
+            diagnostic = (packet.get('diagnostics') or {}) if isinstance(packet, dict) else {}
+            self._recall_trace['effective_mode'] = diagnostic.get('mode')
+            self._recall_trace['returned'] = len(self._recall_prefetch)
+            self._recall_trace['candidates'] = diagnostic.get('candidates')
+            self._recall_trace['authorized'] = diagnostic.get('authorized')
             self._recall_status = ('semantic_candidates' if any('semantic' in x.get('match_routes',[]) for x in self._recall_prefetch)
                                    else 'semantic_no_matches' if self._recall_coverage in {'ready','partial'}
                                    else 'semantic_unavailable')
+            # 修订版 §5：读统一 routes 对象（此前读 'routes' 键时该键不存在，恒为空）。
+            self._recall_trace['routes'] = diagnostic.get('routes') or {}
+            _rep = (diagnostic.get('routes') or {})
+            self._recall_trace['route_semantic'] = _rep.get('semantic')
+            self._recall_trace['route_text'] = _rep.get('text')
+            self._recall_trace['route_related'] = _rep.get('related')
         except asyncio.TimeoutError:
             self._recall_status = 'semantic_timeout'
+            self._recall_trace['skip_reason'] = 'timeout'
             log.warning('语义召回超时，本轮只用词法/结构路线')
         except Exception as error:
             self._recall_status = 'semantic_failed:%s' % type(error).__name__
+            self._recall_trace['skip_reason'] = 'error:%s' % type(error).__name__
             log.warning('语义召回失败，本轮只用词法/结构路线', exc_info=True)
 
     async def _call_model(self, messages, source, purpose, observation=None, *,
@@ -2224,6 +3057,12 @@ class Companion:
                 unreported_attempts=max(0, getattr(error, 'unreported_attempts', 1)-1)), purpose, call_key, started_at,
                 origin=origin, source_ref=source_ref)
             self._audit('error', '模型请求未完成：'+type(error).__name__)
+            # 系统署名：谁失败（模型请求）、哪一步没发生（这一轮没有执行任何动作）、原始原因。
+            self._boundary('model_request_failed',
+                           step_not_taken='这一轮没有拿到模型返回，没有执行任何动作',
+                           reason='%s: %s' % (type(error).__name__, str(error)[:180]),
+                           refs=[getattr(source, 'id', None) or source_ref],
+                           extra=dict(purpose=purpose, origin=origin))
             raise
         finally:
             self._model_requests.pop(request, None)
@@ -2244,10 +3083,51 @@ class Companion:
         self._audit('decision', '已完成一次认知。', source=source.id, purpose=purpose,
                     content=content, finish_reason=result.get('finish_reason'),
                     model=result.get('model'),tool_calls=audit_calls or None,request_id=result.get('request_id'),
-                    wire_schema_error=result.get('wire_schema_error'))
+                    wire_schema_error=result.get('wire_schema_error'),
+                    tool_call_pick=(result.get('message') or {}).get('tool_call_pick'))
         if purpose=='activity' and not self.active:
             return None
         return result
+
+    @staticmethod
+    def _recover_truncated_actions(raw, decision):
+        """截断时判断能不能把 actions 救回来。救不回来返回 None。
+
+        判据（故意从严，宁可丢也不派半截计划）：
+        1. 原始输出必须能被 json.loads **整体**解析成功——花括号配平、结构完整。
+           正则抠 "actions": [...] 不够：可能抠出半截数组。
+        2. 每个 action 单独过 schema（DECISION 里 actions.items 那条）。
+           **任何一个不过，整批丢**——不做部分派发，否则她会以为全做了。
+        3. 至少有一个 action。
+        """
+        import json as _json
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        # ① 整体解析：先原样，再剥掉 ``` 围栏和尾随解释
+        whole = None
+        for candidate in (raw, _strip_fence(raw)):
+            if candidate is None:
+                continue
+            try:
+                value = _json.loads(candidate)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                whole = value
+                break
+        if whole is None:
+            return None
+        actions = whole.get('actions')
+        if not isinstance(actions, list) or not actions:
+            return None
+        # ② 每个 action 单独过 schema，任一不过就整批丢
+        spec = DECISION['properties']['actions']['items']
+        for item in actions:
+            try:
+                validate(item, spec)
+            except Exception:
+                return None
+        return actions
 
     def _salvage_reply(self, result, purpose, source, error, attempts=None):
         """解析失败时把这一轮的正文救回来；救不回来也要给一句诚实的回话。
@@ -2266,15 +3146,50 @@ class Companion:
         else:
             salvaged = self._reply_only(result)
         if salvaged is None:
-            # 连一句人话都取不到（空输出/纯符号）：给一句诚实的「没接上」。
-            # 这不是失败通知，是对话轮必须有的最小回复。
-            salvaged = dict(reply='刚才那下没接上，您再说一遍行吗？')
-            how = '兜底提示语'
+            # 解析失败：不再借她的嘴说话。系统署名，说清哪一步没发生、能不能重试。
+            # 用户仍然会收到一条可辨识的系统提示——但那是系统通知，不是她的台词。
+            if getattr(error, 'truncated', False):
+                # 截断了却什么都没解析出来 = 额度全花在推理上，正式内容没开始
+                notice = dict(rule='parse_failed', author='system',
+                              step='模型输出在正文开始前被截断（额度花在推理上）',
+                              not_done='这一轮没有执行任何动作，也没有替她说一句话',
+                              retry='可以重试；也可以把问题拆小或换个说法')
+                salvaged = dict(reply='〔系统〕这一轮模型的输出在正文开始前就截断了'
+                                      '（额度花在推理上）。没有执行任何动作；可以重试，'
+                                      '或把问题拆成两步。', followups=[], remember=[],
+                                projects=[], actions=[], wake_after=0)
+                how = '系统署名：截断且无内容'
+            else:
+                notice = dict(rule='parse_failed', author='system',
+                              step='解析模型输出（JSON 校验失败）',
+                              not_done='这一轮没有执行任何动作，也没有替她说一句话',
+                              retry='可以重试')
+                salvaged = dict(reply='〔系统〕这一轮模型的输出没有解析成功（这是系统的问题，'
+                                      '不是她没接住你的话）。没有执行任何动作；可以重试。',
+                                followups=[], remember=[], projects=[], actions=[], wake_after=0)
+                how = '系统署名：兜底提示语'
+            self._system_notice = dict(notice, at=time.time())
+            self._boundary('parse_failed',
+                           step_not_taken=notice['not_done'],
+                           reason='%s：%s' % (type(error).__name__, str(error)[:160]),
+                           source=source,
+                           extra=dict(purpose=purpose, attempts=attempts, how=how,
+                                      retry=notice['retry']))
         self._audit('error', '这轮没有可解析的 JSON，已按纯回复交付，未执行任何动作。',
                     how=how, reason=str(error)[:160], source=source.id,
                     attempts=attempts, purpose=purpose,
                     truncated=bool(getattr(error, 'truncated', False)),
                     head=(raw_head_of(result)))
+        # 截断时被丢弃的行动必须留下痕迹：否则她下一轮只看到"我什么都没做"，
+        # 于是再派一次、再被截断一次。把事实存下来，下一轮摆到她眼前（P50）。
+        self._remember_dropped_actions(result, purpose, source)
+        # 截断但结构完整时救回来的 actions：补回 decision，
+        # 让它继续走调用方原有的项目校验/派发链路（不绕过任何检查）。
+        recovered = getattr(error, 'recovered_actions', None)
+        if recovered:
+            salvaged['actions'] = recovered
+            how = how + '；行动已从完整结构恢复'
+            self._remember_recovered_actions(recovered, purpose)
         validate(salvaged, DECISION)
         return salvaged
 
@@ -2324,7 +3239,7 @@ class Companion:
         return dict(reply=text, followups=[], remember=[], projects=[], actions=[], wake_after=0)
 
     @staticmethod
-    def _decode_decision(result, *, wire=False):
+    def _decode_decision(result, *, wire=False, audit=None, source=None):
         raw = result['message'].get('content')
         if isinstance(raw, str) and not raw.strip() and result['message'].get('tool_calls'):
             # 用函数调用回答时正文是空的；这一轮要的是 JSON 决定，不能把它当空内容解析。
@@ -2344,7 +3259,9 @@ class Companion:
             error = json.JSONDecodeError(
                 '模型输出不是可解析的 JSON（已尝试 %s）%s' % (
                     '/'.join(str(item.get('method')) for item in attempts),
-                    '；输出被截断' if truncated else ''), raw or '', 0)
+                    # 说清是哪种断法：额度被推理吃光，还是真的写太长
+                    ('；输出被截断（额度可能在推理阶段就用完了）' if truncated else '')),
+                    raw or '', 0)
             error.attempts = attempts
             error.truncated = truncated
             raise error
@@ -2354,14 +3271,27 @@ class Companion:
                         method, len(raw or ''), truncated)
         _LAST_PARSE_METHOD[0] = method
         if truncated:
-            # 截断后仍解析出的对象不可信（可能缺字段、语义不完整）：只当纯回复，
-            # 不拿它去执行动作，避免半截计划被真的派出去。
-            # 抛 JSONDecodeError 让调用方走同一条 salvage 路径；把已解析出的
-            # reply 挂在异常上，_reply_only 优先用它（比正则抠更准）。
+            # 截断意味着 finish_reason=length，但不代表结构一定残缺：
+            # 有时 JSON 已经写完、只是后面还想说点什么被切掉了。
+            #
+            # 2026-11-18：以前一律整轮降级成纯回复，把 actions 全丢——
+            # 于是她说了「这就去查」，下一轮却发现什么都没发生，
+            # 再派一次、再被截断一次（一天内同样形态出现两遍）。
+            #
+            # 现在只在**证据充分**时才恢复行动（见 _recover_truncated_actions 的判据）：
+            #   ① json.loads(整体) 成功（不是正则抠出来的半截数组）
+            #   ② 每个 action 单独过 schema，任一个不过就整批丢
+            #   ③ 恢复了就把事实摆给她，不静默恢复
+            # 这里是 @staticmethod 内部，没有 self——之前写成 self. 会在
+            # 每次输出被截断时抛 NameError，整轮对话直接失败（2026-11-18 23:37 实测）。
+            recovered = Companion._recover_truncated_actions(raw, decision)
             error = json.JSONDecodeError('模型输出被截断，只保留回复，不执行动作', raw or '', 0)
             error.attempts = attempts
             error.truncated = True
             error.salvaged_reply = decision.get('reply') if isinstance(decision, dict) else None
+            if recovered:
+                # reply 可能被截断（只是话没说完），但要做的事记在 actions 里——照常派。
+                error.recovered_actions = recovered
             raise error
         # Strict transport requires optional objects too; an unused letter is
         # an empty placeholder, not a malformed or newly written weekly letter.
@@ -2379,19 +3309,52 @@ class Companion:
                 isinstance(scene,dict) and set(scene)<= {'action'}
                 and scene.get('action','') in ('','none'))):
             decision.pop('scene',None)
-        validate(decision, DECISION)
+        try:
+            validate(decision, DECISION)
+        except ValidationError as error:
+            # 校验失败时把原始输出片段带上，否则 details 里只有一句 reason，
+            # 事后分不清「字段真没有 / 字段是空串 / 字段是 null」三种情况（2026-11-18）。
+            # 只在这一条失败路径加信息，不改调度、不改任何判定。
+            try:
+                error.head = (raw or '')[:500]
+                error.parse_attempts = attempts
+            except Exception:
+                pass
+            raise
         # The strict transport needs empty placeholders, but unused fields such
         # as command/goal/cwd on computer actions have no execution meaning.
         # Preserve their wire diagnostic without buying a padding-only repair.
         if wire and result.get('wire_schema_error') and 'actions' not in decision:
             raise ValueError('工作返回缺少actions数组；继续请列出动作，明确无动作则填actions:[]')
+
+        # 模型一次给了多个 tool_call：我们取了第一个合法的，其余是重复。
+        # **必须留痕**——不记就变成静默容忍，下次出问题查不到是这里放过的。
+        pick = (result.get('message') or {}).get('tool_call_pick')
+        if isinstance(pick, dict) and pick.get('total', 0) > 1:
+            # 这里是 @staticmethod，没有 self。以前写成 self._audit，被下面那句
+            # `except Exception: pass` 吞掉，于是这条审计**从来没写进去过一次**
+            # （2026-11-18 实测：生产库含「多个 tool_call」的 activity = 0 行）。
+            # 现在审计能力由调用方显式传入；没传就跳过，但不会假装成功。
+            if audit is not None:
+                try:
+                    audit('activity', '模型一次返回了多个 tool_call，取了第一个合法的。',
+                          reason='tool_call_pick', total=pick.get('total'),
+                          chosen_index=pick.get('chosen_index'),
+                          names=pick.get('names'), source=getattr(source, 'id', None))
+                except Exception:  # noqa: BLE001 - 审计失败不能影响这一轮
+                    log.warning('记录 tool_call_pick 审计失败', exc_info=True)
         if 'wake_after' in decision and not math.isfinite(decision['wake_after']):
             raise ValueError('wake_after 必须是有效秒数')
         project_states = {project['key']:project.get('status','active') for project in decision.get('projects',[])}
         for action in decision.get('actions', []):
             if action['kind']!='body' and project_states.get(action['project'],'active')!='active':
-                raise DecisionStateError('本轮仍有待执行行动的项目必须保持 active；收到最后行动的真实回执后才能标记 done，回复也不能提前宣称完成。')
-            if action['kind'] in {'computer', 'body', 'bilibili','phone','web','skill','memory','growth'}:
+                if action['kind'] in LEISURE_KINDS:
+                    # 日常活动不是这个项目的续行：项目暂停/结束，不该连泡水、钓鱼也一起关掉。
+                    action['project'] = DAILY_PROJECT
+                    project_states[DAILY_PROJECT] = 'active'
+                else:
+                    raise DecisionStateError('本轮仍有待执行行动的项目必须保持 active；收到最后行动的真实回执后才能标记 done，回复也不能提前宣称完成。')
+            if action['kind'] in {'computer', 'body', 'bilibili','phone','web','skill','memory','growth','task','ask'}:
                 if not action.get('op'):
                     raise _retryable('这个操作需要 op；比如 memory 用 op="search" 或 "read"')
                 try:
@@ -2419,14 +3382,23 @@ class Companion:
         for action in decision.get('actions',[]):
             if action['kind']=='body':continue
             if not action.get('project'):
-                # 回查、检索这类动作说的是「这一轮」，不该被挂在上一轮已收尾的项目上。
-                # 把它系在当前对话的项目键上，并明确重新打开这个项目。
-                key = self._project_ref('')
-                action['project'] = key
-                if key not in changes:
-                    project = dict(key=key, goal=action.get('goal') or '这一轮要做的事', status='active')
-                    decision.setdefault('projects',[]).append(project)
-                    changes[key] = project
+                if action['kind'] in LEISURE_KINDS:
+                    # 泡水、钓鱼、刷 B 站：日常活动，不为了它硬开一个任务项目。
+                    key = DAILY_PROJECT
+                    action['project'] = key
+                else:
+                    # 回查、检索这类动作说的是「这一轮」，不该被挂在上一轮已收尾的项目上。
+                    # 把它系在当前对话的项目键上，并明确重新打开这个项目。
+                    key = self._project_ref('')
+                    action['project'] = key
+                    if key not in changes:
+                        project = dict(key=key, goal=action.get('goal') or '这一轮要做的事', status='active')
+                        decision.setdefault('projects',[]).append(project)
+                        changes[key] = project
+            if action.get('project') == DAILY_PROJECT and DAILY_PROJECT not in changes:
+                project = dict(key=DAILY_PROJECT, goal=_daily_goal(), status='active')
+                decision.setdefault('projects',[]).append(project)
+                changes[DAILY_PROJECT] = project
             if action['kind']=='web':
                 if not action.get('op'):
                     raise _retryable('网页操作需要 op（search/open/follow/read_more）')
@@ -2434,10 +3406,31 @@ class Companion:
                     parse_object(action.get('arguments') or '{}')
                 except ValueError as error:
                     raise _retryable(str(error)) from None
+            if action['kind']=='browser':
+                # 浏览器只要求 goal、合法 op、对应 arguments；不要求 command。
+                # tools 是只读发现，可以不带 arguments；call 必须给 tool。
+                op = action.get('op')
+                if op not in ('tools','call'):
+                    raise _retryable('browser 需要 op（tools 查有哪些工具 / call 调一个工具），收到的是 %r' % (op,))
+                try:
+                    fields = parse_object(action.get('arguments') or '{}')
+                except ValueError as error:
+                    raise _retryable(str(error)) from None
+                if op == 'call' and not str(fields.get('tool') or '').strip():
+                    raise _retryable('browser op=call 的 arguments 里需要 tool（用 op=tools 先查真实工具名）')
             project = self.tasks.get(self._project_ref(action['project']),self.scope.scope_id)
             status = changes.get(action['project'],{}).get('status',(project or {}).get('status','active'))
-            if status!='active':
-                raise DecisionStateError('行动项目 '+action['project']+' 当前为 '+status+'；若用户要求继续，请在 projects 中明确更新为 active，或者使用新项目。未执行的行动不能宣称完成。')
+            if status!='active' and action['project']!=DAILY_PROJECT:
+                if action['kind'] in LEISURE_KINDS:
+                    # 兜底：_guard_decision 已经改过一次，但这里也不能因为项目暂停
+                    # 就把泡水、钓鱼、刷 B 站一起卡死。重挂到「日常」，项目保持原样。
+                    action['project'] = DAILY_PROJECT
+                    if DAILY_PROJECT not in changes:
+                        daily = dict(key=DAILY_PROJECT, goal=_daily_goal(), status='active')
+                        decision.setdefault('projects',[]).append(daily)
+                        changes[DAILY_PROJECT] = daily
+                else:
+                    raise DecisionStateError('行动项目 '+action['project']+' 当前为 '+status+'；若用户要求继续，请在 projects 中明确更新为 active，或者使用新项目。未执行的行动不能宣称完成。')
 
     RECEIPT_ID = re.compile(r'\b(?:companion-action|memory|growth|town)[-_][0-9a-zA-Z]{8,}')
     # 她说"查过这个回执"时给的 id：必须真的存在，否则不许发出去。
@@ -2491,8 +3484,8 @@ class Companion:
             raise DecisionStateError('communication.kind无效')
         reports = decision.get('reports') or []
         for report in reports:
-            if report.get('state') not in {'planned','running','observed','completed'}:
-                raise DecisionStateError('reports.state无效，只能是planned/running/observed/completed')
+            if report.get('state') not in {'planned','running','observed','completed','failed','blocked'}:
+                raise DecisionStateError('reports.state无效，只能是planned/running/observed/completed/failed/blocked')
             if report.get('state')=='completed' and not report.get('basis_refs'):
                 raise DecisionStateError('reports标记completed需要真实basis_refs，不把计划或受理当成已完成')
             self._validate_report_basis(report, observation or {})
@@ -2507,6 +3500,8 @@ class Companion:
 
     async def _run_cognition(self, source, purpose, observation=None):
         async with self._lock:
+            # 上一轮可能留下「系统通知」标记；每轮开头清掉，避免把后面的气泡错标成系统消息。
+            self._system_notice = None
             if source.payload.get('bilibili_event'):
                 observation = dict(observation or {},bilibili_event=source.payload['bilibili_event'])
             if purpose=='dialogue' and source.id != self._latest_dialogue:
@@ -2518,23 +3513,33 @@ class Companion:
             body_revision = self._body_revision
             attention=[] if (observation or {}).get('background_town') or (observation or {}).get('background_bilibili') else self.motivation.attention()
             await self._prefetch_recall(source.text if purpose=='dialogue' else (source.text or ''),
-                                        ())
+                                        (), purpose=purpose)
+            # 事件与投递分离：先收事件、再决定这一轮装哪几批（只记录，不发送）。
+            batches = self._prepare_batches(source, purpose, observation)
             messages = self._messages(source if purpose=='dialogue' else None, source.text, observation,
                                       route=self._message_route(source),source_ref=source.id,
                                       attention=attention,purpose=purpose,
                                       wake_kind=(source.payload or {}).get('wake_kind')
-                                          or ('user' if purpose=='dialogue' else 'timer'))
+                                          or ('user' if purpose=='dialogue' else 'timer'),
+                                      batches=batches)
             # Loading is factual even if the subsequent model/commit fails.
             loaded=dict(self._last_material or {})
             evidence.record_load(self.repo,agent_id=self.life.agent_id,decision_id=source.id,
                                  report=loaded,refs=loaded.get('refs') or [],
                                  request_tokens=loaded.get('request_tokens') or 0)
             result = await self._call_model(messages,source,purpose,observation)
-            if result is None:return ''
+            if result is None:
+                self._drop_batches(getattr(source,'id',''), reason='model_not_started')
+                return ''
+            # 模型请求成功了，这批事实才算送到她眼前；失败/取消上面直接 return，不记账。
+            self._settle_batches(getattr(source,'id',''))
+            # 这一轮真的送出去了，那条「上次行动被打断」的事实才算告知过。
+            self._consume_truncated_actions()
             for correction in range(2):
                 try:
                     try:
-                        decision = self._decode_decision(result,wire=purpose in {'work','activity'})
+                        decision = self._decode_decision(result,wire=purpose in {'work','activity'},
+                                                         audit=self._audit, source=source)
                     except json.JSONDecodeError as error:
                         decision = self._salvage_reply(result, purpose, source, error,
                                                        attempts=getattr(error, 'attempts', None))
@@ -2560,15 +3565,21 @@ class Companion:
                     # 状态冲突类（DecisionStateError）与其它线仍然只重试一次就停。
                     structural = isinstance(error, ValidationError) or isinstance(error, DecisionStateError)
                     if correction or not getattr(error,'retryable',True) or not structural:
+                        # head / parse_attempts 由 _decode_decision 的校验失败路径挂上；
+                        # 没有就写 None，让「没记」和「记了是空」能分开（§0.8）。
                         self._audit('error', '本轮结果未能保存，输入原文仍在：'+type(error).__name__,
-                                    reason=str(error)[:300])
+                                    reason=str(error)[:300],
+                                    head=getattr(error, 'head', None),
+                                    parse_attempts=getattr(error, 'parse_attempts', None))
                         raise ValueError('本轮返回结构无效，原始消息和实际回执已保留。') from error
                     detail = (error.message if isinstance(error,ValidationError) else str(error))[:400]
                     self._audit('activity','返回结构未通过校验，进行一次修正。',error=detail)
                     messages = [*messages,dict(role='assistant',content=result['message'].get('content') or ''),
                         dict(role='user',content='上次返回结构校验失败：'+detail+'。未执行其中行动。请只修正结构，使用schema规定的actions数组，保留原目标和实际回执，不重复已经确认完成的动作。')]
                     result = await self._call_model(messages,source,purpose,observation)
-                    if result is None:return ''
+                    if result is None:
+                        self._drop_batches(getattr(source,'id',''), reason='model_not_started')
+                        return ''
             try:
                 quiet_town = purpose!='dialogue' and not (observation or {}).get('requested_town_status') and (
                     (observation or {}).get('background_town') or
@@ -2582,7 +3593,22 @@ class Companion:
                 if self._body_revision==body_revision:
                     self._body_pending = False
             except Exception as error:
-                self._audit('error','本轮状态未能保存，输入原文仍在：'+type(error).__name__)
+                # 以前这里只写 text、不传 details，于是这几种失败在库里是 `{}`——
+                # 她能看到"失败了"，但连"为什么"都不存在（2026-11-18：28 条这样的记录，
+                # 是当天最大的一类，占 23%）。
+                # 同类路径（上面"本轮结果未能保存"那条）是传了 reason 的，这里补齐。
+                import traceback as _traceback
+                _where = ''
+                try:
+                    frames = _traceback.extract_tb(error.__traceback__)
+                    if frames:
+                        _last = frames[-1]
+                        _where = ' @%s:%s' % (_last.name, _last.lineno)
+                except Exception:
+                    _where = ''
+                self._audit('error','本轮状态未能保存，输入原文仍在：'+type(error).__name__,
+                            reason=(str(error)[:280] or '（异常本身没有消息）') + _where,
+                            error_type=type(error).__name__, where=_where.strip())
                 raise ValueError('本轮状态无效，原始消息已保留。') from error
             self._emit('status','在这里。')
             return reply
@@ -2623,21 +3649,67 @@ class Companion:
         self._emit('usage', '', usage=usage, purpose=purpose, seconds=result.get('seconds'))
 
     def _commit(self, source, decision, *, continuation_ref=None, quiet_town=False, quiet_bilibili=False, motivation_candidates=()):
-        self._normalize_project_refs(decision)
+        # 她自己切换模式：持久化 + 记一条用户看得见的审计。
+        self._apply_work_mode(decision.get('work_mode'), source)
+        self._normalize_project_refs(decision, source)
         route=self._message_route(source)
         targets=decision.get('delivery',{}).get('targets') or route['reply_delivery']['targets']
         delivery=dict(targets=['all'] if 'all' in targets else list(dict.fromkeys(targets)))
         publish = (not quiet_town or decision.get('share_town') is True) and (not quiet_bilibili or decision.get('share_bilibili') is True)
         attached=outgoing_images(self.home,decision.get('images',[])) if publish else []
         bubbles = [text.strip() for text in [decision.get('reply', ''), *decision.get('followups', [])] if text.strip()] if publish else []
+        # 解析失败兜底：这条是系统通知，不是她的台词（署名与来源都记着）。
+        system_notice = getattr(self, '_system_notice', None)
+        self._system_notice = None
+        suppressed_silent = []
         # progress/none stay internal: the state change is saved, nothing is spoken.
         if (decision.get('communication') or {}).get('kind') in {'progress','none'}:
+            suppressed_silent = list(bubbles)
             bubbles=[]
             attached=[]
+            if suppressed_silent:
+                # 只存状态不说话是设计要求，但「这一轮没有对外发言」必须是她能查的事实。
+                self._boundary(
+                    'silent_delivery',
+                    step_not_taken='这一轮没有对外发言（%d 条）' % len(suppressed_silent),
+                    reason='communication.kind=%s：只保存状态，不开口'
+                           % (decision.get('communication') or {}).get('kind'),
+                    refs=[source.id], source=source,
+                    extra=dict(turn_id=source.id, count=len(suppressed_silent),
+                               previews=[text[:60] for text in suppressed_silent[:3]]))
+        elif not publish:
+            suppressed = [text.strip() for text in [decision.get('reply', ''), *decision.get('followups', [])]
+                          if str(text).strip()]
+            if suppressed:
+                # 背景回合（town/bilibili）不主动对外发言：策略不变，只记录被压了什么。
+                self._boundary(
+                    'silent_delivery',
+                    step_not_taken='这一轮没有对外发言（%d 条）' % len(suppressed),
+                    reason='背景回合（town=%s，bilibili=%s）不主动发'
+                           % (bool(quiet_town), bool(quiet_bilibili)),
+                    refs=[source.id], source=source,
+                    extra=dict(turn_id=source.id, count=len(suppressed),
+                               previews=[text[:60] for text in suppressed[:3]]))
         # Quiet hours: she keeps living and saving, ordinary sharing waits.
+        suppressed_quiet = []
         if source.source_kind!='user_report' and self._in_quiet_hours():
+            suppressed_quiet = list(bubbles)
             bubbles=[]
             attached=[]
+            if suppressed_quiet:
+                # 策略本身不改（静默时段不主动发），只把「被压了、为什么、压了什么」留成事实。
+                window = self._quiet_window_text()
+                message_ids = [delivery_ledger.message_id(source.id, index)
+                               for index in range(len(suppressed_quiet))]
+                self._boundary(
+                    'quiet_hours',
+                    step_not_taken='主动发言没有发送（%d 条）' % len(suppressed_quiet),
+                    reason='静默时段 %s 生效；策略未改变，这里只记录被压了什么'
+                           % (window or '（未配置时间）'),
+                    refs=[source.id, *message_ids], source=source,
+                    extra=dict(window=window, count=len(suppressed_quiet), turn_id=source.id,
+                               previews=[text[:60] for text in suppressed_quiet[:3]],
+                               would_be_message_ids=message_ids))
         if attached and not bubbles:bubbles=['']
         outgoing = []
         activities = []
@@ -2670,6 +3742,27 @@ class Companion:
                 if not old and source.source_kind!='user_report':
                     origin = 'self'
                 status = change.get('status', old['status'] if old else 'active')
+                # 2026-11-20：暂停一个项目是主人的操作，不是她表达「今天想休息」的方式。
+                # 旧记录里 05:49 那次自暂停就是这样把「探索兴趣」关掉的：pause_owner 为空、
+                # 没有 transition_cause，之后下午的小镇行动全被 paused 拦住。
+                # 现在她自己把项目写成 paused 时不生效，项目保持原状，只留一条活动记录；
+                # 工具不可用、这轮没兴致，都归到这里，不许升级成「关掉长期兴趣」。
+                if (status == 'paused' and source.source_kind != 'user_report'
+                        and (old or {}).get('pause_owner') != 'user'):
+                    kept = (old or {}).get('status') or 'active'
+                    kept = kept if kept in {'active', 'waiting'} else 'active'
+                    self._audit('activity', '这轮想歇一下，不关项目；「' + change['key'] + '」保持 ' + kept + '。',
+                                project=change['key'], requested='paused', kept=kept, source=source.id)
+                    status = kept
+                if (not old and status in {'active', 'waiting'} and source.source_kind != 'user_report'):
+                    # 主人暂停的任务不能换个名字续做：新项目跟暂停目标太像时先停下。
+                    paused_goals = [row['goal'] for row in self.repo._all(
+                        "SELECT json_extract(v,'$.goal') goal FROM meta WHERE k LIKE 'action_task:%' "
+                        "AND json_extract(v,'$.scope_id')=? AND json_extract(v,'$.status')='paused' "
+                        "AND json_extract(v,'$.pause_owner')='user'", (self.scope.scope_id,))]
+                    conflict = _goal_conflict(change['goal'], paused_goals)
+                    if conflict:
+                        raise ValueError('主人暂停的项目还没恢复，不能换个名字继续：' + conflict + '。等她明确说继续。')
                 if old and old['status'] in {'done', 'cancelled'} and status=='active':
                     resume = source.source_kind=='user_report' or (old['status']=='done' and origin=='self' and old.get('pause_owner')!='user')
                     self.tasks.transition(self.scope.scope_id, ref, 'active', cause='explicit_revisit', user_resume=resume)
@@ -2745,7 +3838,9 @@ class Companion:
                     self._audit('error','这次项目更新未能记录，消息与回执已保留。',
                                 reason='continuity_rejected')
             self.motivation.commit_feedback(source,decision.get('drive_feedback',[]))
-            self.motivation.record_choice(source,decision,motivation_candidates,spoken=bool(bubbles))
+            # 系统通知不是她的表达：不把它记成她想说话（spoken 只算她自己说的话）。
+            self.motivation.record_choice(source,decision,motivation_candidates,
+                                          spoken=bool(bubbles) and not system_notice)
             speak=decision.get('speak_body')
             if isinstance(speak,str) and speak.strip():
                 decision.setdefault('actions',[]).append(dict(kind='body',project='桌面互动',op='pet_act',
@@ -2759,11 +3854,12 @@ class Companion:
                 ref = stable_id('companion-body', source.id, str(index)) if immediate else self._project_ref(action['project'])
                 project = self.tasks.get(ref, self.scope.scope_id)
                 if not project:
-                    project = self.tasks.ensure(self.scope, ref, action['project'], key=action['project'],
+                    goal = _daily_goal() if action.get('project')==DAILY_PROJECT else action['project']
+                    project = self.tasks.ensure(self.scope, ref, goal, key=action['project'],
                         origin='self' if source.source_kind!='user_report' else 'user', companion=not immediate,
                         ephemeral=immediate,
                         source_event_ids=[source.id],origin_source_event_ids=[source.id])
-                if project['status']!='active':
+                if project['status']!='active' and action.get('project')!=DAILY_PROJECT:
                     # 项目不是 active（waiting/paused/completed）时不能派新动作，但**不能因此
                     # 丢掉整轮**：她已经说出口的话和已经确认的行动回执都是既成事实。
                     # 2026-11-18 实测：这条 raise 让一轮对话整轮失声（用户看到"发话没回复"）。
@@ -2801,6 +3897,7 @@ class Companion:
             segments=[dict(text=text,turn_id=source.id,part=index,parts=len(bubbles),
                 message_id=delivery_ledger.message_id(source.id,index),
                 images=attached if index==0 else [],delivery=delivery,
+                **(dict(system_notice=True) if (system_notice and bubbles) else {}),
                 **(dict(recollection_ref=shared_ref,recollection_at=recollection.get('at')) if sharing_recollection else {}))
                 for index,text in enumerate(keep_texts)]
             for segment in segments:
@@ -2876,8 +3973,56 @@ class Companion:
                 return project
         return None
 
-    def _normalize_project_refs(self, decision):
-        """Resolve explicit identity before validation; names alone never merge intent."""
+    def _project_merge_candidates(self, change, source=None, origin='project'):
+        """只列候选：这次的新说法可能和某个已有项目是同一件事。
+
+        **不改 key、不并回、不覆盖旧项目**——合并是她的决定（用 ``project_ref`` 明确引用）。
+        候选清单（各自 ref/goal/最近进展）写进 meta 与审计，下一轮出现在材料里。
+        ``origin`` 只标明这条候选来自哪条入口（项目更新 / 承诺），不改判断。
+        """
+        key = str(change.get('key') or '')
+        goal = str(change.get('goal') or '')
+        text = '%s %s' % (goal, change.get('next_step') or '')
+        twin = self._same_goal_project(change)
+        rows = []
+        for project in self._projects():
+            if project.get('status') not in {'active', 'waiting', 'paused'}:
+                continue
+            if str(project.get('key') or '') == key:
+                continue
+            match = ''
+            if twin and project.get('ref') == twin.get('ref'):
+                match = 'goal'
+            elif self._same_intent(text, str(project.get('goal') or '')):
+                match = 'wording'
+            if not match:
+                continue
+            rows.append(dict(ref=project.get('ref'), key=project.get('key'),
+                             goal=str(project.get('goal') or '')[:120], status=project.get('status'),
+                             recent=str(project.get('next_step') or project.get('checkpoint') or '')[:120],
+                             match=match))
+        if not rows:
+            return []
+        item = dict(at=time.time(), source_ref=getattr(source, 'id', None),
+                    origin=str(origin or 'project'),
+                    proposed_key=key, proposed_goal=goal[:120], candidates=rows)
+        with self.repo.tx():
+            saved = list(self._state('project_merge_candidates') or [])
+            saved.append(item)
+            self._save('project_merge_candidates', saved[-self.MAX_MERGE_CANDIDATES:])
+        self._audit('activity', '有两件事可能指同一个项目：只列了候选，没有合并。',
+                    proposed_key=key, proposed_goal=goal[:80], origin=origin,
+                    candidates=[row['ref'] for row in rows])
+        return rows
+
+    MAX_MERGE_CANDIDATES = 5
+
+    def _normalize_project_refs(self, decision, source=None):
+        """Resolve explicit identity before validation; names alone never merge intent.
+
+        只有 ``project_ref`` 是「她就是要把这件事挂到那个项目上」的显式表态。
+        别的相似性一律只列候选（见 ``_project_merge_candidates``），不替她合并。
+        """
         aliases={}
         for change in decision.get('projects',[]):
             supplied=change.get('project_ref')
@@ -2888,28 +4033,8 @@ class Companion:
             else:
                 project=self.tasks.get(self._project_ref(change['key']),self.scope.scope_id)
                 if not project:
-                    # 换了名字但说的是同一件事：沿用原项目，收紧成一份身份。
-                    twin = self._same_goal_project(change)
-                    reason = '同一件事用了新名字，已并回原项目。'
-                    if not twin:
-                        text = '%s %s' % (change.get('goal') or '', change.get('next_step') or '')
-                        for candidate in self._projects():
-                            if candidate.get('status') not in {'active', 'waiting', 'paused'}:
-                                continue
-                            if self._same_intent(text, str(candidate.get('goal') or '')):
-                                twin = candidate
-                                reason = '说法不同但指向同一件事，已并回原项目。'
-                                break
-                    if twin:
-                        derived = twin.get('key') or twin['ref']
-                        original = change['key']
-                        if original != derived:
-                            self._audit('activity', reason,
-                                        from_key=original, to_key=derived,
-                                        goal=str(change.get('goal') or '')[:80])
-                            aliases[original] = derived
-                        change['key'] = derived
-                        project = twin
+                    # 说法不同但可能同一件事：只列候选给她看，key 与已有项目都不动。
+                    self._project_merge_candidates(change, source)
             if project:
                 canonical=project.get('key') or project['ref']
                 if change['key'] in aliases and aliases[change['key']]!=canonical:
@@ -3040,6 +4165,12 @@ class Companion:
         """把明确表达过的承诺落成有来源的项目。
 
         只在决定提交时登记，并与待发送段落同一事务；关键词命中的"等下"不建任务。
+
+        合并口径（t28 / 评审 t18）：
+        - 跨项目按措辞相似（``_same_intent`` / 同名目标）**不并回**，只列候选给她决定；
+          承诺按自己的 ``topic/ref`` 建项目，不改任何已有项目的 next_step / status；
+        - 唯一例外是**同一批输入里**她已经为这件事写了项目（``decision`` 里的 ``projects``）：
+          那是重复表述去重，不是跨项目猜意图，保留。
         """
         recorded = []
         for promise in decision.get('commitments') or []:
@@ -3067,32 +4198,28 @@ class Companion:
             review_at = (time.time() + float(review_after)) if (
                 isinstance(review_after, (int, float)) and float(review_after) > 0) else None
             if not old:
-                twin = self._same_goal_project(dict(goal=text, next_step=promise.get('next_step')))
-                twin_reason = '同一件承诺用了新名字，已并回原项目。'
-                if not twin:
-                    # 同一轮里她已经为这件事建了项目，只是承诺换了个说法：
-                    # 不再建第二份，否则真实回执会落在原项目上，第二份永远收不尾。
-                    for change in decision.get('projects') or []:
-                        if change.get('status') in {'done', 'cancelled'}:
-                            continue
-                        if self._same_intent('%s %s' % (topic, text), str(change.get('goal') or ''),
-                                             strict=False):
-                            twin = change
-                            twin_reason = '同一轮里承诺换了说法，已并回本轮项目。'
-                            break
-                if not twin:
-                    for project in self._projects():
-                        if project.get('status') not in {'active', 'waiting', 'paused'}:
-                            continue
-                        if self._same_intent('%s %s' % (topic, text), str(project.get('goal') or '')):
-                            twin = project
-                            twin_reason = '承诺的说法不同但指向同一件事，已并回原项目。'
-                            break
+                # 同一轮里她已经为这件事建了项目，只是承诺换了个说法：不再建第二份，
+                # 否则真实回执会落在原项目上，第二份永远收不尾。
+                # 这是**同一批输入里的重复表述**，不是跨项目猜意图，所以保留。
+                twin = None
+                for change in decision.get('projects') or []:
+                    if change.get('status') in {'done', 'cancelled'}:
+                        continue
+                    if self._same_intent('%s %s' % (topic, text), str(change.get('goal') or ''),
+                                         strict=False):
+                        twin = change
+                        break
                 if twin:
                     derived = twin.get('key') or twin['ref']
-                    self._audit('activity', twin_reason,
+                    self._audit('activity', '同一轮里承诺换了说法，已并回本轮项目。',
                                 from_key=topic, to_key=derived, promise=text[:80])
                     topic, ref, old = derived, self._project_ref(derived), twin
+                else:
+                    # 跨项目的相似性（换了说法/同名目标）**不再自动并回**：只列候选给她决定，
+                    # 承诺按自己的 topic/ref 建项目，不改任何已有项目的 next_step / status。
+                    self._project_merge_candidates(
+                        dict(key=topic, goal=text, next_step=promise.get('next_step')),
+                        source, origin='commitment')
             self.tasks.ensure(self.scope, ref, (old or {}).get('goal') or text, key=topic,
                 origin=(old or {}).get('origin') or ('self' if source.source_kind != 'user_report' else 'user'),
                 status=status,
@@ -3183,7 +4310,15 @@ class Companion:
                 delivery_ledger.reconcile(self.repo)
                 delivery_ledger.expire_unknown(self.repo, agent_id=self.life.agent_id)
             if not self._lock.locked() and not self._execution:
-                project = self.followthrough.due(autonomy=self.active,delegated_refs=self.town.pending_project_refs())
+                # due() 内部是一次全量项目扫描（2026-11-19 实测占 CPU 46%）。
+                # 续行的最短间隔在秒级以上，没必要每秒算一次；这里节流到最长 3 秒一次。
+                # 不缓存 _projects() 本身：写入口分散在 tasks.py / interaction_mode.py，
+                # 缓存失效时机一旦错就是读到旧项目，比慢更糟。
+                project = None
+                if time.time() - self._state('followthrough_due_at', 0) >= 3:
+                    with self.repo.tx():
+                        self._save('followthrough_due_at', time.time())
+                    project = self.followthrough.due(autonomy=self.active,delegated_refs=self.town.pending_project_refs())
                 if project and self.followthrough.claim(project['ref'],autonomy=self.active,
                                                        delegated_refs=self.town.pending_project_refs()):
                     try:
@@ -3326,13 +4461,19 @@ class Companion:
             (self.life.agent_id, self.active))
         if not row:
             return False
-        # 与 _worker 一致：项目不是 active 就不跑，记成取消。
+        # 排队超时：永远不动的 queued 比失败更糟——她分不清「还在路上」和「永远不会来」。
+        # 实测（2026-11-18）：01:01 建的 queued 任务 19 小时后仍是 queued；
+        # `lease_until` 字段写了 5 处、读了 0 处，从来没有超时机制。
+        # 真实的等待量级是 39s / 134s / 458s，所以 30 分钟远超正常排队。
+        stale = self._reap_stale_queued()
+        if stale:
+            return True
+        # 与 _worker 一致：项目不是 active 就不跑，记成取消（并写清原因，见 _cancel_queued_action）。
         project = self.tasks.get(row['project_ref'], self.scope.scope_id)
         action = json.loads(row['action'])
         if not project or project['status'] != 'active':
-            with self.repo.tx():
-                self.repo._exec("UPDATE companion_actions SET status='cancelled',updated=? WHERE id=?",
-                                (time.time(), row['id']))
+            self._cancel_queued_action(row, project_status=(project or {}).get('status'),
+                                       reason='project_not_active' if project else 'project_missing')
             return True
         with self.repo.tx():
             self.repo._exec("UPDATE companion_actions SET status='running',updated=? WHERE id=?",
@@ -3383,6 +4524,68 @@ class Companion:
             except Exception:
                 log.exception('子 agent 派活结果轮认知失败，结果保留供下次唤醒')
         return True
+
+    # 排多久算超时。取值依据：生产实测的正常排队是 39s / 134s / 458s，
+    # 30 分钟超过最慢那条 4 倍；再长就说明真的没人会来领了。
+    QUEUED_TIMEOUT_SECONDS = 1800
+    # 清扫节流：`_worker()` 是每轮都跑的高频路径，不能每次都扫全表。
+    QUEUED_REAP_INTERVAL = 60
+
+    def _reap_stale_queued_if_due(self):
+        """主循环调用：到点了才扫一次，且**绝不让异常冒出去**。
+
+        为什么要独立于 `_agent_pending_one`：那个函数只在「有 agent 活要派」时
+        才被调用。她一周不派子 agent，积压的 queued 就一周没人收——而积压收不掉
+        正是这个清扫存在的理由。挂到 `_worker()` 上，只要进程活着就会到点扫一次。
+
+        代价控制：没到点直接返回（一次浮点比较）；到点后只查一次、没有过期行就
+        什么也不写。整段包在 try/except 里——清扫是后台维护，坏了自己记一笔，
+        不许把主循环带崩。
+        """
+        now = time.monotonic()
+        last = getattr(self, '_queued_reap_at', 0.0)
+        if now - last < self.QUEUED_REAP_INTERVAL:
+            return 0
+        self._queued_reap_at = now
+        try:
+            return self._reap_stale_queued()
+        except Exception:  # noqa: BLE001 - 维护性清理失败不能影响领活
+            log.warning('排队超时清扫失败', exc_info=True)
+            try:
+                self._audit('error', '排队超时清扫失败')
+            except Exception:  # noqa: BLE001
+                pass
+            return 0
+
+    def _reap_stale_queued(self):
+        """把排太久、从没被 worker 领走的 agent 行动标成明确失败。
+
+        只在 `started IS NULL`（从没开始过）时动手：已经开始跑的不算排队，
+        它们有自己的中断处理。失败原因里必须写出**具体分钟数**，
+        否则「超时」两个字跟「卡住了」没区别。
+        """
+        timeout = self.QUEUED_TIMEOUT_SECONDS
+        cutoff = time.time() - timeout
+        rows = self.repo._all(
+            "SELECT id, created FROM companion_actions WHERE agent=? AND status IN ('pending','queued') "
+            "AND COALESCE(json_extract(action,'$.kind'),'')='agent' AND created<=?",
+            (self.life.agent_id, cutoff))
+        reaped = 0
+        for row in rows:
+            waited = int((time.time() - float(row['created'] or 0)) // 60)
+            reason = ('排队 %d 分钟没有 worker 领走（超过 %d 分钟就算超时）；'
+                      '这不代表它做完了，也不代表它失败了——是它根本没开始。'
+                      % (waited, timeout // 60))
+            with self.repo.tx():
+                self.repo._exec(
+                    'UPDATE companion_actions SET status=?,result=?,updated=? WHERE id=?',
+                    ('failed', encode(dict(status='failed', code='queued_timeout',
+                                           waited_minutes=waited, output=reason)),
+                     time.time(), row['id']))
+            self._audit('activity', '子 agent 排队超时', action_id=row['id'],
+                        waited_minutes=waited, timeout_minutes=timeout // 60)
+            reaped += 1
+        return reaped
 
     async def _agent_worker_one(self):
         """子 agent 台账执行器：一次领一件，跑完回结果轮。
@@ -3442,6 +4645,9 @@ class Companion:
         回不去检查子 agent 台账，kind=agent 的行动永远停在 pending。
         """
         if True:
+            # 排队超时清扫挂在这里（而不是只在派子 agent 时才跑）：
+            # 一周不派 agent 也要能把积压收掉。内部自带节流，绝大多数轮次是一次比较。
+            self._reap_stale_queued_if_due()
             row = self.repo._one("SELECT a.* FROM companion_actions a JOIN meta m ON m.k='action_task:'||a.project_ref "
                 "WHERE a.agent=? AND a.status IN ('pending','queued') AND (? OR json_extract(m.v,'$.origin')='user')"
                 " AND COALESCE(json_extract(a.action,'$.kind'),'')!='agent' ORDER BY a.created LIMIT 1",
@@ -3450,8 +4656,9 @@ class Companion:
                 return False
             project = self.tasks.get(row['project_ref'], self.scope.scope_id)
             if not project or project['status']!='active':
-                with self.repo.tx():
-                    self.repo._exec("UPDATE companion_actions SET status='cancelled',updated=? WHERE id=?", (time.time(), row['id']))
+                # 不许无声取消：原因写进 result，并留一条她能查到的边界事实。
+                self._cancel_queued_action(row, project_status=(project or {}).get('status'),
+                                           reason='project_not_active' if project else 'project_missing')
                 return True
             action = json.loads(row['action'])
             with self.repo.tx():
@@ -3486,6 +4693,15 @@ class Companion:
                               output=str(error)[:1200] if isinstance(error,(SessionFailure,ValueError))
                               else failure_detail(action, error),
                               **(dict(code=error.code) if isinstance(error,SessionFailure) else {}))
+                # 边界/系统故障要署名：预算、授权按规则生效；其余是执行器异常（系统的问题）。
+                code = str(getattr(error, 'code', '') or '')
+                self._attach_boundary(
+                    result, self._boundary_rule_of(code, error),
+                    step_not_taken='这个动作没有执行',
+                    reason='%s: %s' % (type(error).__name__, str(error)[:180]),
+                    refs=[row['id'], row.get('source')],
+                    extra=dict(action=action.get('kind'), project=action.get('project'),
+                               code=code or None))
             finally:
                 self._execution = None
                 self._execution_origin = None
@@ -3529,8 +4745,14 @@ class Companion:
                         background_bilibili=action['kind']=='bilibili' or route_state.get('background_bilibili',False),
                         requested_bilibili_result=route_state.get('requested_bilibili_result',False),
                         requested_town_status=bool(direct_query))
-                    await self._cognize(source, 'activity' if project.get('origin')=='self' else 'work',
-                        observation)
+                    # 结果轮不能阻塞 worker：一次认知要跑模型（几十秒），
+                    # 而这期间其它排队动作一条都动不了。
+                    # 2026-11-18 实测：堵住 10 分钟，pending 从 3 条涨到 10 条。
+                    # 改成后台执行，worker 立刻回去领下一件；用一个任务集防重入。
+                    task = asyncio.create_task(self._cognize(
+                        source, 'activity' if project.get('origin')=='self' else 'work', observation))
+                    self._result_turns.add(task)
+                    task.add_done_callback(self._result_turns.discard)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -3542,11 +4764,31 @@ class Companion:
             # 这件活已经做完（不论是否触发续行），告诉主循环继续看下一件。
             return True
 
+    # 任务的"还在排队/在跑"不等于"这次操作失败"。
+    # 2026-11-18 实测：同一个幂等键提交两次，台账会随队列满不满分别读成
+    # completed / failed / cancelled——因为 _settle 把 **子任务状态** 当成了
+    # **本次操作的成败**。这两个问题必须分开。
+    ACCEPTED_TASK_STATUS = ('queued', 'running', 'pending')
+
+    def _operation_status(self, action_kind, result):
+        """这次**操作**本身成没成，和它交出去的那件**任务**跑到哪了，是两件事。
+
+        `agent` 的 create/inspect 回执里 `status` 是子任务状态；其它 kind 的
+        `status` 就是操作状态，原样返回。只有前者需要翻译，且**只翻译台账那一列**，
+        回执里的 `result['status']` 一个字节都不动——回执必须说真话。
+        """
+        status = str(result.get('status') or 'failed')
+        if action_kind == 'agent' and status in self.ACCEPTED_TASK_STATUS:
+            # 登记成功、正在后台跑：这次操作做成了。任务成没成看 verification/outcome。
+            return 'completed'
+        return status
+
     def _settle(self, row, result):
         status = result.get('status', 'failed')
+        ledger_status = self._operation_status(json.loads(row['action']).get('kind'), result)
         with self.repo.tx():
             self.repo._exec('UPDATE companion_actions SET status=?,result=?,updated=? WHERE id=?',
-                            (status, encode(result), time.time(), row['id']))
+                            (ledger_status, encode(result), time.time(), row['id']))
             receipt, _ = self.life.ingest(self.scope, 'tool_result', 'tool_observation', result.get('output', ''),
                 payload=dict(self._state('action_route:'+row['id'],{}),action_id=row['id'], result=result),
                 source_event_ids=[row['source']])
@@ -3570,7 +4812,8 @@ class Companion:
             project = self.tasks.get(row['project_ref'], self.scope.scope_id)
             if project and project.get('ephemeral'):
                 self.tasks.transition(self.scope.scope_id, row['project_ref'], 'done', cause='body_action_settled')
-        self._audit('activity', '行动结果：'+status, action_id=row['id'], result=result)
+        self._audit('activity', '行动结果：'+ledger_status, action_id=row['id'],
+                    task_status=status if status != ledger_status else None, result=result)
         settled_kind = json.loads(row['action'])['kind']
         if settled_kind in {'dsh', 'agent'} and result.get('code')!='budget_unmetered':
             # 预算 off / bounded_estimate 都照常记账；拿不到的用量记 None 并标未知，

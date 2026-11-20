@@ -84,15 +84,15 @@ def _trim_items(items, limit):
     return rows
 
 
-CAPABILITY_READY_LIMIT = 3      # 可用最多 3 条
-CAPABILITY_OFFLINE_LIMIT = 3    # 不可用最多 3 条
+CAPABILITY_LIMIT = 200          # 目录本身只有几十条；上限只防异常数据撑爆手机
 
 
 def _capability_brief(snapshot):
-    """手机端能力入口：可用 ≤3 + 不可用 ≤3，只带 name/status/reason。
+    """手机端能力入口：**完整目录**，不再截成 3+3。
 
-    数据来自 `companion_awareness.capabilities()`，由 state handler 预先放进
-    `snapshot['_capability_brief']`（那里才拿得到 core）。
+    2026-11-20：主人要「APK 展示完整目录」，只列几个名字也确实解决不了
+    「她自己用不了」的问题。所以这里把 `companion_awareness.capabilities()`
+    的每一行都发出去：名字、分类、能做什么（what）、不能用的原因、检查时刻。
 
     **status 原样输出**：`needs_setup` 和 `offline` 必须能被前端区分——
     翻译成一个「不可用」就丢掉了「是没配好，还是配好了但掉线」这个区别，
@@ -101,14 +101,18 @@ def _capability_brief(snapshot):
     rows = snapshot.get('_capability_brief')
     if not isinstance(rows, list):
         return []
-    usable, rest = [], []
+    order = {'ready': 0, 'needs_setup': 1, 'unknown': 2, 'offline': 3}
+    briefs = []
     for row in rows:
         if not isinstance(row, dict) or not row.get('capability_ref'):
             continue
-        brief = dict(name=row.get('capability_ref'), status=row.get('status'),
-                     reason=row.get('reason'))
-        (usable if row.get('status') == 'ready' else rest).append(brief)
-    return usable[:CAPABILITY_READY_LIMIT] + rest[:CAPABILITY_OFFLINE_LIMIT]
+        briefs.append(dict(name=row.get('capability_ref'), category=row.get('category'),
+                           description=row.get('description'), what=row.get('what'),
+                           status=row.get('status'), reason=row.get('reason'),
+                           checked_at=row.get('checked_at')))
+    briefs.sort(key=lambda item: (order.get(item.get('status'), 4),
+                                  str(item.get('category') or ''), str(item.get('name'))))
+    return briefs[:CAPABILITY_LIMIT]
 
 
 def _collect_capability_brief(core, snapshot=None):
@@ -125,6 +129,12 @@ def _collect_capability_brief(core, snapshot=None):
     try:
         from . import companion_awareness as awareness
         state = snapshot if isinstance(snapshot, dict) else core.snapshot(include_image_data=False)
+        # 快照里没有 `available_actions`；能力目录的 ready 判定全靠它。
+        # 少了这一句，手机端会把 web/command/memory 这些真正能用的种类显示成
+        # unknown —— 2026-11-20 实测 17 条里 6 条错成 unknown，就是这里断的。
+        kinds = core.available_kinds() if hasattr(core, 'available_kinds') else None
+        if kinds is not None:
+            state = dict(state, available_actions=list(kinds))
         items = awareness.capabilities(core, state=state)
     except Exception:  # noqa: BLE001 - 能力目录坏了不该弄坏整个 /mobile/state
         log.warning('能力目录读取失败', exc_info=True)
@@ -133,8 +143,10 @@ def _collect_capability_brief(core, snapshot=None):
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        rows.append(dict(capability_ref=item.get('capability_ref'),
-                         status=item.get('status'), reason=item.get('reason')))
+        rows.append(dict(capability_ref=item.get('capability_ref'), category=item.get('category'),
+                         description=item.get('description'), what=item.get('what'),
+                         status=item.get('status'), reason=item.get('reason'),
+                         checked_at=item.get('checked_at')))
     return rows or None
 
 
@@ -191,6 +203,10 @@ def mobile_view(snapshot, *, runtime=False, history_limit=HISTORY_LIMIT):
         projects=projects,
         phase=snapshot.get('phase'),
         town=dict(state=(snapshot.get('town') or {}).get('state')),
+        # 手机端「云端：状态还没拿到」就是缺这一项：手机注册本来成功了，
+        # 但 /mobile/state 以前不下发 phone_context，App 只能显示"没拿到"，
+        # 让人误以为云端没收到。原样给 context() 的结果，别在中间猜。
+        phone_context=snapshot.get('phone_context'),
         active=snapshot.get('active'),
         name=snapshot.get('name'),
         next_wake=snapshot.get('next_wake'),
@@ -437,8 +453,13 @@ class MobileAPI:
                       else self.server.snapshot(include_image_data=False))
         # 能力目录需要 core（mobile_view 只拿得到快照），在这里算好塞进私有键，
         # 顺手把手上的 snapshot_raw 传进去，省掉一次重复的快照构造（那要 0.8–2.5 秒）。
-        snapshot_raw['_capability_brief']=_collect_capability_brief(
-            getattr(self.server,'core',None), snapshot_raw)
+        core=getattr(self.server,'core',None)
+        # 手机自己也会读这一份：没有 phone_context，App 的「云端」那行永远显示
+        # “状态还没拿到”，而实际上手机注册早就成功了（2026-11-20 实测）。
+        if core is not None and hasattr(getattr(core,'executor',None),'phone_context'):
+            try:snapshot_raw['phone_context']=core.executor.phone_context()
+            except Exception:snapshot_raw['phone_context']=dict(connected=False,devices=[])
+        snapshot_raw['_capability_brief']=_collect_capability_brief(core, snapshot_raw)
         snapshot=mobile_view(snapshot_raw,runtime=runtime,history_limit=limit)
         device=request['mobile_device']
         source=self.device_source(device)

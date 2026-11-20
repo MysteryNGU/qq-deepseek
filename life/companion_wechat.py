@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from .companion_work import missing, visibility
+
 BASE_URL = 'https://ilinkai.weixin.qq.com'
 SEND_PATH = '/ilink/bot/sendmessage'
 MAX_TEXT = 1200
@@ -147,6 +149,24 @@ def parse_login_status(body):
     return dict(status='waiting')
 
 
+# iLink 的 item 类型：只对能确定的命名，其余如实写成「非文本内容（类型 N）」，
+# 不猜成图片或卡片——猜错会让她以为自己知道收到的是什么。
+WECHAT_ITEM_LABELS = {1: '文字', 2: '图片', 3: '语音', 4: '文件', 5: '视频',
+                      6: '表情', 7: '链接卡片', 8: '小程序', 9: '位置'}
+
+
+def item_label(kind):
+    return WECHAT_ITEM_LABELS.get(kind) or ('非文本内容（类型 %s）' % kind)
+
+
+def unsupported_notice(labels):
+    """她读得到的一句话：这条是什么、内容没看到。只写类型，不复述内容。"""
+    names = '、'.join(dict.fromkeys(str(label) for label in labels if label))
+    if not names:
+        return '（这条消息里没有可读的文字，我没有看到内容。）'
+    return f'（这条是{names}，我没有看到内容。）'
+
+
 def parse_inbound(raw):
     """解析一条 getupdates 消息；只取文字，返回 None 表示不是可处理的私聊消息。"""
     if not isinstance(raw, dict):
@@ -168,30 +188,44 @@ def parse_inbound(raw):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            kind = int(item.get('type') or 0)
+            try:
+                kind = int(item.get('type') or 0)
+            except (TypeError, ValueError):
+                kind = 0
             if kind == 1:
                 text_item = item.get('text_item') or {}
                 value = text_item.get('text') if isinstance(text_item, dict) else None
                 if value:
                     texts.append(str(value))
-            elif kind == 2:
-                unsupported.append('图片')
             elif kind == 3:
                 voice = item.get('voice_item') or {}
                 asr = voice.get('text') if isinstance(voice, dict) else None
                 if asr:
                     texts.append(f'[语音] {asr}')
                 else:
-                    unsupported.append('语音')
-            elif kind == 4:
-                unsupported.append('文件')
-            elif kind == 5:
-                unsupported.append('视频')
+                    unsupported.append(item_label(kind))
+            elif kind != 1:
+                # 图片/文件/视频/表情/卡片/小程序/未知类型：内容看不到，但类型必须露出来。
+                unsupported.append(item_label(kind))
     message_id = message.get('message_id') or message.get('msg_id') or \
         f"{sender}:{message.get('create_time_ms') or message.get('create_time') or 0}"
     return dict(sender=sender, text=''.join(texts).strip(), unsupported=unsupported,
+                kinds=[item_label(kind) for kind in _item_kinds(items)],
                 context_token=str(message.get('context_token') or ''),
                 message_id=str(message_id))
+
+
+def _item_kinds(items):
+    kinds = []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                kinds.append(int(item.get('type') or 0))
+            except (TypeError, ValueError):
+                kinds.append(0)
+    return kinds
 
 
 def render_qr_data_uri(text):
@@ -474,24 +508,35 @@ class WeChatBot:
     async def _receive(self, identity, message):
         try:
             text = message['text']
-            if message['unsupported']:
-                note = '、'.join(dict.fromkeys(message['unsupported']))
-                notice = f'（微信这边暂时只支持文字，这条{note}我没有看到。）'
+            labels = message.get('unsupported') or []
+            gaps = [missing('这条%s的内容' % label, 'unsupported',
+                            '微信通道只取文字，这段内容没有读到')
+                    for label in dict.fromkeys(labels)]
+            if labels:
+                # 正文里就说清楚这条是什么、内容没看到，不静默当没发生。
+                notice = unsupported_notice(labels)
                 text = (text + '\n' + notice).strip()
             if not text:
-                self._set('in', identity, 'ignored')
+                self._ignore(identity, '这条消息里没有可读的文字，也没有可标注的类型，没有交给她。')
                 return
+            if gaps:
+                self._remember(identity, gaps=gaps, visibility=visibility(not_obtained=gaps))
             if getattr(self.core, 'supports_message_routing', False):
                 await self.core.chat(text, [], source=dict(kind='wechat', name='微信'))
             else:
                 await self.core.chat(text, [])
             self._set('in', identity, 'received')
+            if labels:
+                self._remember(identity, reason='非文本段没有内容，只在正文里标注了类型')
         except asyncio.CancelledError:
             self._set('in', identity, 'unknown')
             raise
         except Exception:
             self._set('in', identity, 'failed')
             self.error = 'incoming_failed'
+            gap = missing('这条消息', 'failed', '接收失败：incoming_failed')
+            self._remember(identity, reason=gap['detail'], gap=gap,
+                           visibility=visibility(not_obtained=[gap]))
 
     # ── 发 ─────────────────────────────────────────────────
     def _store(self, direction, identity, status, payload):
@@ -505,6 +550,33 @@ class WeChatBot:
             self.repo._exec('UPDATE companion_wechat_delivery SET status=?,updated=? '
                             'WHERE agent=? AND direction=? AND id=?',
                             (status, time.time(), self.agent, direction, str(identity)))
+
+    def _remember(self, identity, **extra):
+        """把「这条消息怎么了」写回记录，事后能查，不用看日志。"""
+        try:
+            row = self.repo._one('SELECT payload FROM companion_wechat_delivery '
+                                 'WHERE agent=? AND direction=? AND id=?',
+                                 (self.agent, 'in', str(identity)))
+            payload = json.loads(row['payload']) if row and row['payload'] else {}
+        except (TypeError, ValueError, KeyError, IndexError):
+            payload = {}
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        for key, value in extra.items():
+            if value is None:
+                continue
+            payload[key] = value
+        with self.repo.tx():
+            self.repo._exec('UPDATE companion_wechat_delivery SET payload=?,updated=? '
+                            'WHERE agent=? AND direction=? AND id=?',
+                            (json.dumps(payload, ensure_ascii=False), time.time(),
+                             self.agent, 'in', str(identity)))
+
+    def _ignore(self, identity, reason):
+        """被忽略也要留 status 和 reason：否则「没发生」无从查起。"""
+        gap = missing('这条消息的可读内容', 'unsupported', reason)
+        self._set('in', identity, 'ignored')
+        self._remember(identity, reason=gap['detail'], gap=gap, status='ignored',
+                       visibility=visibility(not_obtained=[gap]))
 
     def emit(self, event):
         if self._closed or not self.settings['enabled']:

@@ -10,6 +10,8 @@ import uuid
 
 from jsonschema import validate,ValidationError
 from .companion_model import MAX_OUTPUT_TOKENS
+# 来源分级与「这次没取得什么」的措辞跟 t11 用同一套，不另立词表。
+from .companion_work import PROVENANCE_DIRECT,missing,visibility
 
 log=logging.getLogger(__name__)
 
@@ -40,6 +42,21 @@ VISION_INSTRUCTIONS=('你是只读视频资料阅读器，给主角色写内部�
 
 def encode(value):return json.dumps(value,ensure_ascii=False,separators=(',',':'),sort_keys=True)
 def digest(value):return hashlib.sha256(encode(value).encode()).hexdigest()
+
+
+def frame_gap_layer(code):
+    """画面没取得时按哪一层原因算：登录/授权、超限、还是这次没要求。"""
+    lowered=str(code or '').lower()
+    if any(word in lowered for word in ('login','auth','cookie','credential')):return 'unauthorized'
+    if any(word in lowered for word in ('limit','size','too_large')):return 'limit'
+    if lowered.startswith('visual_read_'):return 'failed'
+    return 'unavailable'
+
+
+def _without(result,what):
+    """已有的缺口里去掉某一项，避免同一个「视频画面」写两遍。"""
+    return [item for item in (result.get('not_obtained') or [])
+            if isinstance(item,dict) and str(item.get('what'))!=what]
 
 
 def normalize_report(report,*,brief=False):
@@ -170,7 +187,7 @@ class BilibiliReader:
 
     async def _read(self,args):
         subtitle_result=await self._read_text(args)
-        if not args['visual']:return subtitle_result
+        if not args['visual']:return self._subtitle_only(subtitle_result)
         try:
             frames=await self._frames()
             frames=await frames.prepare(args['bvid'],time_seconds=args.get('frame_time'))
@@ -198,7 +215,7 @@ class BilibiliReader:
             if report_path.is_file():
                 try:
                     saved=json.loads(report_path.read_text('utf-8'))
-                    return self._visual_comments(dict(saved,cached=True),subtitle_result)
+                    return self._visual_comments(self._cached_visual(saved),subtitle_result)
                 except (OSError,ValueError):pass
             report=await self._summarize(payload,image=(mime,data))
             coverage=dict(subtitle=subtitle_result.get('coverage'),visual=frames.get('coverage',{}),
@@ -208,19 +225,47 @@ class BilibiliReader:
             times=', '.join(str(round(float(t),2))+'s' for t in coverage['timestamps'][:9])
             limits=['只观察所列时间点的抽样画面，不能声称逐帧看完。',*report['limitations']]
             if not subtitle_summary:limits.append('没有可用字幕摘要；声音内容未获验证。')
+            # 画面必须有真实文件路径和覆盖范围：她下次要自己核对这些画面，路径要能直接打开。
+            visual_scope=str((coverage['visual'] or {}).get('scope') or sample_kind)
             output=('内部视觉阅读回执：'+receipt_ref+'\n来源：https://www.bilibili.com/video/'+args['bvid']+
                 '\n范围：'+sample_kind+' '+times+'；'+('已结合字幕摘要。' if subtitle_summary else '没有可用字幕摘要。')+
+                '\n画面文件：'+str(path)+'（'+visual_scope+'；抽样不等于逐帧观看）'+
                 '\n报告：'+report['summary']+'\n限制：'+'；'.join(limits))
             result=dict(status='completed',completion='observed',output=output[:1650],summary=report['summary'],
                 limitations=limits,coverage=coverage,receipt_ref=receipt_ref,cached=False,cache_scope='visual_report',
                 source_path=subtitle_result.get('source_path'),output_path=str(report_path),
-                visual=dict(observed=True,sheet_path=str(path),
-                            cache_key=frames.get('cache_key'),coverage=frames.get('coverage'),timestamps=frames.get('timestamps')))
+                not_obtained=([missing('B站的字幕','unavailable','没有可用字幕摘要；声音内容未获验证')]
+                              if not subtitle_summary else []),
+                subtitle=dict(obtained=bool(subtitle_summary),coverage=subtitle_result.get('coverage'),
+                              source_path=subtitle_result.get('source_path')),
+                visual=dict(observed=True,provenance=PROVENANCE_DIRECT,sheet_path=str(path),
+                            coverage=frames.get('coverage'),timestamps=frames.get('timestamps'),
+                            cache_key=frames.get('cache_key')))
+            result['visibility']=visibility(not_obtained=result['not_obtained'])
             self._write(report_path,result)
             return self._visual_comments(result,subtitle_result)
         except asyncio.CancelledError:raise
         except Exception as error:
             return self._visual_gap(subtitle_result,'visual_read_'+type(error).__name__,diagnostic=report_diagnostic(error))
+
+    @staticmethod
+    def _cached_visual(saved):
+        """缓存回执里的画面路径必须真的还在。
+
+        抽样画面文件会被清理；文件不在了却还写「已取得」，等于拿旧报告冒充现在能看到的东西。
+        """
+        visual=saved.get('visual') if isinstance(saved.get('visual'),dict) else {}
+        path=str(visual.get('sheet_path') or '')
+        if path and Path(path).is_file():
+            return dict(saved,visual=dict(visual,provenance=PROVENANCE_DIRECT,file_present=True),cached=True)
+        note=('缓存的抽样画面文件已经不在了（%s）；这份报告是之前读的，这次没有画面文件可核对。'
+              % (path or '没有记录路径'))
+        gaps=_without(saved,'视频画面')
+        gaps.append(missing('视频画面','unavailable','缓存的画面文件已经被清理，这次没有文件可核对'))
+        return dict(saved,visual=dict(visual,observed=False,provenance=PROVENANCE_DIRECT,file_present=False,
+                                      reason=note,sheet_path=None),cached=True,
+                    not_obtained=gaps,visibility=visibility(not_obtained=gaps),
+                    output=note+'\n'+str(saved.get('output') or ''))
 
     @staticmethod
     def _visual_comments(result,subtitle_result):
@@ -232,15 +277,48 @@ class BilibiliReader:
     @staticmethod
     def _visual_gap(result,code,*,diagnostic=None):
         # Never cache a failed vision attempt as a successful observation.
-        note='画面未取得或未能完成视觉读取（'+str(code)[:80]+'）；本次不能声称看过视频画面。'
-        return dict(result,output=note+'\n'+result['output'],visual=dict(observed=False,error=str(code)[:80],
-                    **(dict(diagnostic=diagnostic) if diagnostic else {})),
+        # 没拿到画面时写清原因，并且把「字幕 ≠ 画面」说出来。
+        note=('画面未取得（%s）：这次没有可用的抽样画面，不能声称看过视频画面；'
+              '只读到字幕不等于看了画面。' % (str(code)[:80]))
+        limits=list(result.get('limitations') or [])
+        limits.append('画面未取得（%s）；只读到字幕不等于看了画面。' % (str(code)[:60]))
+        gaps=_without(result,'视频画面')
+        gaps.append(missing('视频画面',frame_gap_layer(code),str(code)[:120] or '这次没有取得画面帧',
+                            code=str(code)))
+        return dict(result,output=note+'\n'+result['output'],limitations=limits,
+                    not_obtained=gaps,visibility=visibility(not_obtained=gaps),
+                    visual=dict(observed=False,provenance=PROVENANCE_DIRECT,requested=True,
+                                error=str(code)[:80],reason=note,
+                                **(dict(diagnostic=diagnostic) if diagnostic else {})),
                     requested_visual=True)
+
+    @staticmethod
+    def _subtitle_only(result):
+        """只读字幕的回执：限制里写明没有画面，别让下游把字幕当成看过视频。"""
+        note='本次只读字幕，没有取得画面；只读到字幕不等于看了画面。'
+        limits=list(result.get('limitations') or [])
+        if note not in limits:limits.append(note)
+        visual=dict(result.get('visual') or {})
+        visual.update(observed=False,requested=False)
+        visual.setdefault('reason','这次只读了字幕，没有请求画面')
+        visual.setdefault('provenance',PROVENANCE_DIRECT)
+        gaps=_without(result,'视频画面')
+        gaps.append(missing('视频画面','not_requested',
+                            '这次只读了字幕（bili_subtitle），没有请求画面'))
+        return dict(result,limitations=limits,visual=visual,not_obtained=gaps,
+                    visibility=visibility(not_obtained=gaps))
 
     async def _read_text(self,args):
         bvid=args['bvid'];focus=args.get('focus','');start=args.get('start_char',0)
         backend=self._backend()
-        if backend is None:return dict(status='failed',completion='not_read',output='B站阅读后端不可用。')
+        if backend is None:
+            gaps=[missing('B站的字幕','unavailable','B站阅读后端不可用'),
+                  missing('视频画面','not_requested','后端不可用，这次也没有请求画面')]
+            return dict(status='failed',completion='not_read',output='B站阅读后端不可用。',
+                        not_obtained=gaps,visibility=visibility(not_obtained=gaps),
+                        subtitle=dict(obtained=False,reason='B站阅读后端不可用'),
+                        visual=dict(observed=False,requested=False,provenance=PROVENANCE_DIRECT,
+                                    reason='B站阅读后端不可用：字幕和画面都没有读到'))
         info=await self._fetch(backend,'bili_video_info',dict(bvid=bvid))
         subtitle=await self._fetch(backend,'bili_subtitle',dict(bvid=bvid))
         comments=await self._fetch(backend,'bili_comments',dict(bvid=bvid,num=6)) if args.get('comments',True) else {}
@@ -255,8 +333,15 @@ class BilibiliReader:
         if info.get('error'):source_limits.append('视频详情获取失败；详情缺失不能当成视频无内容。')
         if not isinstance(text,str) or not text.strip():
             reason=str(subtitle.get('error') or subtitle.get('message') or '没有可用字幕')[:200]
+            gaps=[missing('B站的字幕','unavailable',reason),
+                  missing('视频画面','not_requested','没有字幕也没有请求画面')]
             result=dict(status='failed',completion='not_read',source_path=str(source_path),output_path=str(source_path),
-                        output=encode(dict(source=metadata,read=False,reason=reason,note='未读到视频内容；标题/简介不构成内容证据，未调用阅读模型。')))
+                        output=encode(dict(source=metadata,read=False,reason=reason,note='未读到视频内容；标题/简介不构成内容证据，未调用阅读模型。')),
+                        not_obtained=gaps,visibility=visibility(not_obtained=gaps),
+                        subtitle=dict(obtained=False,reason=reason),
+                        visual=dict(observed=False,requested=False,provenance=PROVENANCE_DIRECT,
+                                    reason='没有字幕也没有画面；这条回执什么都没看到',
+                                    note='只读到字幕不等于看了画面。'))
             return self._with_comments(result,comments,source_path,args.get('comments',True))
         if start>=len(text):raise ValueError('start_char 已超出当前字幕长度')
         end=min(len(text),start+CHUNK_CHARS*MAX_CHUNKS)
@@ -299,15 +384,21 @@ class BilibiliReader:
                                            note='已完成分段摘要已缓存，未将未读内容当作看完。')))
         receipt_ref='bili-read:'+report_key[:24]
         # Compact envelope stays below the core's action-result truncation limit.
+        # 字幕和画面是两件事：这条回执只有字幕，就把「没看画面」写在回执里。
         output=('内部阅读回执：'+receipt_ref+'\n来源：'+metadata['title']+' '+metadata['url']+
             '\n范围：'+coverage['scope']+'；字符['+str(start)+','+str(end)+') / '+str(len(text))+
             ('，本次已读全部可用字幕。' if coverage['complete'] else '，本次仅阅读此范围，不能声称看完全文。')+
             (' 续读 start_char='+str(end) if end<len(text) else '')+
+            '\n画面：这次只读了字幕，没有取得画面——只读到字幕不等于看了画面。'+
             '\n报告：'+report['summary']+
             ('\n限制：'+'；'.join([*source_limits,*report['limitations']]) if source_limits or report['limitations'] else ''))
         result=dict(status='completed',completion='observed' if coverage['complete'] else 'partial',output=output,
                     summary=report['summary'],limitations=[*source_limits,*report['limitations']],
                     coverage=coverage,receipt_ref=receipt_ref,source_path=str(source_path),output_path=str(report_path),cached=False,
-                    cache_scope='subtitle_report')
+                    cache_scope='subtitle_report',
+                    subtitle=dict(obtained=True,kind='text',coverage=coverage,source_path=str(source_path)),
+                    visual=dict(observed=False,requested=False,provenance=PROVENANCE_DIRECT,
+                                reason='这次只读了字幕，没有请求画面',
+                                note='只读到字幕不等于看了画面。'))
         self._write(report_path,result)
         return self._with_comments(result,comments,source_path,args.get('comments',True))

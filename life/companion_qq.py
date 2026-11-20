@@ -13,6 +13,24 @@ import aiohttp
 from PIL import Image
 
 from .companion_media import MAX_BYTES, MAX_TOTAL, MIMES, _validate, save_images, wire_images
+# 「这次没读到什么」用 t11 的同一套分层原因，不在通道里另造词。
+from .companion_work import missing, visibility
+
+
+# 非文本段她看不到内容，但必须知道「这条是什么」：静默跳过等于把没看见说成没发生。
+# 只写类型，不带文件名、链接或任何内容——QQ 通道只收主人私聊，也不该把别人的东西带出来。
+SEGMENT_LABELS={'face':'表情','mface':'表情','marketface':'表情','bface':'表情','record':'语音',
+                'video':'视频','file':'文件','json':'卡片','xml':'卡片','markdown':'卡片',
+                'forward':'合并转发','node':'合并转发','reply':'引用回复','at':'@','share':'分享',
+                'contact':'名片','location':'位置','music':'音乐','poke':'戳一戳','dice':'骰子',
+                'rps':'猜拳','shake':'窗口抖动','image':'图片','text':'文字'}
+
+
+def segment_note(segment):
+    """一段非文本段 → 一句她能读的话。类型未知也说未知，不假装是文字。"""
+    kind=str((segment or {}).get('type') or '').strip()
+    label=SEGMENT_LABELS.get(kind) or ('未知类型（%s）' % (kind[:20] or '没有写类型'))
+    return '（这条是%s，我没有看到内容。）' % label
 
 
 def load_qq_settings(home):
@@ -72,6 +90,28 @@ class CompanionQQ:
     def _set(self,direction,identity,status):
         with self.repo.tx():self.repo._exec('UPDATE companion_qq_delivery SET status=?,updated=? WHERE agent=? AND direction=? AND id=?',
             (status,time.time(),self.agent,direction,str(identity)))
+
+    def _remember(self,identity,**extra):
+        """把「这条消息怎么了」写回它的记录：被忽略、失败、非文本段，都能事后查。"""
+        try:
+            row=self.repo._one('SELECT payload FROM companion_qq_delivery WHERE agent=? AND direction=? AND id=?',
+                               (self.agent,'in',str(identity)))
+            payload=json.loads(row['payload']) if row and row['payload'] else {}
+        except (TypeError,ValueError,KeyError,IndexError):payload={}
+        payload=dict(payload) if isinstance(payload,dict) else {}
+        for key,value in extra.items():
+            if value is None or value==[]:continue
+            payload[key]=value
+        with self.repo.tx():
+            self.repo._exec('UPDATE companion_qq_delivery SET payload=?,updated=? WHERE agent=? AND direction=? AND id=?',
+                (json.dumps(payload,ensure_ascii=False),time.time(),self.agent,'in',str(identity)))
+
+    def _ignore(self,identity,reason):
+        """被忽略的消息也留档：没有 status/reason 的「没发生」等于查不清。"""
+        gap=missing('这条消息的可读内容','unsupported',reason)
+        self._set('in',identity,'ignored')
+        self._remember(identity,reason=gap['detail'],gap=gap,status='ignored',
+                       visibility=visibility(not_obtained=[gap]))
 
     def emit(self,event):
         if self._closed or not self.config['enabled'] or event.get('type')!='message' or event.get('role')!='assistant' or not event.get('id'):return
@@ -138,10 +178,25 @@ class CompanionQQ:
         try:
             segments=event.get('message',[])
             if isinstance(segments,str):segments=[dict(type='text',data=dict(text=segments))]
-            text=''.join(str(s.get('data',{}).get('text','')) for s in segments if s.get('type')=='text')
-            images=[];total=0
+            if not isinstance(segments,list):segments=[]
+            text=''.join(str(s.get('data',{}).get('text','')) for s in segments
+                         if isinstance(s,dict) and s.get('type')=='text')
+            images=[];total=0;notes=[];kinds=[];gaps=[]
             for segment in segments:
-                if segment.get('type')!='image':continue
+                if not isinstance(segment,dict):continue
+                kind=str(segment.get('type') or '')
+                kinds.append(kind or 'unknown')
+                if kind!='image':
+                    # 表情/卡片/文件/语音这类她看不到内容，但必须知道收到过。
+                    # @ 只是指代谁，不是一段内容，单独标「没看到」会变成噪音。
+                    if kind not in {'text','at'}:
+                        note=segment_note(segment)
+                        if note not in notes:notes.append(note)
+                        label=SEGMENT_LABELS.get(kind) or '未知类型（%s）' % kind[:20]
+                        what='这条%s的内容' % label
+                        if not any(item.get('what')==what for item in gaps):
+                            gaps.append(missing(what,'unsupported','通道只取文字与图片，这段内容没有读到'))
+                    continue
                 if len(images)>=8:raise ValueError('too_many_images')
                 url=segment.get('data',{}).get('url','')
                 if urlsplit(url).scheme not in ('http','https'):raise ValueError('qq_image_url_missing')
@@ -155,15 +210,25 @@ class CompanionQQ:
                 with Image.open(io.BytesIO(raw)) as image:mime=MIMES.get(image.format)
                 _validate(raw,mime)
                 images.append(dict(name='qq-image',mime=mime,base64=base64.b64encode(raw).decode('ascii')))
-            if not text.strip() and not images:self._set('in',identity,'ignored');return
+            text=text.strip()
+            if notes:text=(text+'\n'+''.join(notes)).strip()
+            self._remember(identity,notes=notes,kinds=kinds,
+                           gaps=gaps,visibility=visibility(not_obtained=gaps))
+            if not text and not images:
+                self._ignore(identity,'这条消息里没有文字、图片或可识别的段落，没有交给她。')
+                return
             if getattr(self.core,'supports_message_routing',False):
                 await self.core.chat(text,images,source=dict(kind='qq',name='QQ'))
             else:await self.core.chat(text,images)
             self._set('in',identity,'received')
+            if notes:self._remember(identity,reason='非文本段没有内容，只在正文里标注了类型')
         except asyncio.CancelledError:
             self._set('in',identity,'unknown');raise
         except Exception as error:
             self._set('in',identity,'failed');self.error='incoming_'+type(error).__name__
+            gap=missing('这条消息','failed','接收失败：'+type(error).__name__)
+            self._remember(identity,reason=gap['detail'],gap=gap,
+                           visibility=visibility(not_obtained=[gap]))
 
     async def _send_loop(self):
         while not self._closed:

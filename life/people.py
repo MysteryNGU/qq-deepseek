@@ -61,7 +61,8 @@ class People:
                 "AND kind='message' AND source_kind='user_report' AND redacted_at IS NULL ORDER BY ingest_seq DESC LIMIT 40",(scope.agent_id,actor)):
             try:resource,_=self.life.life_access.load(ctx,row['id'],track=False)
             except RecallError:continue
-            found=self.life.life_recall.search(ctx,'',mode='text',exact_refs=[resource['resource_id']])
+            found=self.life.life_recall.search(ctx,'',mode='text',exact_refs=[resource['resource_id']],
+                include_cursor=False)
             return dict(source_ref=resource['resource_id'],readable=True,recall_found=any(r['resource_ref']==resource['resource_id'] for r in found['items']),
                 requires_hourly_summary=False)
         return dict(readable=None,reason='no_current_accessible_own_group_message')

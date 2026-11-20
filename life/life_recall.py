@@ -7,11 +7,79 @@ import hashlib
 import hmac
 import json
 import secrets
+import logging
 
 from .life_access import RecallError
 from .life_catalog import encode, sha
 from .resource_policy import estimate_tokens
 from .text import terms
+import os
+
+log = logging.getLogger(__name__)
+
+
+def _route_report(mode, coverage, reasons, items):
+    """Unified per-route report (amendment section 5 statistics contract).
+
+    status: skipped_mode / unavailable / success / partial.
+    timeout and error are recorded by the caller on the exception path, not invented here.
+    """
+    coverage = coverage or {}
+    reasons = reasons or {}
+    contributed = {}
+    returned = {}
+    for _ref, routes in reasons.items():
+        for route in (routes or ()):
+            contributed[route] = contributed.get(route, 0) + 1
+    for item in (items or ()):
+        for route in (item.get('match_routes') or ()):
+            returned[route] = returned.get(route, 0) + 1
+    report = {}
+    for route in ('text', 'semantic', 'related', 'exact'):
+        if route == 'exact':
+            attempted = bool(contributed.get('exact'))
+            state = 'success' if attempted else 'unavailable'
+        else:
+            state = coverage.get(route)
+            if state is None:
+                state = 'unavailable' if route == 'text' else 'skipped_mode'
+            attempted = state not in ('unavailable', 'skipped_mode')
+        report[route] = dict(attempted=bool(attempted), status=state,
+                             candidate_count=contributed.get(route, 0),
+                             returned_count=returned.get(route, 0))
+    report['mode'] = mode
+    return report
+
+
+_RECALL_MODES = ('auto', 'text', 'semantic', 'related')
+
+# Whether context() skips the paging cursor. Default on;
+# set RECALL_CONTEXT_CURSORLESS=0 to turn only this path off.
+CONTEXT_USE_CURSORLESS = os.environ.get('RECALL_CONTEXT_CURSORLESS', '1') != '0'
+
+
+def resolve_mode(mode=None, *, ignore_override=False):
+    """把一次召回请求的 mode 规范化成一个确定值。
+
+    优先级：环境变量 RECALL_MODE_OVERRIDE（生产 override）> 显式 mode > 'auto'。
+    search_async 和 search 都从这里取，保证"要不要生成 query vector"和
+    "实际走哪几条路线"用的是同一个值。此前前者看入口默认、后者看环境变量，会打架：
+    _prefetch_recall 显式传 mode='auto' 时，环境变量已改成 text，但向量照样算一遍。
+
+    ignore_override=True 只给测试和控制台用：显式绕过生产 override，
+    而不是靠传一个会被覆盖的 mode 去隐式绕过。
+    """
+    override = os.environ.get('RECALL_MODE_OVERRIDE') if not ignore_override else ''
+    if override:
+        if override in _RECALL_MODES:
+            if mode is not None and mode != override:
+                log.warning('召回 mode 被生产 override 改写：请求=%s 生效=%s', mode, override)
+            mode = override
+        else:
+            log.warning('忽略无法识别的 RECALL_MODE_OVERRIDE=%r', override)
+    if mode is None:
+        mode = 'auto'
+    return mode
 
 
 class LifeRecall:
@@ -123,22 +191,36 @@ class LifeRecall:
 
     async def search_async(self, ctx, query, **options):
         vector = None
-        mode = options.get('mode', 'auto')
+        # 2026-11-19：先解析出生效的 mode，再决定要不要算 query vector。
+        # 此前这里看的是入口默认值、而 search() 走环境变量，text 模式下会白算一次 embedding。
+        mode = resolve_mode(options.get('mode'),
+                            ignore_override=bool(options.pop('ignore_mode_override', False)))
+        options['mode'] = mode
         if mode in {'auto', 'semantic'} and self.index.adapter and not options.get('cursor'):
             try:
                 vector = await self.index.query_vector(ctx, query)
             except (RecallError, TimeoutError, ConnectionError):
                 pass
+        options['_mode_resolved'] = True
         return await asyncio.to_thread(self.search,ctx,query,query_vector=vector,**options)
 
-    def search(self, ctx, query='', *, mode='auto', budget=2400, limit=10, cursor=None,
+    def search(self, ctx, query='', *, mode=None, budget=2400, limit=10, cursor=None,
                actor_refs=(), entity_refs=(), time_range=None, exact_refs=(), query_vector=None, exclude=(),
-               intent='auto', diagnostics=False):
+               intent='auto', diagnostics=False, include_cursor=True, _mode_resolved=False):
+        # 2026-11-19：mode 解析集中到 resolve_mode()，与 search_async 共用同一个入口，
+        # 避免"算不算向量"和"走哪几条路线"读到不同值。
+        # _mode_resolved=True 表示上层（search_async）已经解析过并包含诊断绕过标志，
+        # 这里不能再解析一次——否则环境变量二次覆盖，ignore_mode_override 就失效。
+        if not _mode_resolved:
+            mode = resolve_mode(mode)
         if (not isinstance(query, str) or len(query) > 2000 or mode not in {'auto', 'text', 'semantic', 'related'}
                 or type(budget) is not int or not 0 <= budget <= 32000
                 or type(limit) is not int or not 1 <= limit <= 40):
             raise RecallError('invalid_input')
         if intent not in {'auto', 'facts', 'recent', 'history'} or type(diagnostics) is not bool:
+            raise RecallError('invalid_input')
+        # 修订版 §4：非分页路径不接受 cursor——它不生成游标，也没有可续的页。
+        if not include_cursor and cursor:
             raise RecallError('invalid_input')
         self.access.require_binding(ctx)
         signature = sha(encode([query, mode, list(actor_refs), list(entity_refs), time_range, list(exact_refs), list(exclude), intent, diagnostics]))
@@ -185,7 +267,13 @@ class LifeRecall:
                 if hits or not query:
                     lexical[ref] = hits
             text_route = sorted(lexical, key=lambda ref: (-lexical[ref], -by_id[ref]['occurred_at'], ref))[:self.index.config.route_limit]
-            semantic, coverage['semantic'] = self.index.search_vectors(allowed, query_vector)
+            # 2026-11-23（修订版 §5）：只有这次真的算出了 query vector 才查向量。
+            # 否则显式跳过：不调用、不发 SQL，status 记 skipped_mode 而不是 unavailable——
+            # unavailable 的语义是"走向量了但后端不可用"，把这个模式的选择记成故障会污染统计。
+            if query_vector is not None:
+                semantic, coverage['semantic'] = self.index.search_vectors(allowed, query_vector)
+            else:
+                semantic, coverage['semantic'] = [], 'skipped_mode'
             if candidate_refs is not None and coverage['semantic']=='ready':
                 omitted=self.repo._one('SELECT 1 FROM life_resources WHERE agent_id=? AND rowid<=? '
                     'AND resource_id NOT IN (SELECT value FROM json_each(?)) LIMIT 1',
@@ -221,7 +309,12 @@ class LifeRecall:
             versions = {ref: by_id[ref]['source_version'] for ref in ranked}
         items, remaining, covered = [], [], set(previous_coverage)
         for pos, ref in enumerate(ranked):
-            resource, body = self.access.load(ctx, ref, versions[ref])
+            # 2026-11-20：把本轮扫描的 memo 一起传下去。此前这里不带 _cache，
+            # load → allowed → _dependencies → catalog.live 会重新递归整条依赖链，
+            # 每次都重跑 _describe（其中有两处 DB 查询）。实测 context('热液')
+            # 2630 次 live() 里 83% 不带缓存；传下去后 1355ms → 521ms。
+            # 安全性已逐条验证：17291 条资源 × audience/internal，allowed 结果完全一致。
+            resource, body = self.access.load(ctx, ref, versions[ref], _cache=scan_cache)
             # Root evidence overlap is only compressed if a valid summary
             # explicitly declares that source covered (not merely in its range).
             if ref in covered and not exact_refs:
@@ -250,15 +343,29 @@ class LifeRecall:
             raise RecallError('stale_source')
         def packet():
             pending = [ref for ref in remaining if ref not in covered]
-            next_cursor = self._cursor(ctx,'recall',query=signature,ranked=pending,
-                versions={r:versions[r] for r in pending},coverage=coverage,high_water=high_water,
-                covered=sorted(covered),reasons={r:reasons.get(r, []) for r in pending},
-                index_version=[self.index.model_key,self.index.chunker_version]) if pending else None
+            # include_cursor=False: do not build the paging cursor. The empty-result
+            # skeleton measures 1154 tokens and almost all of it is this signed
+            # base64 cursor; callers that only want text must not pay for it.
+            next_cursor = None
+            if include_cursor and pending:
+                next_cursor = self._cursor(ctx,'recall',query=signature,ranked=pending,
+                    versions={r:versions[r] for r in pending},coverage=coverage,high_water=high_water,
+                    covered=sorted(covered),reasons={r:reasons.get(r, []) for r in pending},
+                    index_version=[self.index.model_key,self.index.chunker_version])
             result=dict(items=items,coverage=coverage,next_cursor=next_cursor,has_more=bool(pending),budget_truncated=bool(pending))
             if diagnostics:
                 result['diagnostics'] = dict(intent=intent, returned=len(items), remaining=len(pending),
                     visibility='current_audience_only', empty_reason='no_visible_match' if not ranked else None,
-                    history='superseded_records_require_exact_source_read')
+                    history='superseded_records_require_exact_source_read',
+                    # 2026-11-19 (design section 5): expose per-route counts for the recall record.
+                    # Additive only; contains no query text and no private body.
+                    mode=mode, candidates=len(ranked), authorized=len(ranked),
+                    # Legacy keys kept for compatibility, but their meaning differs:
+                    # route_counts maps resource_ref -> number of routes that matched it.
+                    route_counts={k: len(v) for k, v in (reasons or {}).items()},
+                    route_status=dict(coverage),
+                    # Amendment section 5: one unified per-route object.
+                    routes=_route_report(mode, coverage, reasons, items))
             result['estimated_tokens']=estimate_tokens(result)+20
             return result
         result=packet()
@@ -370,7 +477,10 @@ class LifeRecall:
             return ''
         ctx = self.access.bind(scope)
         try:
-            packet = self.search(ctx, ' '.join(cues), budget=max(0, budget), exclude=exclude)
+            # Text only: do not pay for the paging cursor (see search's include_cursor).
+            # RECALL_CONTEXT_CURSORLESS=0 restores the old path without reverting code.
+            packet = self.search(ctx, ' '.join(cues), budget=max(0, budget), exclude=exclude,
+                                 include_cursor=CONTEXT_USE_CURSORLESS)
         except RecallError as error:
             if error.code in {'budget_requires_page','stale_source','not_available'}:
                 return ''

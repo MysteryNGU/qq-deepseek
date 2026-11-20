@@ -8,10 +8,32 @@ try:
     import httpx2
 except ImportError:
     httpx2 = httpx
+from . import providers
 from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, Timeout, DefaultAsyncHttpxClient
 from jsonschema import Draft7Validator
 
-MAX_OUTPUT_TOKENS = 2048
+# 2026-11-18：上游 deepseek-v4.1-flash 支持 384,000 输出；2,048 会让长文档、
+# 表格、代码补丁被截断（finish_reason=length）。放宽到 16,000，仍留足余量。
+MAX_OUTPUT_TOKENS = 16000
+
+# 按 purpose 给不同的输出额度。2026-11-18 实测（全库 output_tokens 分布）：
+#   dialogue      n=747   p50=389   p90=654   p99=1240
+#   activity      n=1596  p50=687   p90=927   p99=1753
+#   work          n=913   p50=816   p90=1187  p99=4739   ← 唯一长尾的
+#   town          n=542   p50=57    p90=118   p99=195
+#   bilibili_read n=168   p50=479   p90=793   p99=971
+# 只有 work 的 p99 到了 4739，且今天它多次撞到上限；其余用途 p99 都远低于 16000，
+# 跟着一起涨只是浪费额度。所以只给 work 更大的池子。
+#
+# 注意：这治标不治本。thinking 模型的 reasoning token 和正式内容**共用一个池子**，
+# 撞墙的本质是「一个池子被两件事用」。2048 时代同样撞（今天 16:14~16:42 有 9 条
+# 精确等于 2048），所以单纯加钱只是把撞墙时机推后。
+OUTPUT_TOKENS_BY_PURPOSE = {'work': 32000}
+
+
+def output_tokens_for(purpose):
+    """这一轮该给多少输出额度。没列出的用途用默认值。"""
+    return OUTPUT_TOKENS_BY_PURPOSE.get(str(purpose or ''), MAX_OUTPUT_TOKENS)
 
 
 def strict_schema(value):
@@ -61,30 +83,66 @@ class DirectModel:
         started = time.monotonic()
         attempts = 0
         try:
-            official = urlsplit(self.cfg.base_url).hostname == 'api.deepseek.com'
-            strict = official and schema is not None
+            # 全部差异都来自服务商档案（life/providers.py），不在这里分叉判断。
+            # t22 的教训：把「是不是官方」当成「能不能走 strict」，
+            # 结果 opencode-go 被降级成纯文字约束，一轮里 19 次没有可解析的 JSON。
+            provider_id, _why = providers.resolve(self.cfg)
+            profile = providers.get(provider_id) if provider_id else None
+            if profile is None:
+                # 认不出服务商时按「不特殊照顾」处理：用配置里的 base_url，
+                # 不假设它支持 tools（宁可退回 json_mode 也不要发一个它不认识的字段）。
+                profile = dict(base_url=self.cfg.base_url, beta_endpoint=None,
+                               trust_env=True, thinking_param=False,
+                               session_header=None, supports_tools=False)
+            official = profile.get('beta_endpoint') is not None
+            supports_tools = profile.get('supports_tools', False)
+            # 配置可覆盖档案（换到「档案说支持、实际不支持」的端点时用）
+            override = getattr(self.cfg, 'model_supports_tools', None)
+            if override is not None:
+                supports_tools = bool(override)
+            strict = schema is not None and supports_tools
             attribute = 'strict_client' if strict else 'client'
             client = getattr(self, attribute)
             if client is None:
-                endpoint = 'https://api.deepseek.com/beta' if strict else self.cfg.base_url
+                # /beta 只有 DeepSeek 官方有；别的服务商拿到它会 404。
+                endpoint = (profile['beta_endpoint']
+                            if (official and strict) else profile['base_url'])
                 # Windows registry proxies are inherited even without proxy env
                 # variables. The official endpoint is directly reachable here;
                 # its inherited local tunnel intermittently fails TLS handshakes.
-                transport = dict(http_client=DefaultAsyncHttpxClient(trust_env=False)) if official else {}
+                transport = (dict(http_client=DefaultAsyncHttpxClient(trust_env=False))
+                             if not profile.get('trust_env', True) else {})
+                # opencode-go 之类的中转要求 x-opencode-session 才会路由，
+                # 缺了直接 400（2026-11-18 实测）。用稳定的进程级 id，不随请求变，
+                # 免得每一轮都被当成新的会话、丢掉上游的缓存命中。
+                headers = {}
+                session_header = profile.get('session_header')
+                if session_header:
+                    headers[session_header] = 'xiaoyu-' + str(getattr(self.cfg, 'life_agent', '') or 'companion')
                 client = AsyncOpenAI(api_key=self.cfg.api_key, base_url=endpoint,
                                           max_retries=0,
                                           timeout=Timeout(getattr(self.cfg, 'dsh_timeout', 180), connect=15),
+                                          default_headers=headers or None,
                                           **transport)
                 setattr(self, attribute, client)
-            request = dict(model=self.cfg.model, messages=messages, max_tokens=MAX_OUTPUT_TOKENS)
-            if official:
+            request = dict(model=self.cfg.model, messages=messages,
+                           max_tokens=output_tokens_for(purpose))
+            if profile.get('thinking_param'):
                 request['extra_body'] = dict(thinking=dict(type='disabled'))
             if strict:
                 request['tools'] = [dict(type='function', function=dict(name='respond', strict=True,
                     description='Submit the complete companion decision.', parameters=strict_schema(schema)))]
-                request['tool_choice'] = dict(type='function', function=dict(name='respond'))
+                # 有的网关（腾讯 TokenPlan 实测）不接受「指定函数对象」形式的 tool_choice，
+                # 传 auto 才会返回 tool_calls；档案里写 tool_choice='auto' 的走这条路。
+                if profile.get('tool_choice') == 'auto':
+                    request['tool_choice'] = 'auto'
+                else:
+                    request['tool_choice'] = dict(type='function', function=dict(name='respond'))
             elif json_mode or schema is not None:
-                request['response_format'] = dict(type='json_object')
+                # 有的网关不支持 response_format（腾讯 TokenPlan 实测 400）；
+                # 档案里 json_mode=False 时不发这个字段，只靠系统提示约束 JSON。
+                if profile.get('json_mode', True):
+                    request['response_format'] = dict(type='json_object')
                 if schema is not None:
                     request['messages'] = [*messages, dict(role='system',content=
                         'Return one complete JSON object following this schema: '+json.dumps(schema,ensure_ascii=False))]
@@ -102,12 +160,35 @@ class DirectModel:
             if strict:
                 calls = message.get('tool_calls') or []
                 # 名字只是载体：模型偶尔把 kind 当成工具名（memory/actions），
-                # 但参数里装的就是完整决定。只认 respond 会把能用的一轮整条作废，
-                # 所以接受任何一个带 JSON 参数的单个调用，违规仍然照报。
-                if len(calls) == 1 and (calls[0].get('function') or {}).get('arguments'):
-                    message['content'] = calls[0]['function'].get('arguments')
-                    if calls[0]['function'].get('name') != 'respond':
-                        wire_error = 'tool name is %r, not respond' % calls[0]['function'].get('name')
+                # 但参数里装的就是完整决定。只认 respond 会把能用的一轮整条作废。
+                #
+                # 多个调用：取**第一个 arguments 能解析成 JSON 的**。
+                # 设计意图是「拿到一份合法的完整决定」，不是「必须恰好一个 respond」；
+                # 第二个及以后只是重复，为它们丢掉整轮没有道理。
+                # 但**不许静默容忍**：把选中的下标与被丢弃的一并记下来，由上层写审计。
+                picked = None
+                if len(calls) >= 1:
+                    for index, call in enumerate(calls):
+                        arguments = (call.get('function') or {}).get('arguments')
+                        if not arguments:
+                            continue
+                        try:
+                            json.loads(arguments)
+                        except (TypeError, ValueError):
+                            continue          # 这一份不是合法 JSON，看下一份
+                        picked = (index, call)
+                        break
+                if picked is not None:
+                    chosen_index, chosen = picked
+                    message['content'] = chosen['function'].get('arguments')
+                    if chosen['function'].get('name') != 'respond':
+                        wire_error = 'tool name is %r, not respond' % chosen['function'].get('name')
+                    if len(calls) > 1:
+                        # 不是错误，是事实：让上层知道这轮是从几个调用里挑的。
+                        message['tool_call_pick'] = dict(
+                            total=len(calls), chosen_index=chosen_index,
+                            names=[(c.get('function') or {}).get('name') for c in calls])
+                    calls = [chosen]         # 后面的校验只看选中的那份
                     try:
                         value = json.loads(message['content'])
                         if (isinstance(value, dict) and 'reply' not in value

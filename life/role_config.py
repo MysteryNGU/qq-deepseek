@@ -23,8 +23,15 @@ class Config:
     bot_qq: int = 0  # Optional expected OneBot account; managed characters require it.
     ws_token: str = ''
     api_key: str = ''
+    # 服务商 id（见 life/providers.py）。留空则按 base_url 前缀自动识别。
+    # 新配置只需要这三样：provider / api_key / model。
+    provider: str = ''
     base_url: str = 'https://api.deepseek.com'
     model: str = 'deepseek-flash'
+    # 这个模型/端点支不支持 tools（function calling）。
+    # None = 按默认（支持）。只有换到不支持工具调用的端点时才需要显式设 false，
+    # 那时 strict 路径会退回 json_mode（纯 prompt 约束），行为与改造前一致。
+    model_supports_tools: bool | None = None
     owner: int = 0
     friends: list[int] = field(default_factory=list)
     known_people: dict[str,int] = field(default_factory=dict)

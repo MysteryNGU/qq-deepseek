@@ -50,7 +50,74 @@ class Lookup:
                         output='memory 的 op 支持 search/read，收到的是 %s' % op)
         if op == 'read':
             return self._read(fields)
+        # scope='errors' 才去翻失败记录。默认不搜——否则每次检索都掺进一堆报错噪音，
+        # 正常回查就没法用了。失败记录单独一条通道，是有意为之。
+        if str(fields.get('scope') or '').strip().lower() in ('errors', 'error'):
+            return self._search_errors(fields)
         return self._search(fields, str(action.get('goal') or ''))
+
+    def _search_errors(self, fields):
+        """查失败记录（companion_activity 里 type='error'）。
+
+        2026-11-18：这些记录一直存在、reason 也写得挺细，但 memory 只查
+        companion_actions，所以她**在工具层面完全读不到**——
+        不是没记，是没给入口。
+        """
+        query = str(fields.get('query') or '').strip()
+        try:
+            limit = int(fields.get('limit') or SEARCH_LIMIT)
+        except (TypeError, ValueError):
+            limit = SEARCH_LIMIT
+        limit = max(1, min(limit, MAX_SEARCH_LIMIT))
+        terms = [part for part in re.split(r'[\s,，、;；]+', query) if part][:4]
+        clauses, args = '', [self.agent_id]
+        if terms:
+            clauses = ' AND ' + ' AND '.join('(text LIKE ? OR details LIKE ?)' for _ in terms)
+            for term in terms:
+                like = '%' + term.replace('%', '').replace('_', '') + '%'
+                args.extend([like, like])
+        args.append(limit)
+        rows = self.repo._all(
+            "SELECT created, text, details FROM companion_activity "
+            "WHERE agent=? AND type='error'" + clauses +
+            ' ORDER BY created DESC LIMIT ?', tuple(args))
+        found = []
+        for row in rows:
+            try:
+                details = json.loads(row['details'] or '{}')
+            except (TypeError, ValueError):
+                details = {}
+            reason = str(details.get('reason') or '')
+            if not reason:
+                # 说清"这条没记原因"，而不是留白让她以为查不到
+                error = details.get('error')
+                if error:
+                    location = details.get('location') or []
+                    where = ''
+                    if isinstance(location, list) and location:
+                        where = ' @ %s:%s' % (location[0].get('function'), location[0].get('line'))
+                    reason = '%s%s' % (error, where)
+                else:
+                    reason = '这条记录没有写原因（当时没记）'
+            found.append(dict(
+                id='error@%s' % int(row['created']),
+                at=time.strftime('%m-%d %H:%M', time.localtime(row['created'])),
+                source='error_record',
+                text=str(row['text'] or '')[:120],
+                reason=reason[:400]))
+        if not found:
+            hint = ('没有匹配「%s」的失败记录。' % query) if query else '这段时间没有失败记录。'
+            return dict(status='completed', op='search', scope='errors',
+                        query=query, results=[], count=0, output=hint,
+                        evidence_scope='error_records',
+                        evidence_note='这是失败记录的原始条目，不是判断。')
+        lines = ['%s｜%s｜%s' % (item['at'], item['text'], item['reason'][:110])
+                 for item in found]
+        return dict(status='completed', op='search', scope='errors', query=query,
+                    count=len(found), results=found,
+                    evidence_scope='error_records',
+                    evidence_note='这是失败记录的原始条目，不是判断。',
+                    output='找到 %d 条失败记录：\n%s' % (len(found), '\n'.join(lines)))
 
     def _row_view(self, row):
         action = json.loads(row['action'] or '{}')
@@ -116,11 +183,15 @@ class Lookup:
         if not found:
             hint = ('没有匹配「%s」的动作。换个词，或者不带 query 看最近几条。' % query) if query \
                 else '这个账号还没有任何动作记录。'
-            return dict(status='failed', op='search', query=query, results=[], output=hint)
+            # 没搜到不是故障：记 completed + found=False，让台账和回查都读到
+            # 「查过了、确实没有」，而不是「这条动作失败了」（2026-11-19）。
+            return dict(status='completed', found=False, op='search', query=query,
+                        count=0, results=[], evidence_scope='stored_index',
+                        output=hint)
         lines = ['%s %s %s｜%s｜%s' % (item['at'], item['kind'], item['status'],
                                        item['goal'] or '（无目标）', item['summary'])
                  for item in found]
-        return dict(status='completed', op='search', query=query, count=len(found),
+        return dict(status='completed', found=True, op='search', query=query, count=len(found),
                     results=found, evidence_scope='stored_index',
                     evidence_note='这是检索到的目录，不是原文；要原文用 op=read 加 id。',
                     output='找到 %d 条：\n%s' % (len(found), '\n'.join(lines)))
@@ -158,7 +229,8 @@ class Lookup:
                               'FROM companion_town_delegations WHERE id=? AND scope LIKE ?',
                               (identity, self.agent_id + '|town:%'))
         if not row and not town:
-            return dict(status='failed', op='read', id=identity,
+            # 同理：id 不存在是「没有」，不是「操作失败」。
+            return dict(status='completed', found=False, op='read', id=identity,
                         output='没有这个动作 id：%s。用 op=search 找一个真实的 id。' % identity)
         action = json.loads((row['action'] if row else '') or '{}')
         result = json.loads((row['result'] if row else '') or '{}') or {}
@@ -183,10 +255,34 @@ class Lookup:
                         output='这条动作没有存下可读内容（' + str(kind or '?') + '，'
                                + str(saved_status) + '）。可能是当时没跑完，或者回执本身就是空的；'
                                '换一条 id，不要凭它推结论。')
+        # 2026-11-20：agent 类动作的核验结论存两处——
+        #   result.verification 是**写入时的快照**（可能停在 pending，永远不动）
+        #   companion_agent_tasks.verification 是**当前值**（backfill 后会变）
+        # 她读回执时只看到快照，会说"还在验证中"——那不是真话。
+        # 两个都摆出来：快照是历史事实，台账是当前事实，不说哪个是错的。
+        verification_then = result.get('verification')
+        verification_now = None
+        if kind == 'agent' and result.get('agent_id'):
+            try:
+                current = self.repo._one(
+                    'SELECT verification FROM companion_agent_tasks WHERE id=?',
+                    (result['agent_id'],))
+                verification_now = current['verification'] if current else None
+            except Exception:
+                verification_now = None
+        if verification_now and verification_then and verification_now != verification_then:
+            text = (str(text or '')
+                    + '\n\n（核验结论：回执当时写的是 %s；台账当前是 %s。'
+                      '回执是那一刻的结论，台账会随核验更新——以台账为准。）'
+                      % (verification_then, verification_now))
         return dict(status='completed', op='read', id=identity, at=time.strftime('%m-%d %H:%M', at),
                     action_kind=kind, goal=goal,
                     target=action.get('arguments') or action.get('command') or '',
                     saved_status=saved_status, project=project,
+                    verification_then=verification_then,
+                    verification_now=verification_now,
+                    verification_stale=(bool(verification_now and verification_then
+                                             and verification_now != verification_then)),
                     output_path=result.get('output_path') or result.get('source_path'),
                     text=text, output=text, complete=len(text) < limit,
                     evidence_scope='stored_output',

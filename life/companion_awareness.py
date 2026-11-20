@@ -77,6 +77,66 @@ def _parse(value):
     return float(value) if value > 0 else None
 
 
+def failure_summary(core, *, hours=24):
+    """最近 N 小时的失败记录汇总：数量、分类、怎么查。
+
+    2026-11-18：这些记录一直写进库，但 memory 只查动作表，她读不到——
+    不是没记，是没入口。这里只把「有多少、都是哪类」摆出来，
+    具体原因让她自己用 memory op=search scope='errors' 去查。
+
+    刻意不说"这很严重"：分类是"哪种毛病"，严重程度由她判断。
+    """
+    import json as _json
+    import re as _re
+    import time as _time
+    repo = getattr(core, 'repo', None)
+    if repo is None:
+        return None
+    agent = getattr(getattr(core, 'life', None), 'agent_id', '')
+    since = _time.time() - hours * 3600
+    rows = repo._all(
+        "SELECT created, text, details FROM companion_activity "
+        "WHERE agent=? AND type='error' AND created >= ? ORDER BY created DESC LIMIT 400",
+        (agent, since))
+
+    groups = {}
+    for row in rows:
+        try:
+            details = _json.loads(row['details'] or '{}')
+        except (TypeError, ValueError):
+            details = {}
+        reason = str(details.get('reason') or '')
+        error = details.get('error') or ''
+        if error:
+            location = details.get('location') or []
+            where = ''
+            if isinstance(location, list) and location:
+                where = ' @%s:%s' % (location[0].get('function'), location[0].get('line'))
+            key = '%s%s' % (error, where)
+        elif reason:
+            first = reason.split('\n')[0][:80]
+            key = _re.sub(r"'[a-z_]{3,40}'", '<字段>', first).strip()
+            # 「回填写于修复之前，原因当时没记」是「这条没记原因」的一种，
+            # 不是另一类（§0.12：两个不同的东西被当成同一个 —— 反过来也不行）。
+            if '当时没有记录' in key:
+                key = '（这条没记原因）'
+        else:
+            key = '（这条没记原因）'
+        groups[key] = groups.get(key, 0) + 1
+
+    total = len(rows)
+    if not total:
+        return dict(hours=hours, total=0,
+                    note='最近 %d 小时没有失败记录。这是事实，不是"没查"。' % hours,
+                    how_to_look="要看更早的：memory op=search scope='errors'")
+    ordered = sorted(groups.items(), key=lambda item: -item[1])
+    return dict(hours=hours, total=total,
+                groups=[dict(reason=key, count=count) for key, count in ordered[:8]],
+                more=max(0, len(ordered) - 8),
+                note='这是最近 %d 小时的失败记录条数与分类。分类是"哪种毛病"，不是"有多严重"。' % hours,
+                how_to_look="具体原因：memory op=search scope='errors'，可带 query 过滤。")
+
+
 def _section(name, errors, fn, default=None):
     """单段失败只让这一段未知，并留下可定位的记录，不吞掉整份投影。"""
     try:
@@ -249,6 +309,75 @@ def _self_agent(core):
                 observed_at=_stamp(time.time()))
 
 
+def _usage_summary(core, *, hours=24):
+    """最近 N 小时实际送进请求体的 token 量，以及这一轮的占用。
+
+    2026-11-18：companion_context_loads 一直有数据（全库 1778 条），
+    但 awareness 里零命中——她问「这轮吃了多少上下文」只能猜。
+    这里给数字，不给判断。
+    """
+    repo = getattr(core, 'repo', None)
+    if repo is None:
+        return None
+    since = time.time() - hours * 3600
+    agent = getattr(getattr(core, 'life', None), 'agent_id', '')
+    try:
+        row = repo._one(
+            "SELECT COUNT(*) n, SUM(request_tokens) s, MAX(request_tokens) mx "
+            "FROM companion_context_loads WHERE agent_id=? AND at>=?", (agent, since))
+        last = repo._one(
+            "SELECT request_tokens, at FROM companion_context_loads "
+            "WHERE agent_id=? ORDER BY at DESC LIMIT 1", (agent,))
+        used = repo._one(
+            "SELECT COUNT(*) n FROM companion_usage WHERE agent=? AND created>=?",
+            (agent, since))
+    except Exception:
+        return None
+    return dict(
+        hours=hours,
+        rounds=row['n'] or 0,
+        request_tokens_total=row['s'] or 0,
+        request_tokens_max=row['mx'] or 0,
+        last_round_tokens=last['request_tokens'] if last else None,
+        last_round_at=_stamp(last['at']) if last else None,
+        model_calls=used['n'] if used else 0,
+        note='这些是实际送进请求体的 token 数；请求上限见 _last_material.request_ceiling。',
+        source_ref='life.db#companion_context_loads')
+
+
+def _provider_choices(core):
+    """当前用的是哪家、还有哪些可选。
+
+    2026-11-18：providers.catalog() 一直有 7 家，但只挂 /rpc，
+    她本人查不到「换的话能换成什么」。
+    """
+    cfg = getattr(core, 'cfg', None)
+    try:
+        from . import providers as _p
+        catalogue = _p.catalog()
+    except Exception:
+        catalogue = []
+    choices = []
+    for item in catalogue or []:
+        if not isinstance(item, dict):
+            continue
+        choices.append(dict(
+            id=item.get('id'), label=item.get('label'),
+            models=list(item.get('models') or [])[:6],
+            has_models=bool(item.get('has_models')),
+            needs_manual_model=bool(item.get('needs_manual_model')),
+            supports_tools=bool(item.get('supports_tools'))))
+    return dict(
+        current_provider=getattr(cfg, 'provider', None) or None,
+        current_model=getattr(cfg, 'model', None) or None,
+        current_base_url=getattr(cfg, 'base_url', None) or None,
+        available=choices,
+        note=('needs_manual_model=True 表示这家不给模型列表，得自己写模型名；'
+              'supports_tools=False 表示它不支持工具调用，走 JSON 模式。'),
+        observed_at=_stamp(time.time()),
+        source_ref='life/providers.py#catalog')
+
+
 def _runtime(core, state):
     home = getattr(core, 'home', None)
     available = state.get('available_actions')
@@ -259,7 +388,14 @@ def _runtime(core, state):
         spending_mode=spending_mode(getattr(getattr(core, 'spending', None), 'policy', None)),
         # 进程事实：启动时间与跨重启寿命；不是她「醒来」的时间。
         process_started_at=_stamp(getattr(core, 'process_started_at', None)),
+        # 这一进程跑了多久（秒）。重启史 = 它和 process_started_at 一起看。
+        process_uptime_seconds=(
+            round(time.time() - float(core.process_started_at), 1)
+            if getattr(core, 'process_started_at', None) else None),
         started_at=_stamp(getattr(core, 'started_at', None)),
+        # 上次进程是什么时候、停得对不对：只有存在 state 里才有，没有就是 None。
+        last_shutdown_at=_stamp((state or {}).get('last_shutdown_at')
+                                or (core._state('last_shutdown_at') if hasattr(core, '_state') else None)),
         autonomy_active=bool(getattr(core, 'active', True)),
         observed_at=_stamp(time.time()),
         source_ref='life/companion.py#Companion.__init__',
@@ -832,13 +968,23 @@ def capabilities(core, state=None, *, now=None):
     # 以前这里看「执行器报没报可用动作」，所以生产上没有 QQ 连接进程时
     # channel.qq 依旧 ready——那条判据与 QQ 登录毫无关系。
     facts = _channel_facts(core, getattr(core, 'cfg', None))
+    # **键必须是 status 用词**（ready/needs_setup/offline/unknown），不是旧的
+    # 通道状态词（connected/disabled/...）。以前这里用旧词查、用新词判，
+    # 两套词一旦不一致：status 说 needs_setup，reason 却落到「状态未知」，
+    # 更糟的是 `disabled` 的文案会盖到 offline 上。生产数据下碰巧对，换个状态就错。
     channel_reason = {
-        'connected': None,
+        'ready': None,
+        'needs_setup': '通道还没有配好或没登录，现在发不出去。',
+        'offline': '通道配过，但现在的连接不在了。',
+        'unknown': '连不上通道自己，拿不到登录状态；这是不知道，不是不在线。',
+        'unsupported': '这台机器上不支持这个通道。',
+    }
+    # 旧状态词 → 新状态词，只用于把 reason 说得更具体（不改判定）。
+    detail_by_state = {
         'disabled': '通道被关闭了（配置里 enabled=false），不是掉线，是主动关的。',
         'unconfigured': '还没有配置过这个通道。',
         'login_required': '配置好了但还没登录成功，需要重新扫码/登录。',
         'disconnected': '登录过，但现在的连接不在了。',
-        'unknown': '连不上通道自己，拿不到登录状态；这是不知道，不是不在线。',
     }
     for channel in ('qq', 'wechat'):
         fact = facts.get(channel) or {}
@@ -851,7 +997,11 @@ def capabilities(core, state=None, *, now=None):
         status_ = str(world_fact.get('state') or 'unknown')
         item = _capability(
             'channel.' + channel, 'channel', '消息通道：' + channel, status_,
-            reason=None if state_ == 'connected' else channel_reason.get(state_, '状态未知。'),
+            # reason 按 **status_** 取（和 status 同一个词），再用旧状态词补充细节。
+            # 两者永远指向同一件事——判定用什么词，解释就用什么词。
+            reason=(None if status_ == 'ready' else
+                    (detail_by_state.get(state_) or channel_reason.get(status_)
+                     or '状态未知。')),
             evidence=['self.account:' + state_], checked_at=fact.get('observed_at') or checked,
             schema_ref='life/companion_im.py#ImManager')
         item['source_ref'] = fact.get('source_ref')
@@ -876,6 +1026,18 @@ def capabilities(core, state=None, *, now=None):
                      or _capability('guard.watchdog', 'guard', '改坏源码时的自动回滚',
                                     'unknown', reason='读不到守护服务的状态，不知道它管不管事。',
                                     checked_at=checked, schema_ref='ops/companion-watchdog.py'))
+    # 浏览器：云端还没有接上浏览器宿主（desktop 的 browser kind 到不了这台机器），
+    # 但**不能隐藏**——隐藏就等于她不知道有这条路。先如实写 needs_setup 和替代做法，
+    # 接通后再让它跟着执行器事实走（见 life/companion_browser_adapter.py 的部署约束）。
+    browser = _capability('action.browser', 'action', '打开网页、按真实工具名调用页面操作',
+                          'needs_setup',
+                          reason='云端还没接浏览器宿主：evolution-computer-use 只在桌面端跑；'
+                                 '现在取网页用 web 动作（op=search/open/read_more），页面交互还做不了。',
+                          checked_at=checked, schema_ref='life/companion.py#DECISION.actions')
+    browser['what'] = 'browser 有 op=tools（先查真实工具名）和 op=call（arguments 里带 tool）；接通后可做点击/输入/翻页。'
+    browser['how_ref'] = 'life/companion.py#DECISION.actions'
+    browser['dispatchable'] = False
+    catalogue.append(browser)
     # 最后归一：**每条都带 dispatchable 键**，免得下游被「缺键」当成未知（t5 提的第三条）。
     # 取值的语义必须互斥、不能靠 falsy 一锅端（t5 留给 t7 的那条）：
     #   True  → 在清单里，派活会被接收
@@ -1069,37 +1231,72 @@ def capability_summary(catalogue):
                      '不是不存在，完整原因用 memory op=capabilities 读。')
 
 
+def _agent_id_in_arguments(action):
+    """从 agent 动作的参数里取 agent_id；取不到返回 None，不猜。"""
+    raw = action.get('arguments')
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    value = str(raw.get('agent_id') or '').strip()
+    return value or None
+
+
 def _agent_tasks(core, observation, now):
     """活动任务与新结果：只认持久台账里的真实状态，不认模型的乐观说法。"""
     agent_id = getattr(getattr(core, 'life', None), 'agent_id', None)
     if not agent_id:
         return []
+    # 阶段要能分开说：pending=写了动作还没派，queued=已派出待认领，running=正在执行。
+    # 2026-11-18：原来只查 pending/running，queued 落在缝里，她看不到"已派出还没开始"。
     rows = core.repo._all(
         "SELECT id,project_ref,action,status,updated FROM companion_actions "
-        "WHERE agent=? AND status IN ('pending','running') ORDER BY updated DESC LIMIT 5", (agent_id,))
+        "WHERE agent=? AND status IN ('pending','queued','running') "
+        "ORDER BY updated DESC LIMIT 8", (agent_id,))
     project = (observation or {}).get('project') or (observation or {}).get('settled_project_ref')
     rows = list(rows)
     if project:
         rows = sorted(rows, key=lambda row: 0 if row['project_ref'] == project else 1)
+    # 去重按 action id，不按项目：同一个项目里可以同时有几条在途动作，
+    # 按项目去重会让除第一条外的全部消失（2026-11-18 实测：三条只用一条可见）。
     seen = set()
     out = []
     for row in rows:
-        if row['project_ref'] in seen:
+        if row['id'] in seen:
             continue
-        seen.add(row['project_ref'])
+        seen.add(row['id'])
         action = json.loads(row['action'] or '{}')
         count = core.repo._one(
             "SELECT COUNT(*) AS n FROM companion_activity WHERE agent=? AND type='action_result' "
             "AND json_extract(details,'$.project_ref')=? AND created>?",
             (agent_id, row['project_ref'], float(row['updated'] or 0))) or {}
+        stage = {'pending': 'written', 'queued': 'dispatched',
+                 'running': 'running'}.get(row['status'], row['status'])
+        # 2026-11-20：agent 类动作的核验结论存两处，回执是快照、台账是当前值。
+        # 只给快照会让她说"还在验证中"——那是旧话。两个都摆，标明哪个是当前。
+        verification_now, agent_did = None, None
+        if action.get('kind') == 'agent':
+            agent_did = _agent_id_in_arguments(action)
+            if agent_did:
+                try:
+                    current = core.repo._one(
+                        "SELECT verification FROM companion_agent_tasks WHERE id=?", (agent_did,))
+                    verification_now = current['verification'] if current else None
+                except Exception:  # noqa: BLE001 - 台账没建好就当拿不到
+                    verification_now = None
         out.append(dict(task_ref=row['id'], project_ref=row['project_ref'],
-                        state=row['status'], node=NODE,
+                        state=row['status'], stage=stage, node=NODE,
                         op=action.get('kind'),
                         goal=str(action.get('goal') or action.get('command') or '')[:120],
                         last_progress_at=_stamp(row['updated']),
                         # repo._one 返回 sqlite3.Row：只能按列名取值，不能 .get()。
                         new_results=int(count['n']) if count and count['n'] is not None else 0,
                         stale=row['status'] == 'running',
+                        agent_id=agent_did,
+                        verification_now=verification_now,
                         source_ref='companion_actions:' + row['id'],
                         observed_at=_stamp(now)))
     waked = (observation or {}).get('settled_project_ref')
@@ -1110,7 +1307,10 @@ def _agent_tasks(core, observation, now):
         if latest:
             row = latest[0]
             out.append(dict(task_ref=row['id'], project_ref=waked,
-                            state=row['status'], node=NODE, op=None, goal='',
+                            state=row['status'],
+                            stage={'pending': 'written', 'queued': 'dispatched',
+                                   'running': 'running'}.get(row['status'], row['status']),
+                            node=NODE, op=None, goal='',
                             last_progress_at=_stamp(row['updated']),
                             new_results=1, stale=False,
                             source_ref='companion_actions:' + row['id'],
@@ -1125,6 +1325,44 @@ def _errors(state):
                        error=str(item).split(':', 1)[-1], detail='')
                   for item in current)
     return errors
+
+
+def _batch_summary(core, state, now):
+    """最近批次与未展开数：哪些已经发生还没送到眼前、最近送到的是什么。
+
+    只读投递台账：不改状态、不重发。空数组就是「确实没有」，不是「查不到」。
+    """
+    from . import companion_batches as batch_ledger
+    summary = batch_ledger.summary(core, now=now, limit=3)
+    unexpanded = summary.get('unexpanded') or {}
+    loaded = [item.get('batch_id') for item in (state.get('batches') or []) if isinstance(item, dict)]
+    recent = []
+    for row in summary.get('recent') or []:
+        coverage = row.get('coverage') or {}
+        pending = row.get('unexpanded') or {}
+        recent.append(dict(batch_id=row.get('batch_id'), level=row.get('level'),
+                           level_name=row.get('level_name'), topic=row.get('topic'),
+                           state=row.get('state'), events=coverage.get('count'),
+                           unexpanded=pending.get('count') or 0,
+                           delivered_at=_stamp(row.get('delivered_at')),
+                           attempts=row.get('attempts')))
+    return dict(
+        unexpanded=unexpanded, recent=recent, this_turn=loaded,
+        subscriptions=[dict(topic=item.get('topic'), notify=item.get('notify'), note=item.get('note'))
+                       for item in (summary.get('subscriptions') or [])][:5],
+        levels=batch_ledger.LEVEL_NAMES,
+        meaning='这是「已经发生、还没送到你眼前」的计数与最近几批的投递状态；'
+                '不是内容总量，也不会自动重发。')
+
+
+def batches_summary(core, state, now=None):
+    """请求体里 ``awareness.batches`` 的那一段。
+
+    ``build`` 跑在批次确定之前，所以 ``_messages`` 在装好批次后会调这个函数补一次，
+    让 ``this_turn`` 反映**本轮实际装载**的批次，而不是一个恒空的字段。
+    """
+    return _batch_summary(core, state if isinstance(state, dict) else {},
+                          time.time() if now is None else float(now))
 
 
 def build(core, *, state=None, current=None, wake_kind=None, attention=None, now=None):
@@ -1156,6 +1394,9 @@ def build(core, *, state=None, current=None, wake_kind=None, attention=None, now
             account=run('self.account', lambda: _self_account(core, core.cfg)),
         ),
         runtime=run('runtime', lambda: _runtime(core, state)),
+        # 她本人能查到的用量与服务商选项（以前只有 /rpc 能看）
+        usage=run('usage.summary', lambda: _usage_summary(core), None),
+        providers=run('providers.choices', lambda: _provider_choices(core), None),
         here=run('here', lambda: _here(core, current, wake_kind)),
         attention=run('attention', lambda: _attention(core, attention, now), []),
         recent_experience=run('recent_experience',
@@ -1164,6 +1405,10 @@ def build(core, *, state=None, current=None, wake_kind=None, attention=None, now
         capabilities=run('capabilities.summary', lambda: capability_summary(catalogue),
                          capability_summary([])),
         agent_tasks=run('agent_tasks.summary', lambda: _compact_tasks(tasks), []),
+        # 失败记录的真实入口。以前这些记录只写库、没入口，她只能看到"失败了"。
+        failures=run('failures.summary', lambda: failure_summary(core), None),
+        # 事件与投递分离：最近批次、未展开数、这一轮实际装载的批次与订阅。
+        batches=run('batches.summary', lambda: _batch_summary(core, state, now), None),
         # 当前关注之外还要知道「这一次醒来为什么、下一次什么时候」。
         wake=dict(kind=wake_kind or ('user' if current is not None else 'timer'),
                   next_attention_at=_stamp(core._state('next_wake')),
@@ -1396,13 +1641,17 @@ def _summary(op, page, projection):
     if op == 'awareness':
         account = ((projection.get('self') or {}).get('account') or {})
         caps = projection.get('capabilities') or {}
-        return ('会话 %s；账号 %s；可用动作 %s 种；关注 %d 条；在办 %d 件；能力 %s（ready %s）' % (
+        batches = projection.get('batches') or {}
+        unexpanded = batches.get('unexpanded') or {}
+        return ('会话 %s；账号 %s；可用动作 %s 种；关注 %d 条；在办 %d 件；能力 %s（ready %s）；'
+                '最近批次 %d 批；未展开 %d 件' % (
             ((projection.get('here') or {}).get('conversation_ref') or '未知'),
             account.get('state'),
             len((projection.get('runtime') or {}).get('available_actions') or []),
             len(projection.get('attention') or []),
             len(projection.get('agent_tasks') or []),
-            caps.get('total'), len(caps.get('usable') or [])))
+            caps.get('total'), len(caps.get('usable') or []),
+            len(batches.get('recent') or []), unexpanded.get('count') or 0))
     return '返回 %d 条。' % len(items)
 
 
@@ -1487,9 +1736,38 @@ def current_projection(core, *, now=None, reuse=True):
 
 
 def set_attention(core, action, *, now=None):
-    """关注变更：写 meta 里的关注表（带 since/review_at/expires_at），不改别的。"""
+    """关注变更：写 meta 里的关注表（带 since/review_at/expires_at），不改别的。
+
+    同一个 op 也收订阅：``subscribe_topic`` / ``unsubscribe_topic``（``notify`` 默认真）。
+    订阅和关注一样是「她要的事后口径」，只决定**什么时候**把已经发生的事送到眼前，
+    不改变任何事件是否被记录。
+    """
     now = time.time() if now is None else float(now)
     fields = _fields(action)
+    topic = str(fields.get('subscribe_topic') or '').strip()
+    drop = str(fields.get('unsubscribe_topic') or '').strip()
+    if topic or drop:
+        from . import companion_batches as batch_ledger
+        if drop:
+            batch_ledger.unsubscribe(core, drop)
+            items = [dict(topic=drop, notify=None, removed=True)]
+            output = '不再为 %s 提前叫你了；它仍会被记下，只是留在后台明细里。' % drop
+        else:
+            notify = fields.get('notify', True)
+            if isinstance(notify, str):
+                notify = notify.strip().lower() not in ('false', '0', 'no', 'off', '')
+            item = batch_ledger.subscribe(core, topic, notify=bool(notify),
+                                          note=str(fields.get('reason') or ''), now=now)
+            items = [dict(topic=item['topic'], notify=item['notify'], note=item['note'])]
+            output = ('%s 一有结果就提前告诉你。' % topic if notify else
+                      '%s 有变化也不叫你，只留在后台明细里等你来查。' % topic)
+        return dict(status='completed', op='attention_set', items=items, next_cursor=None,
+                    source_refs=['companion_subscriptions'], freshness=_freshness({
+                        'observed_at': _stamp(now), 'node': NODE}),
+                    truncation=dict(truncated=False, reason=''),
+                    evidence_scope='stored',
+                    evidence_note='订阅已保存；它只决定什么时候送，不改变事件是否被记录。',
+                    output=output)
     mode = str(fields.get('mode') or '').strip()
     if mode not in ATTENTION_MODES:
         return dict(status='failed', op='attention_set', items=[], next_cursor=None,

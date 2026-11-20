@@ -59,6 +59,8 @@ import time
 import uuid
 
 from .text import stable_id
+from .companion_work import (PROVENANCE_MODEL, PROVENANCE_TOOL, missing, provenance,
+                             visibility)
 
 log = logging.getLogger(__name__)
 
@@ -1288,14 +1290,31 @@ class AgentManager:
         """主上下文里的一份摘要：约 1200 中文字符 + 最近 5 个改动 + 证据定位。"""
         result = _safe_json(row.get('result'), None) or {}
         failure = row.get('failure') or ''
+        # 任务跑完了 ≠ 验收判据达成了。生产上有三条 completed + outcome=incomplete
+        # 的记录，旧写法把「completed」摆在最显眼的位置，读的人看到这两个字就停了。
+        # 现在 outcome 与 completed 并列出现，且当两者不一致时用一句人话说明白。
+        outcome = ''
+        if isinstance(result, dict):
+            outcome = str(result.get('outcome') or '')
         head = '%s｜%s｜验证 %s｜第 %d 次' % (row['id'][:40], row['status'], row['verification'],
                                           int(row['attempt'] or 1))
+        if outcome and outcome != row['status']:
+            head += '｜系统判定的结果 %s' % outcome
+            if row['status'] in ('completed', 'succeeded') and outcome not in ('completed', 'succeeded'):
+                head += '（任务跑完了，但验收判据没达成）'
+        # 验不了要说清"为什么验不了"，不能让她以为还在等（见 _verify 的终态定义）
+        if row['verification'] == 'unverified' and not (isinstance(result, dict) and result.get('artifacts')):
+            head += '（没有交付物、也没有验收判据，所以没有证据可核验）'
         if row['status'] == 'waiting':
             head += '｜在等：%s；恢复条件：%s' % (row['waiting_for'] or '（没写）', row['recover_when'] or '（没写）')
         parts = [head, '目标：' + (row['goal'] or '')[:160]]
         if isinstance(result, dict) and result:
             if result.get('summary'):
-                parts.append('结论：' + str(result['summary'])[:400])
+                # 这是**子 agent 自己的说法**，不是系统判定。
+                # 2026-11-18：同一份记录里 summary 写「已完成…没有未完成事项」，
+                # 而 outcome=incomplete、verification=unverified——她不标明谁说的，
+                # 就只能看到两个互斥的结论。两句话都成立：它确实这么说，系统也确实这么判。
+                parts.append('子 agent 自己的说法（不是系统判定）：' + str(result['summary'])[:400])
             if result.get('tests'):
                 parts.append('测试：' + '；'.join(str(item)[:80] for item in result['tests'][:3]))
             if result.get('remaining'):
@@ -1790,18 +1809,51 @@ class AgentManager:
             self._log(agent_id, 'verified', '没有可核验的证据，结论留在 pending（不默认通过）',
                       dict(verdict='pending', evidence=[]))
         current = self._row(agent_id)
+        artifacts = []
+        for item in manifest.get('artifacts') or []:
+            entry = dict(item)
+            # 哈希是宿主自己算的（_file_digest），不是子 agent 报的：来源要标出来。
+            entry.setdefault('sha256_source', 'host')
+            artifacts.append(entry)
         receipt = dict(status='completed' if current['status'] == 'completed' else 'failed',
                        completion='finished', agent_id=agent_id,
                        task_ref=current['task_ref'], verification=current['verification'],
                        return_code=result.get('return_code'),
                        seconds=result.get('seconds'), usage=result.get('usage'),
                        output=self._summary(current)['text'],
-                       output_path=(manifest.get('artifacts') or [{}])[0].get('path') if manifest.get('artifacts') else None,
+                       output_path=(artifacts[0].get('path') if artifacts else None),
+                       attempt=int(current['attempt'] or 1),
+                       artifacts=artifacts,
+                       child_account=dict(
+                           kind=PROVENANCE_MODEL,
+                           text='output 里是子 agent 自己的说法（另一个模型转述），不是宿主观察到的现实'),
+                       session_id=(result.get('session_id') or current.get('session_id') or None),
                        evidence_scope='agent_receipt',
                        evidence_note='这是子 agent 交回的结果与证据清单；它的说法不等于现实已改变，'
-                                     '改动按文件哈希核对，核验与完成分开记。')
-        self._mirror_receipt(current, receipt['output'])
+                                     '改动按文件哈希核对，核验与完成分开记。',
+                       **provenance(PROVENANCE_MODEL, source='agent',
+                                    note='这是子 agent 交回的说法与它写出的产物；产物路径与哈希由宿主自己算。',
+                                    parts={'child_account': PROVENANCE_MODEL,
+                                           'artifacts': PROVENANCE_TOOL,
+                                           'delivery': PROVENANCE_TOOL}))
+        # 先投递，再据实写「这次有没有送到」：顺序反了就只能靠猜。
         self._deliver_receipt(current, receipt)
+        gaps = []
+        if not receipt.get('message_id'):
+            gaps.append(missing(
+                '子 agent 回执的送达', 'unavailable',
+                '结果留在台账里，但这次没有登记进任何收件账本（%s）；'
+                '读 output 时要知道这句话还没送到任何人手上'
+                % (receipt.get('delivery') or '没有 delivery 字段')))
+        if not artifacts:
+            gaps.append(missing('子 agent 的产物', 'not_requested',
+                                '这次没有任何交付物文件；它只交回了说法'))
+        receipt['not_obtained'] = gaps
+        receipt['visibility'] = visibility(
+            not_obtained=gaps,
+            note='子 agent 的产物按路径与 sha256 自核；核验结论见 verification，'
+                 'status=completed 只代表它说做完了。')
+        self._mirror_receipt(current, receipt['output'])
         follow = self._followthrough()
         if follow is not None and current.get('task_ref') and current.get('scope_id'):
             try:
@@ -1819,10 +1871,10 @@ class AgentManager:
         按需导入：导入不到就只在台账里留结果，不假装已经投递给谁。
         """
         route = row.get('conversation_ref') or ''
+        receipt.setdefault('message_id', None)
         try:
             from . import companion_delivery as delivery_ledger
         except ImportError:
-            receipt['message_id'] = None
             receipt['delivery'] = 'not_recorded:no_ledger'
             return
         try:
@@ -1832,7 +1884,9 @@ class AgentManager:
                                            text=receipt['output'][:2000], conversation_ref=route,
                                            channels=([route.split(':')[0]] if route else ['all']))
             receipt['message_id'] = queued['message_id'] if queued else None
+            receipt['delivery'] = 'recorded' if receipt['message_id'] else 'not_recorded:no_message'
         except Exception:  # noqa: BLE001 - 投递登记失败不改变台账事实
+            receipt['delivery'] = 'not_recorded:queue_failed'
             log.warning('子 agent 回执登记进投递账本失败', exc_info=True)
 
     def _manifest_from_run(self, row, result):
@@ -1937,12 +1991,67 @@ class AgentManager:
         return depth
 
     def _verify(self, row, checks):
-        """有检查项才给结论；没有证据就停在 pending，绝不默认通过。"""
+        """有检查项才给结论；没有证据就给终态 unverified，绝不默认通过。
+
+        2026-11-18：原来没有检查项一律返回 None，于是这些记录永远停在
+        `verification=pending`——生产里有 3 条 `completed + pending` 永远不会变。
+
+        「没有检查项」有两种含义，必须分开：
+        - 任务还在跑，检查项以后会来        → None（真 pending，会变成别的）
+        - 任务已经终结，仍然没有检查项      → 'unverified'（没有东西可核验，这是终态）
+
+        为什么不说成「待验证」：那是承诺「验证会来」。事实是：
+        它没有交付物、也没有写验收判据，所以没有任何东西可以拿来核验。
+        「没法确认」是事实，「待验证」是承诺。
+        """
         if not checks:
+            status = str(row.get('status') or '')
+            if status in TERMINAL:
+                # 已经终结却没有任何检查项：这不是「还在等」，是「验不了」。
+                return 'unverified'
             return None
         if all(item.get('ok') for item in checks):
             return 'passed'
         return 'failed'
+
+    def backfill_unverified(self, *, dry_run=False):
+        """把「已终结、但没有证据可核验」的历史 task 从 pending 改成 unverified。
+
+        2026-11-18：`_verify` 之前没有终态概念，导致这些行的 verification 永远停在
+        pending。代码修了，但**库里已有的旧数据还在说旧话**——她读到的是数据，不是代码。
+
+        所以做一次带审计的回填：
+        - 判定沿用 `_verify` 的规则（终态 + 没有检查项 → unverified），不另立标准
+        - 每改一行写一条 agent 事件，说明「这行为什么验不了」
+        - 幂等：只处理 verification='pending' 且已终结的行，改过的不会再改
+
+        返回改动过的 id 列表；dry_run 时只统计不写库。
+        """
+        rows = self.repo._all(
+            "SELECT id, status, verification FROM companion_agent_tasks "
+            "WHERE verification='pending'")
+        changed = []
+        for row in rows:
+            # repo._all 返回 sqlite3.Row：按下标取，不能用 .get()
+            status = str(row['status'] or '')
+            if status not in TERMINAL:
+                # 还在跑：pending 是对的，以后会变成别的
+                continue
+            changed.append(row['id'])
+            if dry_run:
+                continue
+            with self.repo.tx():
+                self.repo._exec(
+                    "UPDATE companion_agent_tasks SET verification='unverified' WHERE id=?",
+                    (row['id'],))
+            self._log(
+                row['id'], 'verification-reclassified',
+                ('这条任务已经终结（status=%s），但没有交付物、也没有验收判据，'
+                 '所以没有任何东西可以拿来核验。以前停在 pending，'
+                 '看起来像"还在验证"；实际是"验不了"，这是终态。' % status),
+                dict(from_verification='pending', to_verification='unverified',
+                     reason='terminated_without_evidence', task_status=status))
+        return changed
 
     def _workdir(self, row, checkpoint):
         root = (self.home / 'data/companion/agents').resolve()

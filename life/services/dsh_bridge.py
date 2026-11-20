@@ -1025,13 +1025,48 @@ class DshBridge:
         return out
 
 
+def snapshot_provenance(snap: dict[str, Any] | None) -> dict[str, Any]:
+    """DSH 结果快照的来源与缺口。
+
+    快照是 **DSH 自己报告的工具结果**（tool_report）：里面的文字是那个工具写的，
+    不是宿主观察到的现实；被拒、结果未知、还在停、工具自己报错，都要逐项写清
+    没拿到什么，而不是只留一个 status。
+    """
+    if not isinstance(snap, dict):
+        return dict(provenance="tool_report",
+                    provenance_note="没有快照：这次没有取得任何工具结果。",
+                    not_obtained=[dict(what="工具结果", reason="unavailable",
+                                       reason_text="不可用",
+                                       detail="execute 没有返回快照")])
+    status = str(snap.get("status") or "unknown")
+    gaps: list[dict[str, Any]] = []
+    if status == "denied":
+        gaps.append(dict(what="工具执行", reason="unauthorized", reason_text="没有授权",
+                         detail="DSH 拒绝了这次调用，工具没有执行"))
+    elif status == "unknown":
+        gaps.append(dict(what="这次调用的结果", reason="unavailable", reason_text="不可用",
+                         detail="传输层没拿到结果；按 operation_id 再查一次，别重复执行"))
+    elif status == "stopping":
+        gaps.append(dict(what="工具真正停下", reason="failed", reason_text="失败",
+                         detail="取消请求已发出，工具还在停"))
+    result = snap.get("result")
+    if isinstance(result, dict) and result.get("isError"):
+        gaps.append(dict(what="工具的成功结果", reason="failed", reason_text="失败",
+                         detail=str(result.get("error") or "工具自己报告 isError")[:300]))
+    return dict(provenance="tool_report",
+                provenance_note="这是 DSH 自己报告的工具结果快照（tool_report）；"
+                                "里面的文字是那个工具写的，不是宿主观察到的现实。",
+                not_obtained=gaps)
+
+
 def result_text(snap: dict[str, Any] | None, limit: int = 4000) -> str:
     """把 execute 快照翻成给 Bot 看的文本：状态、正文、错误都要留着。"""
     if not isinstance(snap, dict):
-        return "DSH 没有返回结果快照。"
+        return "DSH 没有返回结果快照（这次没有取得任何工具结果：不可用）。"
     status = str(snap.get("status") or "unknown")
     op = str(snap.get("operationId") or "")
-    parts: list[str] = [f"DSH {snap.get('tool') or '工具'}：{status}"
+    origin = snapshot_provenance(snap)
+    parts: list[str] = [f"[来源 {origin['provenance']}] DSH {snap.get('tool') or '工具'}：{status}"
                         + (f"（{op}）" if op else "")]
     result = snap.get("result")
     if isinstance(result, dict):
@@ -1056,11 +1091,9 @@ def result_text(snap: dict[str, Any] | None, limit: int = 4000) -> str:
         parts.append(json.dumps(result, ensure_ascii=False)[:limit])
     if snap.get("error") and not isinstance(result, dict):
         parts.append(f"错误：{snap['error']}")
-    if status == "denied":
-        parts.append("这次请求被拒绝，工具没有执行。")
-    if status == "unknown":
-        parts.append("结果未知：重启后或断线时按 operation_id 查一次再决定，别重复执行。")
-    elif status == "stopping":
-        parts.append("还在停：工具没有真正结束，稍后再查状态。")
+    # 没拿到什么，逐项写；只留一个 status 等于没说。
+    for gap in origin.get("not_obtained") or []:
+        parts.append("没取得：%s（%s）：%s" % (gap.get("what"), gap.get("reason_text"),
+                                              gap.get("detail")))
     text = "\n".join(p for p in parts if p)
     return text[:limit]

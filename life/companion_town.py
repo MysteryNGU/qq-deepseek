@@ -19,6 +19,7 @@ import httpx
 
 from .text import estimate_tokens, stable_id
 from .agent_session import SessionFailure
+from .companion_work import PROVENANCE_TOOL, missing, provenance, visibility
 from .persona_files import PersonaFiles
 
 BASE = 'https://fish.bside-moon.cn/town/api/outside/'
@@ -158,6 +159,67 @@ def _receipt_summary(receipt):
     return text + '。' if text else ''
 
 
+# 回合被拒时只有状态（invalid/expired）她读不出原因；这两种都要连原因一起留档。
+REJECT_STATES = {'invalid', 'expired', 'closed', 'interrupted', 'failed', 'budget_blocked'}
+
+
+def answer_rejection(answer, reply):
+    """回答没送出去的原因；None 表示可以送。
+
+    2026-11-20：回合被拒只落一个状态，她（和主人）都看不到「为什么没回答」。
+    这里把原因写成一句能读的话，并按 t11 的六层原因标层（超长 = limit），
+    不猜、不改写内容。
+    """
+    if not isinstance(answer, str) or not answer.strip():
+        return dict(state='invalid', layer='failed',
+                    reason='这次没有生成可送出的回答（空内容），回合没有回答。')
+    maximum = reply.get('max_chars') if isinstance(reply, dict) else None
+    if type(maximum) is int and maximum > 0 and len(answer) > maximum:
+        return dict(state='invalid', layer='limit',
+                    reason=('回答超长被拒：本回合上限 %d 字，这次写了 %d 字，没有送出。'
+                            % (maximum, len(answer))))
+    if isinstance(reply, dict) and reply.get('format') != 'text':
+        try:
+            parsed = json.loads(answer)
+        except ValueError:
+            return dict(state='invalid', layer='failed',
+                        reason='回答不是本回合要求的 JSON，解析失败，回合没有回答。')
+        if not isinstance(parsed, dict):
+            return dict(state='invalid', layer='failed',
+                        reason='回答不是 JSON 对象，回合没有回答。')
+    return None
+
+
+def turn_fields(turn):
+    """回合包里的字段名清单：只列名字，不含内容、身份或凭据。"""
+    if not isinstance(turn, dict):
+        return []
+    fields = [str(key) for key in turn]
+    packet = turn.get('packet')
+    if isinstance(packet, dict):
+        fields.extend('packet.' + str(key) for key in packet)
+    return sorted(dict.fromkeys(fields))
+
+
+def receipt_fields(envelope):
+    """小镇回执的字段名清单：她原来只拿到一句摘要，不知道回执里还有哪些字段。"""
+    body = envelope.get('receipt') if isinstance(envelope, dict) else None
+    body = body if isinstance(body, dict) else (envelope if isinstance(envelope, dict) else {})
+    fields = sorted(str(key) for key in body)
+    rows = body.get('fields')
+    if isinstance(rows, list):
+        fields.append('fields[%d]' % len(rows))
+    return fields
+
+
+def row_fields(row):
+    """一行台账的字段名清单（只列名字，不透出内容）。"""
+    keys = getattr(row, 'keys', None)
+    if callable(keys):
+        return sorted(str(key) for key in keys())
+    return sorted(str(key) for key in (row or {}))
+
+
 class TownBridge:
     """Own polling, deadlines and social records; never route packets to chat/tools."""
     def __init__(self, core, *, config=None, client=None):
@@ -190,20 +252,103 @@ class TownBridge:
         wake=json.loads(row['wake_result']) if row['wake_result'] else {}
         receipt=json.loads(row['receipt']) if row['receipt'] else None
         summary=_receipt_summary(receipt)
-        explanation=('项目已暂停或结束，未交办的目标不再注入后续回合。' if row['state']=='suspended' else
-                     '未交办的旧目标已被同项目新目标替代，不会再送入小镇回合。' if row['state']=='superseded' else
-                     ('小镇决定回合回来了：'+summary) if summary else
-                     '已收到决定回合的实际回执；这不等于整项活动或游戏已经完成。' if receipt is not None else
-                     '目标已保存，等待小镇决定回合处理；尚不能声称已经行动或玩完。')
+        if row['state']=='suspended':
+            reason='项目已暂停或结束，未交办的目标不再注入后续回合。'
+        elif row['state']=='superseded':
+            # 只写一句 superseded 等于没给原因：替代它的是哪个目标、什么时候发生的都要说。
+            reason=self._superseded_note(row['id'])
+        elif summary:
+            reason='小镇决定回合回来了：'+summary
+        elif receipt is not None:
+            reason='已收到决定回合的实际回执；这不等于整项活动或游戏已经完成。'
+        else:
+            reason='目标已保存，等待小镇决定回合处理；尚不能声称已经行动或玩完。'
+        explanation=reason
+        gaps=[]
+        if row['state'] in {'superseded','suspended'}:
+            # 目标没被交办：这是「没交出去」而不是「做完了」，按 unavailable 标缺口。
+            gaps.append(missing('这项小镇交办','unavailable',reason))
         outcome=self._outcome_link(row['id']).get('outcome')
         if outcome and not summary:
             explanation='已收到所关联活动的终局事件；请根据实际结果判断原目标是否完成。'
         elif outcome:
             explanation='小镇决定回合回来了：'+summary+'另有一条终局事件，按它的实际结果判断目标是否完成。'
-        return dict(status='completed',completion='accepted',delegation_id=row['id'],phase=row['state'],outcome=outcome,
-                    goal=row['goal'],turn_id=row['turn_id'],receipt=receipt,
+        return dict(status='completed',completion='accepted',delegation_id=row['id'],phase=row['state'],
+                    phase_reason=reason,outcome=outcome,goal=row['goal'],turn_id=row['turn_id'],receipt=receipt,
+                    receipt_fields=receipt_fields(receipt),delegation_fields=row_fields(row),
+                    not_obtained=gaps,visibility=visibility(not_obtained=gaps),
                     wake_error=wake.get('error',''),retry_after=wake.get('retry_after',0),
+                    **provenance(PROVENANCE_TOOL,source='town.delegation',
+                                 parts={'receipt':PROVENANCE_TOOL}),
                     output='小镇交办状态：'+row['state']+'。'+explanation)
+
+    def _superseded_note(self,identity):
+        """被替代的原因：谁替代了它、什么时候发生的——只说 superseded 等于没给原因。"""
+        value={}
+        try:
+            row=self.repo._one('SELECT v FROM meta WHERE k=?',('town-superseded:'+str(identity),))
+            value=json.loads(row['v']) if row and row['v'] else {}
+        except (TypeError,ValueError,KeyError,OSError):
+            value={}
+        value=value if isinstance(value,dict) else {}
+        parts=[]
+        reason=str(value.get('reason') or '').strip()
+        parts.append(reason or '同一项目只保留一个待交办目标，这条被后提交的目标替代')
+        by=str(value.get('by') or '').strip()
+        if by:parts.append('替代它的是：'+by[:200])
+        at=value.get('at')
+        if type(at) in {int,float}:
+            parts.append('发生时间：'+time.strftime('%Y-%m-%d %H:%M',time.localtime(at)))
+        parts.append('它不会再送入小镇回合。')
+        return '；'.join(parts)
+
+    def _save_superseded(self,identity,by=''):
+        """记下替代关系。台账记录写不进去也不能挡住新目标提交，所以这里只兜底不抛。"""
+        record=dict(reason='同一项目只保留一个待交办目标，这条被后提交的目标替代',
+                    by=str(by or '')[:200],at=time.time())
+        try:
+            with self.repo.tx():
+                self.repo._exec('INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)',
+                                ('town-superseded:'+str(identity),encode(record)))
+        except Exception:  # noqa: BLE001 - 记原因失败不影响交办本身
+            pass
+
+    def _reject_turn(self,identity,state,reason,*,layer='failed',**detail):
+        """回合被拒时留下原因：她看不到回执，但下一次能读到为什么这回合没回答。
+
+        旧行为只写一个状态（invalid / expired），既没有原因也没有字段清单，
+        于是「没回答」和「没发生」在她那里长得一样。
+        """
+        state=state if state in REJECT_STATES else 'failed'
+        self._turn_state(identity,state)
+        gap=missing('本回合的回答',layer,str(reason or '')[:300])
+        record=dict(turn_id=str(identity),state=state,reason=str(reason or '')[:300],
+                    gap=gap,fields=detail.pop('fields',None) or [],at=time.time(),**detail)
+        try:
+            with self.repo.tx():
+                self.repo._exec('INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)',
+                                ('town-turn-reject:'+self.scope.scope_id+':'+str(identity),encode(record)))
+        except Exception:  # noqa: BLE001 - 原因记录失败不能让回合收尾失败
+            pass
+        text=('小镇回合没有回答（%s，%s）：%s；回合原始字段：%s'
+              % (state,gap['reason'],record['reason'] or '没有记录原因',
+                 '、'.join(record['fields']) or '没有记录'))
+        try:
+            self.life.ingest(self.core.scope,'town_turn_result','tool_observation',text,
+                             external_id='town-turn-reject:'+str(identity),payload=record)
+        except Exception:  # noqa: BLE001 - 她看不到回执时，收尾也不该因为记录失败而中断
+            pass
+        return record
+
+    def turn_rejection(self,identity):
+        """某回合被拒时留下的原因；没有记录就返回 None（不猜）。"""
+        try:
+            row=self.repo._one('SELECT v FROM meta WHERE k=?',
+                               ('town-turn-reject:'+str(self.scope.scope_id if self.scope else '')+':'+str(identity),))
+            value=json.loads(row['v']) if row and row['v'] else None
+        except (TypeError,ValueError,KeyError,OSError):
+            return None
+        return value if isinstance(value,dict) else None
 
     def pending_project_refs(self):
         if self.scope is None:return []
@@ -252,8 +397,14 @@ class TownBridge:
                 # original receipt must not dispatch the same request again.
                 self.repo._exec('INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)',(alias_key,encode(pending['id'])))
                 return self._delegation_result(pending)
+            superseded=[row['id'] for row in self.repo._all(
+                "SELECT id FROM companion_town_delegations WHERE scope=? AND project_ref=? AND state='waiting'",
+                (self.scope.scope_id,project_ref))]
             self.repo._exec("UPDATE companion_town_delegations SET state='superseded',updated=? WHERE scope=? AND project_ref=? AND state='waiting'",
                 (time.time(),self.scope.scope_id,project_ref))
+            for old in superseded:
+                # 旧目标被新目标替代：记下替代者，之后 status 能回答「为什么它没交办」。
+                self._save_superseded(old,by=goal.strip())
             self.repo._exec('INSERT INTO companion_town_delegations VALUES(?,?,?,?,?,?,?,?,?,?)',
                 (action_id,self.scope.scope_id,project_ref,goal.strip(),'waiting',None,None,None,time.time(),time.time()))
         # Persist before network. A repeated action id never repeats this POST,
@@ -299,6 +450,7 @@ class TownBridge:
             for row in self.repo._all("SELECT id,project_ref FROM companion_town_delegations WHERE scope=? AND state='waiting' ORDER BY created DESC,rowid DESC",(self.scope.scope_id,)):
                 if row['project_ref'] in seen:
                     self.repo._exec("UPDATE companion_town_delegations SET state='superseded',updated=? WHERE id=?",(time.time(),row['id']))
+                    self._save_superseded(row['id'],by='同一项目里后提交的待交办目标')
                 seen.add(row['project_ref'])
 
     def _claim_delegations(self,identity):
@@ -552,7 +704,9 @@ class TownBridge:
                 await_answer = None
         left = min(23, deadline-time.time()-1)
         if left<=0:
-            self._turn_state(identity, 'expired')
+            self._reject_turn(identity, 'expired',
+                              '回合剩下的时间不够（返回时已过截止时间），没有回答。',
+                              layer='unavailable', fields=turn_fields(turn))
             return
         if await_answer is not None:
             await self._post(identity, await_answer, deadline)
@@ -596,23 +750,21 @@ class TownBridge:
             self.thinking -= 1
         self.core._record_usage(result, 'town', key, started_at)
         answer = result['message'].get('content')
-        if not isinstance(answer, str) or not answer.strip() or result.get('finish_reason')=='length':
-            self._turn_state(identity, 'invalid')
+        fields = turn_fields(turn)
+        if not isinstance(answer, str) or not answer.strip():
+            self._reject_turn(identity, 'invalid', '模型没有返回可送出的回答（空内容）',
+                              layer='failed', fields=fields)
+            return
+        if result.get('finish_reason') == 'length':
+            self._reject_turn(identity, 'invalid', '回答到达输出长度上限被截断，没有送出',
+                              layer='limit', fields=fields)
             return
         answer = answer.strip()
-        maximum = reply.get('max_chars')
-        if type(maximum) is int and maximum>0 and len(answer)>maximum:
-            self._turn_state(identity, 'invalid')
+        rejected = answer_rejection(answer, reply)
+        if rejected:
+            self._reject_turn(identity, rejected['state'], rejected['reason'],
+                              layer=rejected['layer'], fields=fields)
             return
-        if reply.get('format')!='text':
-            try:
-                parsed = json.loads(answer)
-            except ValueError:
-                self._turn_state(identity, 'invalid')
-                return
-            if not isinstance(parsed, dict):
-                self._turn_state(identity, 'invalid')
-                return
         self._turn_state(identity, 'answer_pending', answer)
         await self._post(identity, answer, deadline)
 
@@ -636,12 +788,14 @@ class TownBridge:
                 return
             except TownError as error:
                 if error.code=='TOWN_OUTSIDE_TURN_CLOSED':
-                    self._turn_state(identity, 'closed')
+                    self._reject_turn(identity, 'closed', '小镇已经关闭了这回合，回答没有送达。',
+                                      layer='unavailable')
                     return
                 if error.code not in {'NETWORK', 'TOWN_RESTARTING', 'HTTP_502', 'HTTP_503', 'HTTP_504'}:
                     raise
                 await asyncio.sleep(min(error.retry_after or 1, max(0, deadline-time.time())))
-        self._turn_state(identity, 'expired')
+        self._reject_turn(identity, 'expired', '回执没有在截止时间前送到小镇，回合按过期处理。',
+                          layer='unavailable')
 
     async def ingest_events(self, page):
         if not self.scope:
@@ -680,13 +834,24 @@ class TownBridge:
             reported = [item[name] for item in counts if isinstance(item, dict) and type(item.get(name)) is int]
             usage[name] = sum(reported) if reported else None
         states, kinds = {}, {}
+        rejections = []
         if self.scope:
             for row in self.repo._all('SELECT kind,state,COUNT(*) n FROM companion_town_turns WHERE scope=? GROUP BY kind,state', (self.scope.scope_id,)):
                 states[row['state']] = states.get(row['state'], 0)+row['n']
                 kinds[row['kind']] = kinds.get(row['kind'], 0)+row['n']
+            # 被拒的回合连同原因一起可查：只看状态计数看不出「为什么没回答」。
+            for row in self.repo._all("SELECT v FROM meta WHERE k LIKE ? ORDER BY rowid DESC LIMIT 5",
+                                      ('town-turn-reject:'+self.scope.scope_id+':%',)):
+                try:
+                    value = json.loads(row['v'])
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(value, dict):
+                    rejections.append(value)
         return dict(**self.config.public(), state=self.state, error=self._error,
                     scope=self.scope.conversation_id if self.scope else None, events_after=self.events_after,
-                    usage=usage, poll_wait_seconds=25, turns=states, turn_kinds=kinds)
+                    usage=usage, poll_wait_seconds=25, turns=states, turn_kinds=kinds,
+                    turn_rejections=rejections)
 
     async def _cancel_work(self):
         tasks = self._tasks | ({self._runner} if self._runner else set())

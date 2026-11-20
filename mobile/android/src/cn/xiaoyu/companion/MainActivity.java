@@ -39,6 +39,7 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static WeakReference<MainActivity> current=new WeakReference<>(null);
+    private static boolean batteryAsked=false;
     private WebView view;private boolean visible=false;private VoicePlayback speech;private Uri cameraUri;
     private final ExecutorService work=Executors.newFixedThreadPool(3);
     @Override public void onCreate(Bundle saved) {
@@ -142,7 +143,19 @@ public class MainActivity extends Activity {
         String text=value.toString();
         return text.length()>300?text.substring(0,300)+"...":text;
     }
-    @Override protected void onResume(){super.onResume();visible=true;current=new WeakReference<>(this);if(Api.paired(this)){startMessages();PhoneWorkspaceManager.connect(this,true);PhoneService.register(this);}script("window.onServerEvent&&window.onServerEvent({type:'ready'})");}
+    @Override protected void onResume(){super.onResume();visible=true;current=new WeakReference<>(this);if(Api.paired(this)){startMessages();PhoneWorkspaceManager.connect(this,true);PhoneService.register(this);askBatteryOnce();}script("window.onServerEvent&&window.onServerEvent({type:'ready'})");}
+    /**
+     * 后台长期控制手机的前提：系统别把小鱼放到「待机优化」里杀。
+     * 只在配好对之后问一次，拒绝也不影响其它功能（只是后台更容易被清）。
+     */
+    private void askBatteryOnce(){
+        if(batteryAsked)return;batteryAsked=true;
+        try{
+            android.os.PowerManager power=getSystemService(android.os.PowerManager.class);
+            if(power!=null&&power.isIgnoringBatteryOptimizations(getPackageName()))return;
+            openSetting(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,Uri.parse("package:"+getPackageName())));
+        }catch(Throwable ignored){}
+    }
     @Override protected void onPause(){visible=false;super.onPause();}
     @Override protected void onDestroy(){visible=false;if(current.get()==this)current.clear();if(speech!=null)speech.close();work.shutdownNow();view.removeJavascriptInterface("Native");view.destroy();super.onDestroy();}
     @Override protected void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);if(cameraUri!=null)state.putString("camera_uri",cameraUri.toString());}
@@ -202,6 +215,8 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void setSpeech(boolean enabled){Api.prefs(MainActivity.this).edit().putBoolean("speech",enabled).apply();if(!enabled)runOnUiThread(()->speech.stop());}
         @JavascriptInterface public void speak(String text){runOnUiThread(()->speech.say(text));}
         @JavascriptInterface public void stopSpeech(){runOnUiThread(()->speech.stop());}
+        @JavascriptInterface public void stopPhone(){runOnUiThread(()->PhoneService.interruptAll(
+            "Stopped by the owner from the app. Any action already applied cannot be undone."));}
     }
     private void pickImages(){
         Intent picker=new Intent("android.provider.action.PICK_IMAGES").setType("image/*");

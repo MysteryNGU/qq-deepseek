@@ -45,6 +45,16 @@ class ResourcePolicy:
     compaction_retain_tokens: int = 16384
     compaction_headroom_tokens: int = 8192
     compaction_summary_tokens: int = 4096
+    # 六级投递（life/companion_batches.py）的窗口与上限。级别只决定什么时候送：
+    # 这些数字只影响合批节奏，不影响事件是否被记录或被丢弃。
+    # 注意：没有「等结果的窗口」与「未确认冷却」两个旋钮——前者会压住结果，
+    # 后者没有调用点；它们不是配置项（见 companion_batches.AWAITED_WINDOW_SECONDS）。
+    delivery_conversation_window_seconds: int = 20
+    delivery_state_window_seconds: int = 900
+    delivery_daily_window_seconds: int = 1800
+    delivery_background_window_seconds: int = 3600
+    delivery_max_events_per_batch: int = 12
+    delivery_max_batches_per_turn: int = 4
 
     @classmethod
     def parse(cls,raw=None):

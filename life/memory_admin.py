@@ -115,7 +115,7 @@ class MemoryAdministration:
         audience=self.life.life_access.bind(scope)
         loaded,_=self.life.life_access.load(audience,ref)
         query=(proposal.get('quotes') or [''])[0]
-        recalled=self.life.life_recall.search(audience,query,mode='text',limit=10)
+        recalled=self.life.life_recall.search(audience,query,mode='text',limit=10,include_cursor=False)
         return dict(resource_ref=ref,owner_readable=bool(loaded),
             owner_recall_found=any(i['resource_ref']==ref for i in recalled['items']))
 

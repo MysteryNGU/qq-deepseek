@@ -292,16 +292,34 @@ final class WorkspaceDisplay {
         bitmap = latest;
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         bitmap.compress(Bitmap.CompressFormat.PNG, 100, bytes);
-        byte[] png = bytes.toByteArray();
-        if (png.length > 900 * 1024) {
-            return answer.put("status", "failed").put("code", "workspace_frame_too_large")
-                    .put("output", "副屏截图超过 900 KiB，无法通过一次调用传回。");
+        byte[] payload = bytes.toByteArray();
+        String mime = "image/png";
+        if (payload.length > 900 * 1024) {
+            // PNG 不压缩（无损），一张 1156×2510 的彩色界面很容易过 900 KiB。
+            // 超限就换 JPEG 同尺寸压到线内：像素尺寸不变，坐标不用换算。
+            payload = null;
+            for (int quality : new int[]{88, 75, 62, 50}) {
+                ByteArrayOutputStream jpeg = new ByteArrayOutputStream();
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, jpeg);
+                byte[] candidate = jpeg.toByteArray();
+                if (candidate.length <= 900 * 1024) {
+                    payload = candidate;
+                    mime = "image/jpeg";
+                    break;
+                }
+            }
+            if (payload == null) {
+                return answer.put("status", "failed").put("code", "workspace_frame_too_large")
+                        .put("output", "副屏截图压缩到 900 KiB 以内仍然失败；先 workspace_status 看画面尺寸，"
+                                + "必要时关掉工作区重开。");
+            }
         }
         return answer.put("status", "completed").put("width", bitmap.getWidth())
                 .put("height", bitmap.getHeight())
                 .put("frame_age_ms", Math.max(0L, System.currentTimeMillis() - latestAt))
                 .put("frame_count", frameCount)
-                .put("image_png", Base64.encodeToString(png, Base64.NO_WRAP));
+                .put("image_mime", mime)
+                .put("image_png", Base64.encodeToString(payload, Base64.NO_WRAP));
     }
 
     private static boolean isAscii(String text) {

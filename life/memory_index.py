@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import math
+import inspect
 import json
 import re
 import struct
@@ -48,8 +50,14 @@ def chunks(text, config):
     offsets = [0]
     for char in text:
         offsets.append(offsets[-1]+len(char.encode('utf-8')))
+    # 2026-11-20 (v3): the boundary check below only required last_boundary > start,
+    # never > the previous chunk's end. When the window's last boundary sat close to
+    # start, end rolled back there, overlap could not walk back, and start advanced
+    # one character per loop (measured: end stayed at 6 for six consecutive steps).
+    prev_end = -1
     start = 0
     while start < len(text):
+        start_before = start
         end, last_boundary = start, None
         while end < len(text) and estimate_tokens(text[start:end+1]) <= config.chunk_tokens:
             end += 1
@@ -57,15 +65,25 @@ def chunks(text, config):
                 last_boundary = end
         if end == start:
             raise RecallError('chunk_budget_too_small')
-        if end < len(text) and last_boundary and last_boundary > start:
+        # Boundary must be strictly past the previous chunk's end; otherwise let the
+        # window end at its natural token limit instead of collapsing onto the boundary.
+        if end < len(text) and last_boundary and last_boundary > prev_end:
             end = last_boundary
-        yield offsets[start], offsets[end], text[start:end]
+        # 2026-11-19：段落边界切分会产出只含 "\n" 的片，而 8231 的
+        # `any(... not t.strip() ...)` 会因此把整批 400 —— 一个换行毁掉整个资源的索引。
+        # 纯空白片不产出；索引表的 PK 是 (..., byte_start, ...)，留空洞不影响读取。
+        piece = text[start:end]
+        if piece.strip():
+            yield offsets[start], offsets[end], piece
         if end == len(text):
             break
         overlap_start = end
         while overlap_start > start+1 and estimate_tokens(text[overlap_start-1:end]) <= config.overlap_tokens:
             overlap_start -= 1
-        start = max(start+1, overlap_start)
+        # The next chunk must start strictly after this one did; if the overlap window
+        # would not move forward at all, jump to end rather than spin.
+        start = overlap_start if overlap_start > start_before else end
+        prev_end = end
 
 
 class MemoryIndex:
@@ -74,7 +92,18 @@ class MemoryIndex:
         self.config = config or IndexConfig()
         self.adapter = None
         self.model_key, self.dimension = '', 0
-        self.chunker_version = 'utf8-paragraph-v1:'+sha(encode([self.config.chunk_tokens, self.config.overlap_tokens]))[:12]
+        # 2026-11-19：v1 会产出纯空白片，在 8231 上会整批 400。改成跳过空片后
+        # 片数/片内容都变了，旧索引行不再与新的切分一致——所以版本号必须跟着变，
+        # 否则旧行仍被当作 ready，fingerprint 对不上 → idempotency_conflict。
+        # 语义也纳入指纹：以后 chunker 行为再变，记得一起改这个标记。
+        # 2026-11-20 v3: chunks() boundary-rollback bug fixed.
+        # The estimator's module and source are part of the fingerprint because
+        # life/text.py defines a different estimate_tokens under the same name;
+        # if an import changes, the index would silently chunk under another metric.
+        _est_src = inspect.getsource(estimate_tokens)
+        self.chunker_version = 'utf8-paragraph-v3-drop-blank:'+sha(encode(
+            [self.config.chunk_tokens, self.config.overlap_tokens,
+             estimate_tokens.__module__, sha(_est_src)]))[:12]
 
     def configure(self, adapter, *, provider_revision, model_id, model_revision, dimension):
         if type(dimension) is not int or dimension <= 0 or dimension > 65536 or not all((provider_revision, model_id, model_revision)):
@@ -156,6 +185,30 @@ class MemoryIndex:
         if lease.payload['model_key'] != self.model_key or lease.payload['chunker_version'] != self.chunker_version:
             raise RecallError('stale_source')
 
+    MAX_UNKNOWN_ATTEMPTS = 3
+
+    def reconcile_unknown(self, limit=50):
+        """把过期且试过数不多的 unknown job 放回 pending。
+
+        _unindexed 的注释写着 unknown "reconciled separately"，但一直没有实现，
+        于是 unknown 既不重扫也不再试（2026-11-19 实测 1007 条卡死、due 过期 70 小时）。
+        这里补上这一步：只改状态，不碰 payload，重试仍走同一 stable key。
+        """
+        now = self.jobs.clock()
+        rows = self.repo._all(
+            "SELECT id FROM work_jobs WHERE scope_id=? AND kind='memory_index' "
+            "AND status='unknown' AND due<=? AND attempts<? ORDER BY due LIMIT ?",
+            (self.catalog.agent_id + '|__memory_internal__', now,
+             self.MAX_UNKNOWN_ATTEMPTS, limit))
+        revived = 0
+        with self.repo.tx():
+            for row in rows:
+                self.repo._exec(
+                    "UPDATE work_jobs SET status='pending', lease_token='', lease_until=0, "
+                    "updated=? WHERE id=? AND status='unknown'", (now, row['id']))
+                revived += 1
+        return revived
+
     def claim_next(self, ttl=120):
         now = self.jobs.clock()
         # Refresh legacy preflight failures only with no request ledger, or
@@ -165,13 +218,17 @@ class MemoryIndex:
             "AND json_extract(payload,'$.index_access_fence') IS NULL "
             "AND json_extract(payload,'$.model_key')=? "
             "AND NOT EXISTS (SELECT 1 FROM meta m WHERE substr(m.k,1,length(?||j.id||':batch:'))=?||j.id||':batch:' "
-            "AND (COALESCE(json_extract(m.v,'$.state'),'')!='evicted' OR COALESCE(json_extract(m.v,'$.error'),'')!='connection_refused')) LIMIT 100",
+            "AND ((COALESCE(json_extract(m.v,'$.state'),'')!='evicted' AND COALESCE(json_extract(m.v,'$.error'),'')!='connection_refused') "
+            "     OR COALESCE(json_extract(m.v,'$.expires'),0)>?)) LIMIT 100",
             (self.catalog.agent_id+'|__memory_internal__',self.model_key,
-             'memory_embedding:'+self.catalog.agent_id+':','memory_embedding:'+self.catalog.agent_id+':'))
+             'memory_embedding:'+self.catalog.agent_id+':','memory_embedding:'+self.catalog.agent_id+':',
+             now))
         for row in rows:
             prefix='memory_embedding:'+self.catalog.agent_id+':'+row['id']+':batch:'
+            # 和上面的 NOT EXISTS 保持同一判据：未过期的记录仍然挡住。
             if self.repo._one("SELECT 1 FROM meta WHERE substr(k,1,?)=? AND "
-                             "(COALESCE(json_extract(v,'$.state'),'')!='evicted' OR COALESCE(json_extract(v,'$.error'),'')!='connection_refused')",(len(prefix),prefix)):
+                             "((COALESCE(json_extract(v,'$.state'),'')!='evicted' AND COALESCE(json_extract(v,'$.error'),'')!='connection_refused') "
+                             " OR COALESCE(json_extract(v,'$.expires'),0)>?)",(len(prefix),prefix,now)):
                 continue
             payload=json.loads(row['payload'])
             ctx=self.access.bind(Scope(self.catalog.agent_id,'__memory_internal__'),mode='internal')
@@ -209,12 +266,17 @@ class MemoryIndex:
         # reservation. Its stable key survives timeouts; unknown is not retried.
         provider_config = getattr(self.adapter,'config',None)
         batch_limit = min(getattr(provider_config,'max_input_tokens',8192),getattr(provider_config,'max_request_bytes',262144)//2)
+        # 本地 8231 单次最多收 32 条 text（life/local_embedding.py:113
+        # `not 1<=len(texts)<=32`），超出直接 400。实测：每条长度不影响这个数，
+        # 33 条必失败、32 条成功（2026-11-19）。按字节合批会产生 85 条那种批，
+        # 整批被打回，job 于是变成 unknown。这里同时受条数上限约束。
+        batch_max_texts = min(int(getattr(provider_config,'max_batch_texts',32) or 32), 32)
         batches, batch, batch_bytes = [], [], 0
         for part in parts:
             size = len(part[2].encode('utf-8'))
             if size>batch_limit:
                 raise RecallError('embedding_request_too_large')
-            if batch and batch_bytes+size>batch_limit:
+            if batch and (batch_bytes+size>batch_limit or len(batch)>=batch_max_texts):
                 batches.append(batch)
                 batch, batch_bytes = [], 0
             batch.append(part)
@@ -223,6 +285,11 @@ class MemoryIndex:
             batches.append(batch)
         vectors, receipts, usage = [], [], []
         for batch_no,batch in enumerate(batches):
+            # 大资源要发很多批（374 片 = 12 批）。每 2 批让出一次事件循环：
+            # 只让出、不睡眠，不改总耗时。实测对速率无负面影响（19.0 vs 18.4 job/分），
+            # 且 CPU 峰值更低（36.2% vs 47.5%）。2026-11-19。
+            if batch_no and batch_no%2==0:
+                await asyncio.sleep(0)
             self._validate(lease)
             reply = await self.adapter.embed([p[2] for p in batch], model_key=self.model_key,
                 purpose='memory_index', call_key=lease.id+':batch:'+str(batch_no), source_refs=[ref])

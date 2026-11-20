@@ -22,6 +22,8 @@ import java.util.LinkedHashSet;
 public class MessageService extends Service {
     private volatile boolean alive=false;private Thread reader;private volatile HttpURLConnection connection;
     private final LinkedHashSet<String> seen=new LinkedHashSet<>();private NotificationManager notifications;
+    // 手机工作区（Shizuku 副屏）保活：App 界面关掉、开机自启、系统杀进程后都靠这个线程重建。
+    private volatile boolean workspaceAlive=true;private Thread workspaceKeepalive;
     @Override public void onCreate(){
         super.onCreate();notifications=getSystemService(NotificationManager.class);
         notifications.createNotificationChannel(new NotificationChannel("connection","保持消息连接",NotificationManager.IMPORTANCE_LOW));
@@ -29,10 +31,41 @@ public class MessageService extends Service {
         try{JSONArray values=new JSONArray(Api.prefs(this).getString("seen","[]"));for(int i=0;i<values.length();i++)seen.add(values.getString(i));}catch(Exception ignored){}
         Notification notification=connectionNotification("正在连接小鱼…");
         if(Build.VERSION.SDK_INT>=34)startForeground(1,notification,ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING);else startForeground(1,notification);
+        startWorkspaceKeepalive();
+    }
+    /**
+     * 让手机工作区不依赖 App 界面：开机、界面被划掉、Shizuku 晚一点才启动，
+     * 都由这里每 30 秒重试一次绑定；成功一次就重报能力，云端马上能看到手机。
+     * 绑定是阻塞调用（最多等 3 秒），只能在后台线程跑。
+     */
+    private void startWorkspaceKeepalive(){
+        if(workspaceKeepalive!=null)return;
+        workspaceKeepalive=new Thread(()->{
+            while(workspaceAlive){
+                try{
+                    if(Api.paired(MessageService.this)&&!PhoneWorkspaceManager.available()){
+                        boolean ok=PhoneWorkspaceManager.connect(getApplicationContext(),false);
+                        try{Api.prefs(MessageService.this).edit().putString("workspace_state",
+                            new JSONObject().put("at",System.currentTimeMillis()).put("available",ok)
+                                .put("state",PhoneWorkspaceManager.state())
+                                .put("detail",PhoneWorkspaceManager.lastError()==null?"":PhoneWorkspaceManager.lastError())
+                                .toString()).apply();}catch(Exception ignored){}
+                        if(ok)try{PhoneService.refreshCapabilities();}catch(Throwable ignored){}
+                    }
+                }catch(Throwable ignored){}
+                // 注册也要常驻：无障碍服务被系统回收时，这里仍按真实状态上报
+                // （enabled=false 也是事实），她那边就不会凭空看到"手机离线"。
+                if(Api.paired(MessageService.this))try{PhoneService.register(getApplicationContext());}catch(Throwable ignored){}
+                try{Thread.sleep(30000L);}catch(InterruptedException stop){return;}
+            }
+        },"workspace-keepalive");
+        workspaceKeepalive.setDaemon(true);
+        workspaceKeepalive.start();
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId){
         if(!Api.paired(this)){stopSelf();return START_NOT_STICKY;}
         if(!alive){alive=true;reader=new Thread(this::listen,"companion-events");reader.start();}
+        startWorkspaceKeepalive();
         return START_STICKY;
     }
     @Override public IBinder onBind(Intent intent){return null;}
@@ -111,5 +144,5 @@ public class MessageService extends Service {
             if(alive){state(false);try{Thread.sleep(3000);}catch(InterruptedException ignored){}}
         }
     }
-    @Override public void onDestroy(){alive=false;if(connection!=null)connection.disconnect();if(reader!=null)reader.interrupt();super.onDestroy();}
+    @Override public void onDestroy(){alive=false;workspaceAlive=false;if(connection!=null)connection.disconnect();if(reader!=null)reader.interrupt();if(workspaceKeepalive!=null)workspaceKeepalive.interrupt();super.onDestroy();}
 }

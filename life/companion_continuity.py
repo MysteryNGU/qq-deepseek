@@ -121,7 +121,14 @@ class Continuity:
             (identity,self.core.life.agent_id))
         if action and action['project_ref']!=project_ref:
             payload=json.loads(action['action'])
-            if payload.get('kind')!='body' or self.core._project_ref(payload.get('project',''))!=project_ref:action=None
+            # 只读查询类动作可以跨项目当证据：memory 的 used/skill 的 list 都不改任何东西，
+            # 它们的结果（"这个能力今天用过没有"）本来就是给任意项目做判断用的。
+            # 2026-11-18 实测：她把 memory op=used 的真实结果（web 今天 0 次）引到
+            # "查今天有没有用网页搜索"这个项目里，被判成"证据不属于此项目"，
+            # 于是每轮降级→项目更新被丢→她重试，9 分钟里同一件事做了 8 次。
+            readonly = payload.get('kind') in {'memory','skill'}
+            if not readonly and (payload.get('kind')!='body' or self.core._project_ref(payload.get('project',''))!=project_ref):
+                action=None
         if action and action['status'] not in {'pending','running'} and action['result'] and self._visible_event(action['source']):
             result=json.loads(action['result'])
             return dict(kind='action',success=action['status'] in {'completed','succeeded'}

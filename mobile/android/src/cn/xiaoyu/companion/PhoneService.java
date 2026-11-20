@@ -30,7 +30,7 @@ public class PhoneService extends AccessibilityService {
     private static final ExecutorService network=Executors.newSingleThreadExecutor();
     private static final ExecutorService workspace=Executors.newSingleThreadExecutor();
     private static final Handler main=new Handler(Looper.getMainLooper());
-    private static final String[] OPERATIONS={"info","screenshot","tap","swipe","text","back","home","recents","open_app"};
+    private static final String[] OPERATIONS={"info","screenshot","tap","swipe","text","back","home","recents","open_app","apps"};
     private static final String[] WORKSPACE_OPERATIONS={"workspace_open","workspace_status","workspace_close"};
     // 跟着消息连接的 20 秒节奏重报能力；失败最多重试 3 次，退避 2s/4s/8s。
     private static final long REGISTER_INTERVAL_MS=20000L;
@@ -159,7 +159,15 @@ public class PhoneService extends AccessibilityService {
         register(this);try{MainActivity.event(new JSONObject().put("type","phone_capability").put("enabled",true));}catch(Exception ignored){}
     }
     @Override public void onAccessibilityEvent(AccessibilityEvent event){}
-    @Override public void onInterrupt(){if(!active.isEmpty())finish(active,false,"Android interrupted the Accessibility service.",null);}
+    @Override public void onInterrupt(){interruptAll("Android interrupted the Accessibility service.");}
+
+    // 用户从 App 里主动"停止手机操作"走这里；与 onInterrupt 共用同一个收尾入口。
+    // 注意：finish 是 private，但 Java 的 private 是**类级**可见性，同类静态方法访问本类实例成员合法。
+    static void interruptAll(String reason){
+        PhoneService service=current;
+        if(service==null||service.active.isEmpty())return;
+        service.finish(service.active,false,reason,null);
+    }
     @Override public void onDestroy(){
         if(!active.isEmpty())finish(active,false,"Accessibility service disconnected.",null);
         if(current==this)current=null;register(this);
@@ -202,6 +210,7 @@ public class PhoneService extends AccessibilityService {
         try{
             switch(op){
                 case "info":finish(id,true,inspect().toString(),null);break;
+                case "apps":listApps(id);break;
                 case "screenshot":screenshot(id);break;
                 case "tap":gesture(id,args,false);break;
                 case "swipe":gesture(id,args,true);break;
@@ -236,6 +245,27 @@ public class PhoneService extends AccessibilityService {
         for(int i=0;i<node.getChildCount()&&nodes.length()<180;i++){AccessibilityNodeInfo child=node.getChild(i);if(child!=null){try{walk(child,path+"."+i,nodes,depth+1);}finally{child.recycle();}}}
     }
     private void global(String id,int action){boolean ok=performGlobalAction(action);finish(id,ok,ok?"Android accepted the global action; inspect the resulting screen.":"Android rejected the global action.",null);}
+    /** 可启动应用清单：让她自己看世界上有什么，而不是猜包名。 */
+    private void listApps(String id){
+        try{
+            Intent main=new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+            java.util.List<android.content.pm.ResolveInfo> resolved=getPackageManager().queryIntentActivities(main,0);
+            java.util.TreeMap<String,String> sorted=new java.util.TreeMap<>();
+            for(android.content.pm.ResolveInfo info:resolved){
+                if(info.activityInfo==null)continue;
+                CharSequence label=info.loadLabel(getPackageManager());
+                sorted.put(info.activityInfo.packageName,label==null?info.activityInfo.packageName:label.toString());
+            }
+            JSONArray rows=new JSONArray();
+            for(java.util.Map.Entry<String,String> entry:sorted.entrySet()){
+                rows.put(new JSONObject().put("package",entry.getKey()).put("name",entry.getValue()));
+                if(rows.length()>=200)break;
+            }
+            finish(id,true,rows.toString(),null);
+        }catch(Throwable error){
+            finish(id,false,"读取应用清单失败："+error.getClass().getSimpleName(),null);
+        }
+    }
     private float coordinate(JSONObject args,String name,int maximum)throws Exception{double value=args.getDouble(name);if(Double.isNaN(value)||Double.isInfinite(value)||value<0||value>=maximum)throw new IllegalArgumentException(name+" outside physical screen bounds");return(float)value;}
     private void gesture(String id,JSONObject args,boolean swipe)throws Exception{
         DisplayMetrics m=metrics();Path path=new Path();path.moveTo(coordinate(args,swipe?"x1":"x",m.widthPixels),coordinate(args,swipe?"y1":"y",m.heightPixels));

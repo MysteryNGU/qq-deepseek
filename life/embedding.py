@@ -6,7 +6,7 @@ from dataclasses import dataclass, fields
 import json
 import os
 from urllib.parse import urlsplit
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 from .life_access import RecallError
@@ -56,9 +56,21 @@ class EmbeddingConfig:
         return result
 
 
+# 8231 是单线程 HTTP 服务（life/local_embedding.py 的 BoundedHTTPServer(HTTPServer)
+# 且 get_request 里 settimeout(10)）。多个请求同时打过去只会排队，前面的连接超 10 秒
+# 就被断开，客户端看到的是 HTTPError，job 于是被打成 unknown（2026-11-19 实测）。
+# 这里把「真正发出去的那一次 IO」串行化；本地记账、围栏校验不受影响。
+_EMBEDDING_IO_LOCK = asyncio.Lock()
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+# 预算预留一旦发生，这个 key 就永久不可复用（reserve 判重不看 state，settle 不删行）。
+# 每次冲突推进一次 generation 换新 key；上限防止无限推进。
+MAX_GENERATION = 5
 
 
 class HttpEmbedding:
@@ -127,7 +139,13 @@ class HttpEmbedding:
                 if saved['state']=='completed' and saved.get('result') and saved['expires']>self.life.clock():
                     return saved['result']
                 if saved['state'] not in {'completed','evicted'}:
-                    return dict(state='unknown', vectors=[], input_digests=input_digests)
+                    # 2026-11-19：原来这里无条件返回 unknown，而 unknown 记录本身带
+                    # expires（样本 created+3600s）。不看它就会永久死锁：
+                    # job 每次重试都被挡回 unknown，985 条记忆永远拿不到索引。
+                    # 窗口内不重试（尊重幂等与计费），窗口外放开，
+                    # 由下面的 generation+1 走新的 billing_key。
+                    if saved.get('expires', 0) > self.life.clock():
+                        return dict(state='unknown', vectors=[], input_digests=input_digests)
                 # A received successful result was deliberately evicted. This
                 # is a new paid query, never a retry of a submitted/unknown call.
                 generation=saved.get('generation',0)+1
@@ -138,7 +156,19 @@ class HttpEmbedding:
                 self.spending.reserve_external(billing_key, purpose=purpose,
                     maximum_nano=byte_count*config.input_nano_per_token,
                     price_version=config.price_version, source_refs=source_refs)
-            except SessionFailure:
+            except SessionFailure as failure:
+                # 2026-11-19：settle 之后 spending_calls 的行仍在（只改成 settled、不删），
+                # 所以这个 key 永远不能复用；而 generation 原本只在 reserve 成功后才落盘，
+                # 于是「要推进 generation 必须先 reserve 成功，要 reserve 成功必须先推进
+                # generation」形成自锁。这里在冲突时直接把 generation+1 落盘并让上层重试。
+                if getattr(failure, 'code', '') == 'idempotency_conflict':
+                    advanced = generation + 1
+                    if advanced > MAX_GENERATION:
+                        raise RecallError('embedding_generation_exhausted') from None
+                    with self.repo.tx():
+                        saved.update(generation=advanced)
+                        self.repo._exec('UPDATE meta SET v=? WHERE k=?', (encode(saved), state_key))
+                    raise RecallError('embedding_generation_advanced') from None
                 raise RecallError('embedding_budget_unavailable') from None
             saved = dict(fingerprint=fingerprint, fence=fence, state='submitted', sources=source_refs,generation=generation,billing_key=billing_key,
                          created=self.life.clock(), expires=self.life.clock()+3600)
@@ -149,7 +179,8 @@ class HttpEmbedding:
                 raise RecallError('stale_source')
             for ref in source_refs:
                 self.life.life_access.load(self.life.life_access.bind(self.life.scope('__memory_internal__'), mode='internal'), ref)
-            reply = await asyncio.to_thread(self.transport, texts)
+            async with _EMBEDDING_IO_LOCK:
+                reply = await asyncio.to_thread(self.transport, texts)
             rows = reply.get('data')
             if not isinstance(rows, list) or len(rows) != len(texts) or [r.get('index') for r in rows] != list(range(len(texts))):
                 raise RecallError('invalid_embedding')
@@ -179,6 +210,28 @@ class HttpEmbedding:
             # timeouts/ambiguous submitted requests unknown, but don't poison a
             # query or index job forever while a local service is starting.
             reason=error.reason if isinstance(error,URLError) else error
+            # HTTP 4xx：服务端明确拒绝（输入不合法），请求没被处理，不可能产生费用。
+            #
+            # 必须释放预留：reserve_external 判重是
+            #     SELECT 1 FROM spending_calls WHERE call_key=?   -- 不看 state
+            # 而 settle_external 只把行 UPDATE 成 settled、不删行。所以只要预留过，
+            # 这个 key 就再也不能用，下次必撞 idempotency_conflict
+            # （2026-11-19 实测 72 条 job 卡在这里两天）。
+            #
+            # 释放后仍判 terminal：settle 之后行还在，key 永远不能复用；且 400 是
+            # 「客户端算错了」（条数超 32 / 长度超 512），重试不会自己好。
+            rejected = isinstance(error, HTTPError) and 400 <= int(getattr(error, 'code', 0) or 0) < 500
+            if rejected:
+                self.spending.settle_external(billing_key,0)
+                with self.repo.tx():
+                    current = self.repo._one('SELECT v FROM meta WHERE k=?', (state_key,))
+                    if current:
+                        # 保持 unknown：写 evicted 会让 generation 不再进位，
+                        # billing_key 永远停在原值（见 generation +1 的条件）。
+                        saved.update(state='unknown', error='rejected_by_provider')
+                        saved.pop('result', None)
+                        self.repo._exec('UPDATE meta SET v=? WHERE k=?',(encode(saved),state_key))
+                raise RecallError('embedding_rejected_input') from None
             if isinstance(reason,ConnectionRefusedError):
                 self.spending.settle_external(billing_key,0)
                 with self.repo.tx():

@@ -127,8 +127,18 @@ def phone_context_fact(context, *, now=None):
         return fact('phone.link', 'phone', 'offline', source_ref=source, observed_at=now,
                     detail='手机注册过但没有活动连接（App 不在前台或已断开）',
                     raw=context)
+    # 世界事实里带上工作区清单：她不用背 id，也不该靠猜。
+    workspaces = [item for item in (streaming[0].get('workspaces') or []) if isinstance(item, dict)]
+    detail = '%d 台手机有活动连接' % len(streaming)
+    if workspaces:
+        detail += '；工作区 ' + '、'.join(
+            '%s%s' % (item.get('workspace_id'),
+                      ('（%s）' % item.get('package')) if item.get('package') else '')
+            for item in workspaces[:4])
+    elif streaming[0].get('workspace_state'):
+        detail += '；工作区状态 %s' % streaming[0].get('workspace_state')
     return fact('phone.link', 'phone', 'ready', source_ref=source, observed_at=now,
-                detail='%d 台手机有活动连接' % len(streaming), raw=context)
+                detail=detail, raw=context)
 
 
 def channel_fact(name, value, *, now=None):

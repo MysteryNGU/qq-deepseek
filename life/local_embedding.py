@@ -76,6 +76,10 @@ class BoundedHTTPServer(HTTPServer):
         return connection,address
 
 
+class _EmptyText(ValueError):
+    """One of the submitted texts is blank; distinct from shape/count errors."""
+
+
 def handler_for(model,manifest,digest):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args):
@@ -110,12 +114,18 @@ def handler_for(model,manifest,digest):
                 request=json.loads(self.rfile.read(size))
                 texts=request.get('input')
                 if (request.get('model')!=manifest['model_id'] or not isinstance(texts,list)
-                        or not 1<=len(texts)<=32 or any(not isinstance(t,str) or not t.strip() for t in texts)):
+                        or not 1<=len(texts)<=32 or any(not isinstance(t,str) for t in texts)):
                     raise ValueError('invalid_embedding_input')
+                # 空白文本单独报：整批 400 时客户端无法知道是哪一条的问题
+                # （2026-11-19 一个 "\n" 片让整个资源索引不了）。
+                if any(not t.strip() for t in texts):
+                    raise _EmptyText()
                 vectors,tokens=model.embed(texts)
                 self.reply(200,dict(object='list',model=manifest['model_id'],
                     data=[dict(index=i,object='embedding',embedding=v) for i,v in enumerate(vectors)],
                     usage=dict(prompt_tokens=tokens,total_tokens=tokens)))
+            except _EmptyText:
+                self.reply(400,dict(error='empty_embedding_text'))
             except (ValueError,TypeError,KeyError):
                 self.reply(400,dict(error='invalid_embedding_input'))
             except Exception:

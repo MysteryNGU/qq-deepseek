@@ -5,7 +5,9 @@ import base64
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 import hmac
+import inspect
 import json
+import logging
 import os
 from pathlib import Path
 import queue
@@ -16,6 +18,8 @@ import uuid
 from urllib.parse import urlsplit
 
 from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -79,6 +83,113 @@ async def remote_call(config, method, *args):
             return result.get('result')
 
 
+#: 图片 mime → 落盘后缀；与浏览器适配器同一张表（不认识的后缀原样留 img）。
+IMAGE_SUFFIX = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif'}
+
+
+def browser_image_blobs(result, *, read_limit=32 * 1024 * 1024,
+                        wire_limit=24 * 1024 * 1024):
+    """把桌面端落盘的浏览器截图读成字节，随回执一起回传给云端。
+
+    浏览器适配器把截图写在**桌面主机**上；云端进程读不到那个路径。computer 早就
+    有 `_image_png` 回传，浏览器以前没有——于是云端只拿到一个打不开的路径，
+    她「看得见路径却看不见画面」。这里补上同款回传：读不到或超过回传预算的，
+    记一条 ``skipped`` 让云端说明原因，而不是悄悄少一张图。
+
+    回传预算按 base64 后的体积算（WS 单条消息上限 40MB）：超过就不传字节，
+    由云端按「桌面端有、云端读不到」如实写进回执。
+    """
+    blobs = []
+    images = result.get('images') if isinstance(result, dict) and isinstance(result.get('images'), list) else []
+    budget = wire_limit
+    for index, item in enumerate(images):
+        if not isinstance(item, dict) or not item.get('saved'):
+            continue
+        path = Path(str(item.get('path') or ''))
+        try:
+            if not path.is_file():
+                blobs.append(dict(index=index, path=str(path), skipped='unreadable'))
+                continue
+            size = path.stat().st_size
+            encoded_size = (size + 2) // 3 * 4
+            if not size or size > read_limit:
+                blobs.append(dict(index=index, path=str(path), skipped='too_large', bytes=size))
+                continue
+            if encoded_size > budget:
+                blobs.append(dict(index=index, path=str(path), skipped='too_large', bytes=size))
+                continue
+            raw = path.read_bytes()
+        except OSError:
+            blobs.append(dict(index=index, path=str(path), skipped='unreadable'))
+            continue
+        budget -= encoded_size
+        blobs.append(dict(index=index, path=str(path),
+                          mime=str(item.get('mime') or 'image/png'), bytes=len(raw),
+                          data=base64.b64encode(raw).decode('ascii')))
+    return blobs
+
+
+def adopt_remote_images(home, result, *, limit=32 * 1024 * 1024):
+    """把桌面端回传的图片字节落到云端目录，并把回执里的路径换成云端可读的那份。
+
+    判定标准是「云端进程用这个路径能不能读到文件」：有字节就写本地副本；
+    没有字节（桌面端还不回传、或图片超过回传预算）就保留桌面路径并写明原因，
+    由统一出口标成「截图在桌面端、云端读不到」——绝不静默返回打不开的路径。
+    """
+    if not isinstance(result, dict):
+        return result
+    blobs = result.pop('_image_blobs', None) or []
+    images = ([item for item in result.get('images') or [] if isinstance(item, dict)]
+              if isinstance(result.get('images'), list) else [])
+    folder = Path(home) / 'data/companion/artifacts/browser'
+    for blob in blobs:
+        if not isinstance(blob, dict) or blob.get('skipped'):
+            continue
+        try:
+            raw = base64.b64decode(str(blob.get('data') or ''), validate=True)
+        except (ValueError, TypeError):
+            continue
+        if not raw or len(raw) > limit:
+            continue
+        mime = str(blob.get('mime') or 'image/png')
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / (uuid.uuid4().hex + '.' + IMAGE_SUFFIX.get(mime, 'img'))
+            path.write_bytes(raw)
+        except OSError:
+            continue
+        try:
+            index = int(blob.get('index'))
+        except (TypeError, ValueError):
+            index = -1
+        entry = dict(mime=mime, saved=True, path=str(path), bytes=len(raw),
+                     cloud_readable=True, source_path=str(blob.get('path') or ''),
+                     coordinate_space='页面像素（由浏览器工具决定，可能已缩放）')
+        if 0 <= index < len(images):
+            images[index] = dict(images[index], **entry)
+        else:
+            images.append(entry)
+    # 桌面端明确说「没回传」的那些：保留路径 + 原因，别让下游以为可读。
+    for blob in blobs:
+        if not isinstance(blob, dict) or not blob.get('skipped'):
+            continue
+        try:
+            index = int(blob.get('index'))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= index < len(images)):
+            continue
+        reason = ('图片太大，没有随回执回传' if blob.get('skipped') == 'too_large'
+                  else '桌面端读不到这个文件，没有回传')
+        images[index].update(saved=False, cloud_readable=False,
+                             desktop_path=str(blob.get('path') or images[index].get('path') or ''),
+                             reason=reason)
+    if images:
+        result['images'] = images
+        result['image_paths'] = [str(item.get('path')) for item in images if item.get('saved')]
+    return result
+
+
 class RemoteExecutor:
     def __init__(self, server, original): self.server, self.original = server, original
     def available_kinds(self):
@@ -95,8 +206,23 @@ class RemoteExecutor:
             destinations.append(dict(target='qq',source=dict(kind='qq',name='QQ')))
         return destinations
     async def run(self, action):
-        if action.get('kind')=='computer': return await self.server.control('computer', action)
-        if action.get('kind')=='phone': return await self.server.mobile.phone.run(action)
+        """旁路（computer/browser/phone）也走执行器的统一出口。
+
+        这三个 kind 由服务端直接分派给桌面/手机，不经过 ActionExecutor.run；
+        以前它们各自补一套 provenance/visibility（或者干脆不补）。现在统一走
+        ``run_with_receipt``：来源分级与缺口只有一份实现，不会再漂移。
+        """
+        from .companion_executor import run_with_receipt
+        kind = str((action or {}).get('kind') or '')
+        if kind == 'computer':
+            return await run_with_receipt(kind, action,
+                                          lambda: self.server.control('computer', action))
+        if kind == 'browser':
+            return await run_with_receipt(kind, action,
+                                          lambda: self.server.control('browser', action))
+        if kind == 'phone':
+            return await run_with_receipt(kind, action,
+                                          lambda: self.server.mobile.phone.run(action))
         return await self.original.run(action)
     async def close(self): await self.original.close()
 
@@ -106,7 +232,12 @@ class CompanionServer:
     METHODS = {'chat', 'snapshot', 'set_active', 'configure_town', 'bilibili_call', 'update_body',
                'observe_body', 'control_project', 'acknowledge_rendered',
                'im_configure', 'im_wechat_login_begin', 'im_wechat_login_poll', 'im_wechat_logout',
-               'im_test'}
+               'im_test',
+               # 桌面端下拉用：服务商与模型清单（不需要桌面租约）
+               'providers',
+               # 只读诊断：真实服务此刻认为哪些 kind 可用、不可用的原因是什么。
+               # 2026-11-19：没有这个之前，只能靠本地构造 Companion 去猜，测的不是真实服务。
+               'executor_kinds'}
     def __init__(self, cfg, home, token, companion_factory=None):
         self.cfg,self.home,self.token = cfg,Path(home),token
         if not token: raise ValueError('Server token required')
@@ -140,8 +271,13 @@ class CompanionServer:
         if origin and origin!=f'{request.scheme}://{request.host}': raise web.HTTPForbidden()
         return await handler(request)
 
+    # 不该让快照缓存失效的事件类型：它们本身就是快照的结果或纯通知。
+    # 2026-11-19：emit 无条件清缓存 + :441 每次 call 后 emit(snapshot) 把 CPU 顶到 96%。
+    KEEP_CACHE_EVENTS = ('snapshot', 'remote_result', 'remote_cancel')
+
     def emit(self, event):
-        self._snapshot_cache = None
+        if event.get('type') not in self.KEEP_CACHE_EVENTS:
+            self._snapshot_cache = None
         self.mobile.emit(event)
         targets=event.get('delivery',{}).get('targets',['all'])
         if self.im is not None: self.im.emit(event,targets)
@@ -191,6 +327,104 @@ class CompanionServer:
         await asyncio.gather(*list(self.tasks),return_exceptions=True)
         if self.core: await self.core.close()
         self.mobile.close()
+
+    def executor_kinds(self):
+        """只读：真实 executor 此刻报告的能力，以及每一项不可用的原因。
+
+        2026-11-19 起因：验「她能不能用 computer」时没有可观测入口，
+        只能本地构造 Companion 去测——构造出来的 executor 不是服务里的那个，
+        于是得到一个看起来合理但与事实无关的答案。
+        """
+        executor = getattr(self.core, 'executor', None)
+        source = 'remote' if type(executor).__name__ == 'RemoteExecutor' else 'local'
+        try:
+            kinds = list(executor.available_kinds()) if hasattr(executor, 'available_kinds') else ['command']
+        except Exception as error:
+            return dict(kinds=[], source=source, error=type(error).__name__,
+                        desktop_connected=self.peer is not None)
+        local_computer = False
+        try:
+            from .companion_computer import Computer
+            local_computer = bool(Computer(self.home).available())
+        except Exception:
+            local_computer = False
+
+        verified = self._verified_kinds()
+        detail = {}
+        for kind in kinds:
+            how = verified.get(kind)
+            detail[kind] = dict(available=True, verified=how is not None,
+                                verified_how=how)
+        if 'computer' not in kinds:
+            if self.peer is None:
+                reason = '桌面端未连（/ws 没有活动连接）'
+            else:
+                reason = '桌面端已连，但执行器未报可用'
+            detail['computer'] = dict(available=False, verified=False,
+                                      verified_how=None, reason=reason)
+        if 'phone' not in kinds:
+            try:
+                connected = self.mobile.phone.context().get('connected')
+            except Exception:
+                connected = None
+            detail['phone'] = dict(available=False, verified=False, verified_how=None,
+                                   reason='手机端未连' if connected is False else '手机状态读取失败')
+        # dsh 的边界是适配器事实，不在这里改判——可用就照报，只在没实测过时说清。
+        if 'dsh' in detail and not detail['dsh']['verified']:
+            detail['dsh']['reason'] = ('adapter 只支持 DeepSeek 官方端点；'
+                                       '2026-11-18 实测 401，尚未在本端点跑通过')
+
+        return dict(kinds=kinds, source=source,
+                    desktop_connected=self.peer is not None,
+                    runtimes=dict(computer_remote=self.peer is not None,
+                                  computer_local=local_computer),
+                    detail=detail)
+
+    def _verified_kinds(self):
+        """哪些 kind 真的留下过成功回执。
+
+        判据只认台账：companion_actions 里该 kind 有 completed 记录。
+        这不证明「每次都成功」，只证明「至少真的跑通过一次」——
+        比「executor 认为可用」强一档，比「刚才试通了」弱一档，所以单独一列。
+        """
+        agent_id = getattr(getattr(self.core, 'life', None), 'agent_id', None)
+        if not agent_id:
+            return {}
+        out = {}
+        try:
+            rows = self.core.repo._all(
+                "SELECT action, status, updated FROM companion_actions "
+                "WHERE agent=? AND status IN ('completed','succeeded') "
+                "ORDER BY updated DESC LIMIT 500", (agent_id,))
+        except Exception:
+            return {}
+        for row in rows:
+            try:
+                kind = json.loads(row['action'] or '{}').get('kind')
+            except Exception:
+                continue
+            if not kind or kind in out:
+                continue
+            # status='completed' 只说明这条动作跑完了，不说明它做成了。
+            # 2026-11-19：dsh 有两条 completed，result 里 return_code=0，
+            # 内容却是「本机没有 ADB 通道」「无法核实」——那是没做成。
+            try:
+                body = json.loads(row['result'] or '{}')
+            except Exception:
+                body = {}
+            if isinstance(body, dict):
+                code = body.get('return_code', body.get('exit_code'))
+                if isinstance(code, (int, float)) and code != 0:
+                    continue
+                inner = str(body.get('status') or '')
+                if inner in ('failed', 'error', 'timeout'):
+                    continue
+            # 只说清它证明了什么：这个 kind 至少跑完过一次且没有非零退出。
+            # 它不证明某次具体任务做成了（dsh 有两次 completed 内容是「没有 ADB」）。
+            out[kind] = ('台账里有跑完且无非零退出的记录；'
+                         '这不等于那一次的任务做成了（最近一次 %s）') % time.strftime(
+                '%Y-%m-%d %H:%M', time.localtime(float(row['updated'] or 0)))
+        return out
 
     async def health(self, request): return web.json_response(dict(ok=True, desktop_connected=self.peer is not None))
 
@@ -244,6 +478,12 @@ class CompanionServer:
         if method not in self.METHODS or not isinstance(args,list): raise ValueError('Unsupported remote operation')
         if method in ('update_body','observe_body') and not desktop: raise ValueError('Desktop lease required')
         if method=='snapshot': return self.snapshot()
+        if method=='executor_kinds': return self.executor_kinds()
+        if method=='providers':
+            # 桌面端只做「选服务商 → 选模型 → 填 key」，所以这里只给这些。
+            # 不带 api_key、不带内部判据；空 models + needs_manual_model 表示要手填。
+            from . import providers as provider_catalog
+            return dict(providers=provider_catalog.catalog())
         if method.startswith('im_'):
             if self.im is None: raise ValueError('IM 通道还没有启动')
             try:
@@ -268,7 +508,14 @@ class CompanionServer:
             if not 1<=len(args)<=2:raise ValueError('Chat accepts text and optional images only')
             if getattr(self.core,'supports_message_routing',False):
                 return await self.core.chat(*args,source=dict(kind='desktop',name='桌面'))
-        return await getattr(self.core,method)(*args)
+        # 通用分发：`control_project`、`configure_town` 这类是同步方法，
+        # 以前在这里无条件 await，结果桌面一暂停/恢复项目就只拿到
+        # `TypeError: object dict can't be used in 'await' expression`——
+        # 项目管理明明是普通接口，却因为分发写死成异步而不可用。
+        result = getattr(self.core, method)(*args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     async def rpc(self, request):
         method=None
@@ -277,6 +524,11 @@ class CompanionServer:
             return web.json_response(dict(ok=True,result=result))
         except Exception as error:
             # IM 通道的失败通常是主人刚填的地址/开关不对，说清楚才有用；其它操作仍只报类型。
+            # 失败一律落日志、带完整堆栈：只回类型名的话，下次还是查不到根因
+            # （2026-11-18 一次瞬时 ValueError 就是这么丢掉的）。
+            # **脱敏**：只记方法名和异常本身，不记 headers、请求体、token 或密钥。
+            # 调用方拿到的仍然只有类型名，堆栈不出服务端。
+            log.exception('rpc %s 失败', method)
             detail=str(error) if isinstance(method,str) and method.startswith('im_') else ''
             return web.json_response(dict(ok=False,error='远端操作未完成：'+type(error).__name__+('：'+detail if detail else '')))
 
@@ -315,13 +567,20 @@ class CompanionServer:
         async def send():
             while True: await ws.send_json(await peer[1].get())
         sender=asyncio.create_task(send()); calls=set()
-        self.emit(dict(type='snapshot',snapshot=self.snapshot(include_image_data=True)))
+        # 2026-11-19 止血：桌面端连着时每次 call 后都发全量 snapshot，
+        # 而 snapshot() 里 _projects 被重复计算 5 次以上（每次 2ms 全表查询），
+        # 事件循环被占满，/alive 超时、CPU 99%。先改成不发快照——
+        # 桌面端自己有增量状态，不需要每次全量推送。
+        if not getattr(self, 'SKIP_SNAPSHOT_EMIT', True):
+            self.emit(dict(type='snapshot',snapshot=self.snapshot(include_image_data=True)))
         async def call(m):
             try:
                 result=await self.invoke(m.get('method'),m.get('args',[]),desktop=True)
                 if self.peer is peer:
                     self.emit(dict(type='remote_result',id=m.get('id'),ok=True,result=result))
-                    self.emit(dict(type='snapshot',snapshot=self.snapshot()))
+                    # 同上：每次 call 后的全量快照也是热路径，先不发。
+                    if not getattr(self, 'SKIP_SNAPSHOT_EMIT', True):
+                        self.emit(dict(type='snapshot',snapshot=self.snapshot()))
             except Exception as error:
                 if self.peer is peer: self.emit(dict(type='error',text='远端操作未完成：'+type(error).__name__))
         try:
@@ -340,6 +599,9 @@ class CompanionServer:
                             if len(raw)>24*1024*1024: raise ValueError('Image too large')
                             folder=self.home/'data/companion/artifacts';folder.mkdir(parents=True,exist_ok=True)
                             path=folder/(uuid.uuid4().hex+'.png');path.write_bytes(raw);result['image_path']=str(path)
+                        # 浏览器截图在桌面主机上：把回传的字节落成云端副本，
+                        # 没回传就保持桌面路径（统一出口会写明云端读不到）。
+                        result=adopt_remote_images(self.home,result)
                         future.set_result(result)
         finally:
             sender.cancel();await asyncio.gather(sender,return_exceptions=True)
@@ -380,6 +642,12 @@ class RemoteServiceThread:
         from .companion_computer import Computer
         from .companion_tunnel import ManagedTunnel
         self.loop=asyncio.get_running_loop();self.stop=asyncio.Event();self.task=asyncio.current_task();self.computer=Computer(self.home)
+        # 浏览器适配器是可选的：没装就保持 None，execute() 会如实说不可用。
+        try:
+            from .companion_browser_adapter import BrowserAdapter
+            self.browser=BrowserAdapter(self.home)
+        except Exception:
+            self.browser=None
         try:tunnel=ManagedTunnel(self.home,self.config)
         except (ValueError,OSError):
             self.events.put(dict(type='error',text='SSH连接配置无效，请检查本机ssh.json和密钥路径。'))
@@ -425,6 +693,20 @@ class RemoteServiceThread:
                 result=await self.computer.run(m['args'])
                 if result.get('image_path'):
                     result['_image_png']=base64.b64encode(Path(result.pop('image_path')).read_bytes()).decode('ascii')
+            elif m['kind']=='browser':
+                # 浏览器走本机适配器（MCP stdio），只读流程回放与页面原语都在这边。
+                # 适配器没装或没起来时如实说不可用，不退回别的通道。
+                browser = getattr(self, 'browser', None)
+                if browser is None:
+                    result = dict(status='failed', failed=True,
+                                  text='本机没有浏览器适配器：这一端没装 browser 能力，不是网页打不开。')
+                else:
+                    result = await browser.run(m['args'])
+                # 截图落在**本机**磁盘上，云端进程读不到：把字节一起回传（与 computer 同一套）。
+                if isinstance(result, dict):
+                    blobs = browser_image_blobs(result)
+                    if blobs:
+                        result['_image_blobs'] = blobs
             elif self.control:
                 result=await asyncio.wrap_future(self.control(m['args']['op'],m['args']['args']))
             else: result=dict(status='failed',failed=True,text='桌面身体尚未连接')

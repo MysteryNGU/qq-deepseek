@@ -212,7 +212,7 @@ class Recollection:
 
     def associate(self, scope, cue, trigger='thought'):
         ctx=self.runtime.life_access.bind(scope)
-        packet=self.runtime.life_recall.search(ctx,cue,budget=1200,limit=3)
+        packet=self.runtime.life_recall.search(ctx,cue,budget=1200,limit=3,include_cursor=False)
         ids=[item['resource_ref'] for item in packet['items']]
         if not ids:
             return []
