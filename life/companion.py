@@ -994,9 +994,11 @@ class Companion:
         'model_request_failed': '系统：模型请求失败',
         'delivery_failed': '系统：投递失败',
         'executor_exception': '系统：执行器异常',
+        'model_ignored_tool_call': '系统：模型没有按工具协议回答',
     }
     # 系统故障和程序边界分开署名：前者是「系统出的问题」，后者是「规则按设计生效」。
-    SYSTEM_RULES = {'parse_failed', 'model_request_failed', 'delivery_failed', 'executor_exception'}
+    SYSTEM_RULES = {'parse_failed', 'model_request_failed', 'delivery_failed', 'executor_exception',
+                    'model_ignored_tool_call'}
 
     @staticmethod
     def _boundary_rule_of(code, error):
@@ -1063,6 +1065,147 @@ class Companion:
 
     def _quiet_window_text(self):
         return str(getattr(self.cfg, 'quiet_hours', '') or '').strip()
+
+    # ------------------------------------------------ 无回执却说结果（t34）
+    # 事故（2026-11-21 01:45–01:58）：她连说 5 句「读了 / No such file or directory」，
+    # 台账里 0 条 tool_result。她的原话不删不改，但「本轮没有工具回执却说出了工具结果」
+    # 必须成为可查的违规记录——否则这句话就真的冒充了回执。
+    TOOL_RESULT_CLAIMS = (
+        r'no such file or directory',
+        r'permission denied',
+        r'command not found',
+        r'is a directory',
+        r'\berrno \d+',
+        r'\benoent\b',
+        r'\bexit code \d+',
+        r'\b[A-Z][A-Z0-9_]{2,}=[A-Za-z0-9._-]{4,}\b',
+    )
+
+    @classmethod
+    def _tool_result_claims(cls, text):
+        """回复里像工具结果的具体文本（系统错误串 / 文件内容样式的 token）。"""
+        blob = str(text or '')
+        found = []
+        for pattern in cls.TOOL_RESULT_CLAIMS:
+            match = re.search(pattern, blob, re.I)
+            if match and match.group(0)[:80] not in found:
+                found.append(match.group(0)[:80])
+        return found
+
+    def _recent_tool_result(self, *needles, seconds=900):
+        """近 15 分钟同会话的工具回执里，有没有这些文本。
+
+        引用「刚查过的内容」不算无回执，所以要看回执里是否真的出现过同样的串；
+        只按时间窗判断会把「她引用了没查过的东西」也放过去。
+        """
+        try:
+            since = time.time() - float(seconds)
+            rows = self.repo._all(
+                "SELECT payload FROM events WHERE agent_id=? AND conversation_id=? "
+                "AND source_kind='tool_observation' AND received_at>=?",
+                (self.life.agent_id, getattr(self.scope, 'conversation_id', ''), since))
+        except Exception:  # noqa: BLE001 - 查不到就按没有算，宁可多记一条事实
+            return False
+        if not needles:
+            return bool(rows)
+        blob = ' '.join(str(row['payload'] or '') for row in rows).lower()
+        return any(str(needle).lower() in blob for needle in needles)
+
+    @staticmethod
+    def _action_brief(action):
+        """动作摘要：kind/op + 具体目标（路径/命令/地址），用于回执里说清「哪个动作」。"""
+        kind = str(action.get('kind') or '动作')
+        op = str(action.get('op') or '').strip()
+        target = ''
+        try:
+            args = json.loads(action.get('arguments') or '{}')
+        except (TypeError, ValueError):
+            args = None
+        if isinstance(args, dict):
+            target = str(args.get('path') or args.get('url') or args.get('command') or '')[:80]
+        label = kind + ('/' + op if op else '')
+        return label, (target or ' '.join(str(action.get('goal') or '').split())[:80])
+
+    def _skipped_action_notices(self, skipped, source):
+        """被跳过的动作 → 她看得见的〔系统〕回执 + 下一轮的边界事实。
+
+        只陈述：哪个动作、属于哪个项目、项目现在是什么状态、系统没有把它派下去。
+        要不要新开项目/改回 active/就不做，由她决定。
+        """
+        texts = []
+        for item in skipped[:3]:
+            action, project = item['action'], item['project']
+            label, detail = self._action_brief(action)
+            key = str(project.get('key') or action.get('project') or '')
+            status = str(project.get('status') or 'unknown')
+            text = ('〔系统〕这个动作没有执行：%s%s；它所属的项目「%s」现在是 %s，不是 active。'
+                    '系统没有把动作挂到已结束的项目上。要现在做，可以在这一轮把它放进一个新项目，'
+                    '或先把这个项目改回 active——由你决定。' % (
+                        label, ('（%s）' % detail if detail else ''), key, status))
+            texts.append(text)
+            self._boundary('project_not_active',
+                           step_not_taken='动作没有执行：%s（项目「%s」%s）' % (label, key, status),
+                           reason='project_status=%s；动作 %s 没有派给执行器' % (status, label),
+                           refs=[source.id, str(item.get('index'))], source=source,
+                           extra=dict(action_kind=action.get('kind'), action_op=action.get('op'),
+                                      action_goal=action.get('goal'), project=key,
+                                      project_status=status, turn_id=source.id))
+        if len(skipped) > 3:
+            texts.append('〔系统〕还有 %d 个动作同样因为它们所属的项目不是 active 而没有执行。'
+                         % (len(skipped) - 3))
+        return texts
+
+    def _record_protocol_facts(self, source, purpose, decision, observation, result, reply):
+        """写两类协议事实：模型没按 respond 工具回答、无回执却说出了工具结果。
+
+        只记录，不改写她的原话、不删已经发出的内容、不替她道歉或改口。
+        """
+        wire_error = str((result or {}).get('wire_schema_error') or '').strip()
+        dispatched = getattr(self, '_last_dispatched_actions', None)
+        if dispatched is None:
+            acted = list(decision.get('actions') or [])
+        else:
+            acted = [1] * int(dispatched)
+        skipped = list(getattr(self, '_last_skipped_actions', []) or [])
+        observed = bool((observation or {}).get('action_result')
+                        or (observation or {}).get('settled_project_ref'))
+        if wire_error and not acted:
+            # 模型忽略了 respond 工具，这一轮退化成纯文本——这是系统侧事实，要可查。
+            self._boundary('model_ignored_tool_call',
+                           step_not_taken='这一轮模型没有按 respond 工具提交决定，改成纯文本回答',
+                           reason=wire_error[:200],
+                           refs=[getattr(source, 'id', None)], source=source,
+                           extra=dict(purpose=purpose, actions=0))
+        if acted or observed:
+            return None
+        communication = decision.get('communication') or {}
+        texts = [str(decision.get('reply') or ''),
+                 *[str(item) for item in (decision.get('followups') or [])],
+                 str(reply or '')]
+        spoken = communication.get('text')
+        if isinstance(spoken, str):
+            texts.append(spoken)
+        texts.extend(str(item.get('text') or '') for item in (decision.get('reports') or []))
+        claims = []
+        for text in texts:
+            for hit in self._tool_result_claims(text):
+                if hit not in claims:
+                    claims.append(hit)
+        if not claims:
+            return None
+        if self._recent_tool_result(*claims):
+            # 她引用的东西确实出现在刚查过的回执里：不是编造，不记违规。
+            return None
+        salvage = getattr(self, '_last_salvage', None) or {}
+        fact = dict(source=getattr(source, 'id', None), purpose=purpose,
+                    claims=claims, had_tool_result=False, actions=len(acted),
+                    skipped_actions=len(skipped),
+                    wire_schema_error=wire_error or None, salvage=salvage,
+                    reply_excerpt=(' '.join(texts[0].split())[:120] if texts else ''))
+        self._audit('no_substitution',
+                    '本轮没有工具回执，但回复里出现了具体工具结果',
+                    **fact)
+        return fact
 
     def _cancel_queued_action(self, row, *, reason='project_not_active', project_status=None):
         """排队中的行动因项目状态被取消：把原因写进 result，并留下边界事实。
@@ -3169,6 +3312,9 @@ class Companion:
                                 followups=[], remember=[], projects=[], actions=[], wake_after=0)
                 how = '系统署名：兜底提示语'
             self._system_notice = dict(notice, at=time.time())
+            self._last_salvage = dict(how=how, reason=str(error)[:200],
+                                      truncated=bool(getattr(error, 'truncated', False)),
+                                      at=time.time())
             self._boundary('parse_failed',
                            step_not_taken=notice['not_done'],
                            reason='%s：%s' % (type(error).__name__, str(error)[:160]),
@@ -3373,8 +3519,13 @@ class Companion:
                 if action.get('op')=='status':
                     continue
             field = 'command' if action['kind']=='command' else 'goal'
-            if not action.get(field, '').strip():
-                raise _retryable('这个行动缺 %s：一句话说清这步要做什么。' % field)
+            if not str(action.get(field) or '').strip():
+                if field == 'goal':
+                    # t34：goal 能从动作本身推出来（op + 目标），不能因为模型少写一句话
+                    # 就把整个工具调用整轮丢掉——那会变成「她说了却没做」。
+                    ensure_goal(action)
+                else:
+                    raise _retryable('这个行动缺 %s：一句话说清这步要做什么。' % field)
         return decision
 
     def _validate_action_projects(self, decision):
@@ -3430,7 +3581,14 @@ class Companion:
                         decision.setdefault('projects',[]).append(daily)
                         changes[DAILY_PROJECT] = daily
                 else:
-                    raise DecisionStateError('行动项目 '+action['project']+' 当前为 '+status+'；若用户要求继续，请在 projects 中明确更新为 active，或者使用新项目。未执行的行动不能宣称完成。')
+                    # t36：项目已结束不该让整轮作废（生产 02:13 的形态：她的动作被拿走，
+                    # 她只剩一句「这就去读」）。这里只把动作标记成拦下，由 _commit 跳过，
+                    # 并给她一条看得见的〔系统〕回执——要不要新开项目由她决定。
+                    action['blocked_reason'] = 'project_status=%s' % status
+                    action['blocked_project_status'] = status
+                    self._audit('activity', '动作所属项目不是 active，已标记为拦下，等待回执。',
+                                project=action['project'], project_status=status,
+                                action_kind=action.get('kind'))
 
     RECEIPT_ID = re.compile(r'\b(?:companion-action|memory|growth|town)[-_][0-9a-zA-Z]{8,}')
     # 她说"查过这个回执"时给的 id：必须真的存在，否则不许发出去。
@@ -3502,6 +3660,11 @@ class Companion:
         async with self._lock:
             # 上一轮可能留下「系统通知」标记；每轮开头清掉，避免把后面的气泡错标成系统消息。
             self._system_notice = None
+            # 本轮是否走了「解析失败→把原文当回复」的兜底（供 no_substitution 记录用）。
+            self._last_salvage = None
+            # 本轮派出去几个动作、跳过了几个（t36：跳过要有回执，也要计入「有没有工具回执」）。
+            self._last_skipped_actions = []
+            self._last_dispatched_actions = 0
             if source.payload.get('bilibili_event'):
                 observation = dict(observation or {},bilibili_event=source.payload['bilibili_event'])
             if purpose=='dialogue' and source.id != self._latest_dialogue:
@@ -3590,6 +3753,9 @@ class Companion:
                 reply = self._commit(source,decision,continuation_ref=(observation or {}).get('continuation_ref')
                     or (observation or {}).get('settled_project_ref'),quiet_town=quiet_town,quiet_bilibili=quiet_bilibili,
                     motivation_candidates=attention)
+                # t34：模型没按 respond 工具回答、或本轮没有任何工具回执却说出具体工具结果时，
+                # 都要留下可查的事实（不删她的原话，只记录「她没有回执却给出了回执样子的内容」）。
+                self._record_protocol_facts(source, purpose, decision, observation, result, reply)
                 if self._body_revision==body_revision:
                     self._body_pending = False
             except Exception as error:
@@ -3662,6 +3828,11 @@ class Companion:
         system_notice = getattr(self, '_system_notice', None)
         self._system_notice = None
         suppressed_silent = []
+        # t36：被跳过的动作（项目不是 active）与真正派出去的动作，各自计数。
+        # 跳过要变成她看得见的回执；派出去的数量决定「本轮到底有没有工具回执」。
+        skipped = []
+        dispatched = 0
+        notice_texts = set()
         # progress/none stay internal: the state change is saved, nothing is spoken.
         if (decision.get('communication') or {}).get('kind') in {'progress','none'}:
             suppressed_silent = list(bubbles)
@@ -3864,10 +4035,14 @@ class Companion:
                     # 丢掉整轮**：她已经说出口的话和已经确认的行动回执都是既成事实。
                     # 2026-11-18 实测：这条 raise 让一轮对话整轮失声（用户看到"发话没回复"）。
                     # 与 _guard_decision 的处理一致——放弃这个动作，保留回复。
-                    self._audit('activity', '这个行动所属的项目现在不是 active，已跳过该动作并保留回复。',
-                                project=action.get('project'), project_status=project['status'],
-                                action_kind=action.get('kind'))
+                    #
+                    # t36：跳过**不能静默**。02:13 生产实证：她说了「这就去读」，动作因
+                    # project_status=done 被拿走，只有一条 companion_activity，用户和下一轮的
+                    # 她都不知道。现在每条跳过都留系统署名的事实，并在这一轮就作为
+                    # 〔系统〕消息送到她眼前——判断权归她（新开项目 / 改回 active / 不做）。
+                    skipped.append(dict(action=action, project=dict(project), index=index))
                     continue
+                dispatched += 1
                 identity = stable_id('companion-action', source.id, str(index), encode(action))
                 self.repo._exec('INSERT OR IGNORE INTO companion_actions VALUES(?,?,?,?,?,?,?,?,?)',
                     (identity, self.life.agent_id, ref, source.id, encode(action), 'pending', None, time.time(), time.time()))
@@ -3879,6 +4054,19 @@ class Companion:
                 activities.append(('准备行动：'+action['project'], dict(action_id=identity, action=action)))
             self.followthrough.record(decision,source.id,continuation_ref=continuation_ref,
                 delegated_refs=self.town.pending_project_refs())
+            if skipped:
+                # t36：跳过的动作必须有她看得见的回执——同轮作为〔系统〕消息发出，
+                # 同时留一条边界事实进下一轮材料。不替她判断要不要重做。
+                notices = self._skipped_action_notices(skipped, source)
+                notice_texts = set(notices)
+                bubbles.extend(notices)
+                self._save('skipped_actions:'+source.id,
+                           [dict(kind=item['action'].get('kind'), op=item['action'].get('op'),
+                                 project=item['action'].get('project'),
+                                 project_status=item['project'].get('status'),
+                                 goal=item['action'].get('goal')) for item in skipped])
+            self._last_skipped_actions = list(skipped)
+            self._last_dispatched_actions = int(dispatched)
             if source.payload.get('bilibili_event'):
                 self._save('bilibili_processed:'+source.id,True)
             if (source.payload or {}).get('wake_kind')=='timer':
@@ -3897,7 +4085,7 @@ class Companion:
             segments=[dict(text=text,turn_id=source.id,part=index,parts=len(bubbles),
                 message_id=delivery_ledger.message_id(source.id,index),
                 images=attached if index==0 else [],delivery=delivery,
-                **(dict(system_notice=True) if (system_notice and bubbles) else {}),
+                **(dict(system_notice=True) if ((system_notice and bubbles) or text in notice_texts) else {}),
                 **(dict(recollection_ref=shared_ref,recollection_at=recollection.get('at')) if sharing_recollection else {}))
                 for index,text in enumerate(keep_texts)]
             for segment in segments:

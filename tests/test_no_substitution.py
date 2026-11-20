@@ -415,5 +415,190 @@ class BoundaryFactTest(_Base):
         self.assertEqual(core.repo._all('SELECT * FROM companion_deliveries'), [])
 
 
+class ToolCallProtocolTest(_Base):
+    """t34：工具调用不能被校验层丢掉；没有回执却说结果必须留痕。"""
+
+    def source(self, core):
+        return core.life.ingest(core.scope, 'message', 'user_report', '读一下那个文件', role='user')[0]
+
+    def test_work_action_without_goal_is_derived_not_dropped(self):
+        core = self.core()
+        source = self.source(core)
+        decision = dict(reply='', actions=[dict(kind='work', project='读文件', op='read',
+                                                arguments=json.dumps(dict(op='read', path='x.txt')))])
+        result = dict(message=dict(content=json.dumps(decision, ensure_ascii=False)))
+        decoded = core._decode_decision(result, wire=True, audit=core._audit, source=source)
+        # 少写 goal 不再整轮丢掉：从动作本身推出来，工具调用还在。
+        self.assertEqual(len(decoded['actions']), 1)
+        self.assertTrue(decoded['actions'][0]['goal'].strip())
+        self.assertEqual(decoded['actions'][0]['goal_source'], 'derived')
+
+    def test_command_action_without_command_still_retried(self):
+        core = self.core()
+        source = self.source(core)
+        decision = dict(reply='', actions=[dict(kind='command', project='跑一下')])
+        result = dict(message=dict(content=json.dumps(decision, ensure_ascii=False)))
+        with self.assertRaises(ValueError) as error:
+            core._decode_decision(result, wire=True, audit=core._audit, source=source)
+        self.assertIn('缺 command', str(error.exception))
+
+    def test_claim_without_a_tool_result_is_recorded(self):
+        core = self.core()
+        source = self.source(core)
+        reply = '读了，没这个文件。/tmp/x 报的是 No such file or directory，小鱼没糊弄您。'
+        decision = dict(reply=reply, actions=[], followups=[])
+        fact = core._record_protocol_facts(source, 'dialogue', decision, None, {}, reply)
+        self.assertEqual(fact['claims'], ['No such file or directory'])
+        self.assertFalse(fact['had_tool_result'])
+        # 她的原话一个字都没改。
+        self.assertEqual(decision['reply'], reply)
+        audits = [item for item in self.activity(core, 'no_substitution')]
+        self.assertEqual(len(audits), 1)
+        details = json.loads(audits[0]['details'])
+        self.assertEqual(details['source'], source.id)
+        self.assertFalse(details['had_tool_result'])
+
+    def test_claim_with_real_action_is_not_flagged(self):
+        core = self.core()
+        source = self.source(core)
+        decision = dict(reply='读到了：No such file or directory 之类的内容', actions=[
+            dict(kind='work', project='读文件', op='read', goal='读文件')])
+        self.assertIsNone(core._record_protocol_facts(source, 'dialogue', decision, None, {}, decision['reply']))
+        self.assertEqual(self.activity(core, 'no_substitution'), [])
+
+    def test_quoting_a_recent_tool_result_is_not_flagged(self):
+        """刚查过就引用回执里的内容（含 token 样式）不算无回执。"""
+        core = self.core()
+        core.life.ingest(core.scope, 'message', 'tool_observation', '内容：PROBE-TOKEN=t34fake',
+                         role='tool')
+        source = self.source(core)
+        decision = dict(reply='文件里写的是 PROBE-TOKEN=t34fake。', actions=[])
+        self.assertIsNone(core._record_protocol_facts(source, 'dialogue', decision, None, {}, decision['reply']))
+        self.assertEqual(self.activity(core, 'no_substitution'), [])
+
+    def test_plain_reply_without_claims_is_not_flagged(self):
+        core = self.core()
+        source = self.source(core)
+        decision = dict(reply='行，小鱼读一下。', actions=[])
+        self.assertIsNone(core._record_protocol_facts(source, 'dialogue', decision, None, {}, decision['reply']))
+        self.assertEqual(self.activity(core, 'no_substitution'), [])
+
+    def test_model_ignoring_the_respond_tool_is_a_system_fact(self):
+        core = self.core()
+        source = self.source(core)
+        decision = dict(reply='行，小鱼读一下。', actions=[])
+        core._record_protocol_facts(source, 'dialogue', decision, None,
+                                    dict(wire_schema_error='Expected exactly one respond tool call'),
+                                    decision['reply'])
+        titles = [item['text'] for item in self.activity(core, 'boundary')]
+        self.assertIn('系统：模型没有按工具协议回答', titles)
+        fact = json.loads(self.boundary_events(core)[0]['payload'])['boundary']
+        self.assertEqual(fact['rule'], 'model_ignored_tool_call')
+        self.assertEqual(fact['attribution'], 'system')
+
+
+class SkippedActionTest(_Base):
+    """t36：动作被跳过时必须有她看得见的〔系统〕回执；要不要重做由她决定。"""
+
+    def _project(self, core, key, status):
+        ref = core._project_ref(key)
+        core.tasks.ensure(core.scope, ref, key, key=key, status=status)
+        return ref
+
+    def _outgoing_texts(self, core):
+        texts = []
+        for row in core.repo._all(
+                "SELECT payload FROM events WHERE agent_id=? AND source_kind='self_output'",
+                (core.life.agent_id,)):
+            try:
+                value = json.loads(row['payload'] or '{}')
+            except ValueError:
+                value = {}
+            texts.append(str(value.get('text') or ''))
+        for item in (core._state('bubble_outbox') or []):
+            texts.append(str(item.get('text') or ''))
+        return [text for text in texts if text]
+
+    def _decision(self, reply, action):
+        return dict(reply=reply, followups=[], remember=[], projects=[], actions=[action],
+                    delivery={}, wake_after=0)
+
+    def _commit(self, core, source, decision):
+        # _commit 里会（在有 pending 气泡时）建发布任务，需要事件循环。
+        async def run():
+            return core._commit(source, decision)
+        return asyncio.run(run())
+
+    def test_done_project_action_gets_a_visible_system_receipt(self):
+        core = self.core()
+        self._project(core, '读文件', 'done')
+        source, _ = core.life.ingest(core.scope, 'message', 'user_report', '读一下那个文件', role='user')
+        action = dict(kind='command', project='读文件', command='cat /tmp/t38-probe.txt',
+                      goal='读文件内容')
+        self._commit(core, source, self._decision('小鱼这就去读，一个字都不改。', action))
+        # 既有语义不变：非 active 项目不派新动作
+        self.assertEqual(core.repo._all('SELECT * FROM companion_actions'), [])
+        texts = self._outgoing_texts(core)
+        receipts = [text for text in texts if '这个动作没有执行' in text]
+        self.assertEqual(len(receipts), 1)
+        self.assertIn('command', receipts[0])
+        self.assertIn('读文件', receipts[0])
+        self.assertIn('done', receipts[0])
+        self.assertIn('由你决定', receipts[0])
+        # 她自己的话原样保留，一个字都没改
+        self.assertIn('小鱼这就去读，一个字都不改。', texts)
+        # 同一条事实也进了下一轮她能看到的材料（边界事实 + 审计）
+        events = self.boundary_events(core)
+        self.assertTrue(events)
+        self.assertIn('动作没有执行', events[0]['detail'])
+        self.assertEqual(json.loads(events[0]['payload'])['boundary']['project_status'], 'done')
+
+    def test_skipped_action_counts_as_no_tool_result_for_claims(self):
+        core = self.core()
+        self._project(core, '读文件', 'done')
+        source, _ = core.life.ingest(core.scope, 'message', 'user_report', '读一下', role='user')
+        action = dict(kind='command', project='读文件', command='cat /tmp/t38-probe.txt')
+        decision = self._decision(
+            '读了，/tmp/t38-probe.txt 报的是 No such file or directory。', action)
+        self._commit(core, source, decision)
+        # _run_cognition 里由 _commit 的计数驱动这一步；这里直接调用同一入口。
+        core._record_protocol_facts(source, 'dialogue', decision, None, {},
+                                    decision['reply'])
+        audits = [item for item in self.activity(core, 'no_substitution')]
+        self.assertEqual(len(audits), 1)
+        details = json.loads(audits[0]['details'])
+        self.assertEqual(details['skipped_actions'], 1)
+        self.assertEqual(details['actions'], 0)
+        self.assertIn('No such file or directory', details['claims'])
+
+    def test_active_project_action_is_dispatched_without_skip_receipt(self):
+        core = self.core()
+        self._project(core, '读文件', 'active')
+        source, _ = core.life.ingest(core.scope, 'message', 'user_report', '读一下那个文件', role='user')
+        action = dict(kind='command', project='读文件', command='cat /tmp/t38-probe.txt',
+                      goal='读文件内容')
+        self._commit(core, source, self._decision('小鱼这就去读。', action))
+        rows = core.repo._all('SELECT action,status FROM companion_actions')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0]['action'])['kind'], 'command')
+        receipts = [text for text in self._outgoing_texts(core) if '这个动作没有执行' in text]
+        self.assertEqual(receipts, [])
+        self.assertEqual(self.boundary_events(core), [])
+
+    def test_skipped_action_fact_is_visible_in_the_next_turn_material(self):
+        core = self.core()
+        self._project(core, '读文件', 'done')
+        source, _ = core.life.ingest(core.scope, 'message', 'user_report', '读一下那个文件', role='user')
+        action = dict(kind='command', project='读文件', command='cat /tmp/t38-probe.txt')
+        self._commit(core, source, self._decision('小鱼这就去读。', action))
+        core._prepare_batches(source, 'dialogue')
+        material = core._messages(source, '继续', None, route=core._message_route(source))
+        blob = json.dumps(material, ensure_ascii=False)
+        self.assertIn('动作没有执行', blob)
+        self.assertIn('done', blob)
+
+
 if __name__ == '__main__':
     unittest.main()
+
+

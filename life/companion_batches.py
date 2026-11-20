@@ -93,6 +93,9 @@ DEFAULT_THRESHOLDS = {
     'background_window_seconds': 3600,
     'max_events_per_batch': 12,
     'max_batches_per_turn': 4,
+    # t37：未挂批的事件最多等这么久。到了还没送出去就置为 expired 并写原因——
+    # 账本不能永远「待办」：要么送到，要么有结论（不删行）。
+    'max_pending_age_seconds': 86400,
 }
 # 「正在等的结果」的覆盖窗口只用来说明这批覆盖了哪段时间，**不参与何时送**：
 # 结果到了就该送，等窗口反而是在压她的消息。所以它是常量，不是可配置的旋钮。
@@ -671,7 +674,8 @@ def refresh_delivery_events(core, *, now=None, message_ids=None):
             if state in RESOLVED_STATES:
                 sent_at = current.get('sent_at')
                 rendered_at = current.get('rendered_at')
-                # L3：UNKNOWN→RENDERED 没有经过 mark_sent 时 sent_at 为空，时间回退到 rendered_at。
+                # L3：UNKNOWN→RENDERED 没有经过 mark_sent 时 sent_at 为空：
+                # 文字用 rendered_at 当时间，结构化字段也回退，来源写进 time_basis。
                 stamp = sent_at or rendered_at or current.get('updated_at') or at
                 basis = ('sent_at' if sent_at else
                          'rendered_at' if rendered_at else 'updated_at')
@@ -679,15 +683,17 @@ def refresh_delivery_events(core, *, now=None, message_ids=None):
                 detail = _resolved_detail(current)
                 payload['state'] = 'resolved'
                 payload['resolved_state'] = state
-                payload['sent_at'] = sent_at
+                payload['sent_at'] = sent_at or rendered_at
                 payload['resolved_at'] = stamp
                 payload['time_basis'] = basis
                 payload.pop('failure_reason', None)
                 if 'queued' not in seen:
                     first_at = (payload.get('timeline') or [{}])[0].get('at') if payload.get('timeline') else None
                     timeline.insert(0, dict(state='queued', at=first_at))
-                if 'sent' not in seen:
-                    timeline.append(dict(state='sent', at=_readable(stamp), basis=basis))
+                # 没有真发出去的记录（sent_at 为空）时不要伪造一个 sent 节点：
+                # render-only 路径只写 rendered，避免「sent」这个从未发生过的状态。
+                if sent_at and 'sent' not in seen:
+                    timeline.append(dict(state='sent', at=_readable(sent_at)))
                 if state == 'rendered' and 'rendered' not in seen:
                     timeline.append(dict(state='rendered',
                                          at=_readable(rendered_at or stamp)))
@@ -1046,6 +1052,35 @@ def pending_events(core, *, now=None):
     return [_row_event(row) for row in rows]
 
 
+def inconsistent_events(core, *, limit=50):
+    """只读盘点：**pending 事件挂在非 pending（多为 delivered）批次**上的脏行。
+
+    t35 事故的盘点口径（生产库同款只读 SQL）：
+
+    ```sql
+    SELECT e.event_id, e.source_type, e.occurred_at, e.batch_id, b.state, b.delivered_at
+      FROM companion_batch_events e
+      JOIN companion_batches b ON b.batch_id = e.batch_id
+     WHERE e.state = 'pending' AND b.state <> 'pending'
+     ORDER BY e.created_at;
+    ```
+
+    处置：不删、不改写这些事件。它们是 pending，下一轮 ``select`` 会把它们重新挂到
+    一个 open 批次并正常送达（``_store_batch`` 会改 batch_id）；已经 delivered 的
+    事件不在 ``pending_events`` 里，所以不会重复投递。
+    """
+    repo, agent_id, scope_id = _repo(core), _agent_id(core), _scope_id(core)
+    ensure(repo)
+    rows = repo._all(
+        "SELECT e.event_id,e.source_type,e.occurred_at,e.batch_id,"
+        "b.state AS batch_state,b.delivered_at "
+        "FROM companion_batch_events e JOIN companion_batches b ON b.batch_id=e.batch_id "
+        "WHERE e.agent_id=? AND e.scope_id=? AND e.state='pending' AND b.state<>'pending' "
+        "ORDER BY e.created_at LIMIT ?",
+        (agent_id, scope_id, int(limit)))
+    return [dict(row) for row in rows]
+
+
 # ------------------------------------------------------------------ 选批
 def _last_delivered_at(core, topic):
     repo = _repo(core)
@@ -1105,20 +1140,34 @@ def select(core, *, now=None, wake_reason='', conversation=False, purpose=None):
     return batches
 
 
+def _open_batch_id(repo, agent_id, scope_id, level, topic, bucket):
+    """挑一个**仍是 pending** 的批次 id：绝不把事件挂到已送达（终态）的批次上。
+
+    基线：同一 (级别, 话题, 窗口) 的首批用稳定 id；它已送达时依次找 retake-1/2/…
+    里第一个「不存在或仍 pending」的 id。
+
+    t35 事故：以前用「最近 N 秒内的批次数」当 retake 序号。窗口一滑，序号会回到 1，
+    于是算出一个**已经送达**的旧 retake id，事件就被挂进终态批次里（永远 pending 或重投）。
+    现在序号只用来找空位，找到后还要确认它不是终态；找不到就退到时间戳兜底，保证有进展。
+    """
+    base = stable_id('batch', agent_id, scope_id, str(level), topic, str(bucket))
+    row = repo._one('SELECT state FROM companion_batches WHERE batch_id=?', (base,))
+    if row is None or row['state'] == 'pending':
+        return base
+    for seq in range(1, 64):
+        candidate = stable_id('batch', agent_id, scope_id, str(level), topic, str(bucket),
+                              'retake', str(seq))
+        row = repo._one('SELECT state FROM companion_batches WHERE batch_id=?', (candidate,))
+        if row is None or row['state'] == 'pending':
+            return candidate
+    return stable_id('batch', agent_id, scope_id, str(level), topic, str(bucket),
+                     'overflow', str(int(time.time() * 1000)))
+
+
 def _store_batch(core, *, level, topic, events, rest, at, wake_reason, limits, purpose=None,
                  unexpanded_reason=''):
     repo, agent_id, scope_id, epoch = _repo(core), _agent_id(core), _scope_id(core), _epoch(core)
     bucket = int(at // max(1, int(limits['state_window_seconds'])))
-    batch_id = stable_id('batch', agent_id, scope_id, str(level), topic, str(bucket))
-    existing = repo._one('SELECT state FROM companion_batches WHERE batch_id=?', (batch_id,))
-    if existing is not None and existing['state'] == 'delivered':
-        # 同一个窗口里已经送过一批：**不能复用它**，否则会把已送达的行重写成 pending，
-        # 台账就和实际送达对不上了。换一个 id，让新旧两批都能逐条对账。
-        count = repo._one('SELECT COUNT(*) AS n FROM companion_batches WHERE agent_id=? AND scope_id=? '
-                          'AND topic=? AND created_at>=?',
-                          (agent_id, scope_id, topic, at - float(_window_seconds(level, limits))))
-        batch_id = stable_id('batch', agent_id, scope_id, str(level), topic, str(bucket),
-                             'retake', str(int((count['n'] if count else 0) or 0) + 1))
     first_at = min(event['occurred_at'] for event in events)
     last_at = max(event['occurred_at'] for event in events)
     coverage = dict(event_ids=[event['event_id'] for event in events], count=len(events),
@@ -1136,6 +1185,8 @@ def _store_batch(core, *, level, topic, events, rest, at, wake_reason, limits, p
                    level_name=LEVEL_NAMES.get(level), timing=LEVEL_TIMING.get(level),
                    shared=_shared_context(events))
     with repo.tx():
+        # 建批与挂事件的 id 必须在同一事务里定：谁也不能把事件挂到一个终态批次上。
+        batch_id = _open_batch_id(repo, agent_id, scope_id, level, topic, bucket)
         repo._exec('INSERT OR IGNORE INTO companion_batches'
                    '(batch_id,agent_id,scope_id,epoch,level,topic,wake_reason,coverage,unexpanded,context,'
                    'state,attempts,last_error,created_at,updated_at)'

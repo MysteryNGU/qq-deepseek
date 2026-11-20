@@ -396,7 +396,8 @@ class LevelsTest(unittest.TestCase):
         selected = batches.select(core, now=5003.0, conversation=False)
         self.assertTrue(selected)
         # 迟到确认：UNKNOWN → RENDERED（没有经过 mark_sent，sent_at 为空）
-        ledger.confirm_render(core.repo, mid, now=5004.0)
+        rendered_at = 5004.0
+        ledger.confirm_render(core.repo, mid, now=rendered_at)
         batches.deliver(core, selected, 'turn-36', now=5005.0)
         row = core.repo._one("SELECT source_type,title,detail,payload FROM companion_batch_events "
                              "WHERE source_type='delivery_unknown' ORDER BY created_at DESC LIMIT 1")
@@ -408,9 +409,11 @@ class LevelsTest(unittest.TestCase):
         self.assertNotIn('可能已经发出、但没有确认', row['title'])
         self.assertNotIn('不知道它到没到', row['detail'])
         self.assertEqual(payload['time_basis'], 'rendered_at')
+        # render-only 路径没有真的「sent」记录：时间线只写到 rendered，不伪造 sent。
         states = [item['state'] for item in payload['timeline']]
-        self.assertIn('sent', states)
         self.assertIn('rendered', states)
+        self.assertNotIn('sent', states)
+        self.assertEqual(payload['sent_at'], rendered_at)
 
     def test_explicit_failure_during_generation_uses_failed_wording(self):
         """L2：明确失败要有自己的句子，不能拼成「还没有回执＋不知道到没到」。"""
@@ -456,7 +459,8 @@ class LevelsTest(unittest.TestCase):
         self.assertIn('已经发出去了（%s）' % expected, row['detail'])
         self.assertNotIn('时间未记录', row['detail'])
         payload = json.loads(row['payload'])
-        self.assertIsNone(payload['sent_at'])
+        # 结构化字段回退到 rendered_at，但来源写进 time_basis，不冒充真的 sent_at。
+        self.assertEqual(payload['sent_at'], rendered_at)
         self.assertEqual(payload['time_basis'], 'rendered_at')
 
     # ------------------------------------------------------------ 采集边界
@@ -673,6 +677,116 @@ class WorldStateTest(unittest.TestCase):
                 during_work = event
         self.assertTrue(during_work['payload']['affects_current_task'])
         self.assertEqual(batches.classify(during_work, subscriptions=[]), batches.AWAITED)
+
+
+class LedgerPlacementTest(unittest.TestCase):
+    """t35：事件不得挂到已送达（终态）批次上；历史脏行只盘点、不丢、不重投。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='delivery-ledger-')
+        self.addCleanup(self.temp.cleanup)
+        self.life = LifeRuntime(Path(self.temp.name) / 'life.db')
+        self.addCleanup(self.life.close)
+        self.core = FakeCore(self.life)
+
+    def _input(self, index, at):
+        return _event('user_input', 'evt-%d' % index, title='她说的第 %d 段' % index,
+                      detail='第 %d 句' % index, at=at,
+                      payload=dict(index=index - 1), topic='conversation')
+
+    def _event_row(self, ref):
+        return self.core.repo._one('SELECT batch_id,state FROM companion_batch_events WHERE source_ref=?',
+                                   (ref,))
+
+    def test_delivered_batch_never_receives_later_events(self):
+        base = 1_800_000_000.0
+        batches.record(self.core, [self._input(1, base)])
+        first = batches.select(self.core, now=base, conversation=True)
+        batches.deliver(self.core, first, 'turn-1', now=base + 5)
+        # 33 秒后同一窗口又来一条：新建 retake 批并送达
+        later = base + 33
+        batches.record(self.core, [self._input(2, later)])
+        second = batches.select(self.core, now=later, conversation=True)
+        batches.deliver(self.core, second, 'turn-2', now=later + 5)
+        delivered = {first[0]['batch_id'], second[0]['batch_id']}
+        # 7 分钟后再来一条：必须进一个**新的 pending 批次**，不能挂到已送达的批次上
+        third = base + 7 * 60
+        batches.record(self.core, [self._input(3, third)])
+        selected = batches.select(self.core, now=third, conversation=True)
+        self.assertTrue(selected)
+        new_batch = selected[0]['batch_id']
+        self.assertNotIn(new_batch, delivered)
+        row = self.core.repo._one('SELECT state,delivered_at FROM companion_batches WHERE batch_id=?',
+                                  (new_batch,))
+        self.assertEqual(row['state'], 'pending')
+        self.assertIsNone(row['delivered_at'])
+        event = self._event_row('evt-3')
+        self.assertEqual(event['batch_id'], new_batch)
+        self.assertEqual(event['state'], 'pending')
+
+    def test_pending_events_never_belong_to_a_terminal_batch(self):
+        base = 1_800_000_000.0
+        for index, offset in enumerate((0, 20, 40, 300, 700, 1200), start=1):
+            at = base + offset
+            batches.record(self.core, [self._input(index, at)])
+            selected = batches.select(self.core, now=at, conversation=True)
+            if selected:
+                batches.deliver(self.core, selected, 'turn-%d' % index, now=at + 2)
+        # 不变量：pending 事件所属批次不得是 delivered（delivered_at 非空）
+        self.assertEqual(batches.inconsistent_events(self.core), [])
+        bad = self.core.repo._all(
+            "SELECT e.event_id FROM companion_batch_events e JOIN companion_batches b "
+            "ON b.batch_id=e.batch_id WHERE e.state='pending' AND b.state='delivered'")
+        self.assertEqual(bad, [])
+
+    def test_each_event_is_delivered_at_most_once(self):
+        base = 1_800_000_000.0
+        for index, offset in enumerate((0, 33, 420, 900), start=1):
+            at = base + offset
+            batches.record(self.core, [self._input(index, at)])
+            selected = batches.select(self.core, now=at, conversation=True)
+            if selected:
+                batches.deliver(self.core, selected, 'turn-%d' % index, now=at + 2)
+        duplicates = self.core.repo._all(
+            'SELECT event_id, COUNT(*) AS n FROM companion_batch_delivery_events '
+            'GROUP BY event_id HAVING COUNT(*)>1')
+        self.assertEqual([dict(row) for row in duplicates], [])
+        ok = self.core.repo._all(
+            "SELECT d.event_id FROM companion_batch_delivery_events d "
+            "JOIN companion_batch_deliveries l ON l.batch_id=d.batch_id AND l.decision_id=d.decision_id "
+            "WHERE l.model_ok=1 GROUP BY d.event_id HAVING COUNT(*)>1")
+        self.assertEqual([dict(row) for row in ok], [])
+
+    def test_legacy_dirty_rows_are_inventoried_and_healed_without_loss(self):
+        base = 1_800_000_000.0
+        batches.record(self.core, [self._input(1, base)])
+        first = batches.select(self.core, now=base, conversation=True)
+        batches.deliver(self.core, first, 'turn-1', now=base + 5)
+        delivered_batch = first[0]['batch_id']
+        # 手工制造一条生产同款脏行：pending 事件挂在已送达批次上
+        with self.core.repo.tx():
+            self.core.repo._exec(
+                'INSERT INTO companion_batch_events'
+                '(event_id,agent_id,scope_id,epoch,source_type,source_ref,action_ref,topic,level,title,detail,'
+                'audience,affects_current_action,stop_state,payload,occurred_at,created_at,state,batch_id)'
+                ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                ('dirty-1', self.life.agent_id, self.core.scope.scope_id, 0, 'user_input', 'evt-dirty',
+                 '', 'conversation', 2, '脏行', '历史脏行', '', 0, '', '{}', base + 30, base + 30,
+                 'pending', delivered_batch))
+        inventory = batches.inconsistent_events(self.core)
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0]['event_id'], 'dirty-1')
+        self.assertEqual(inventory[0]['batch_state'], 'delivered')
+        # 下一轮 select 把它重新挂到一个 open 批次：不丢、也不会重复投递已送达的事件
+        selected = batches.select(self.core, now=base + 40, conversation=True)
+        self.assertTrue(selected)
+        healed = self._event_row('evt-dirty')
+        self.assertNotEqual(healed['batch_id'], delivered_batch)
+        self.assertEqual(healed['state'], 'pending')
+        self.assertEqual(batches.inconsistent_events(self.core), [])
+        delivered_events = [row['event_id'] for row in self.core.repo._all(
+            'SELECT event_id FROM companion_batch_delivery_events')]
+        self.assertEqual(delivered_events.count(first[0]['events'][0]['event_id']), 1)
 
 
 class AudienceBoundaryTest(unittest.TestCase):
