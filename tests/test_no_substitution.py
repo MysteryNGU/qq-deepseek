@@ -288,6 +288,16 @@ class ParseFailureTest(_Base):
         self.assertTrue(payload.get('system_notice'))
         self.assertTrue(payload['source'].get('system_notice'))
 
+    def test_system_notice_never_lands_on_a_user_visible_channel(self):
+        """〔系统〕是给她看的事实，不是给主人的消息（2026-11-21 用户明确要求）。"""
+        core = self.core()
+        notice = dict(text='〔系统〕这个动作没有执行。', system_notice=True)
+        self.assertEqual(core._segment_channels(notice, ['all']), [])
+        self.assertEqual(core._segment_channels(notice, ['desktop']), [])
+        # 她自己的话照旧走原来的通道。
+        self.assertEqual(core._segment_channels(dict(text='好'), ['all']), ['all'])
+        self.assertEqual(core._segment_channels(dict(text='好'), ['desktop']), ['desktop'])
+
 
 # -------------------------------------------------------------- 三、边界事实
 class BoundaryFactTest(_Base):

@@ -1390,6 +1390,15 @@ class Companion:
             self._audit('activity','未发送的后续气泡已取消。',reason=reason,count=len(pending),
                         turn_ids=list(dict.fromkeys(row['turn_id'] for row in pending)))
 
+    def _segment_channels(self, segment, targets):
+        """t38：〔系统〕署名的事实只进她的上下文，不落任何用户可见通道。
+
+        2026-11-21 用户要求：「不要把系统消息发给我，发给小鱼就行了」。
+        这些段落仍然要 _store_bubble 落库（她下一轮看得到），只是 channels 为空，
+        不进 outbox 的对外投递，也不拼进这一轮的返回文本。
+        """
+        return [] if (segment or {}).get('system_notice') else list(targets or [])
+
     def _store_bubble(self, bubble):
         """Caller commits this visible message and its outbox removal together."""
         images=wire_images(self.home,bubble['images'])
@@ -1453,7 +1462,9 @@ class Companion:
                     message=self._store_bubble(head)
                     self._save('bubble_outbox',pending[1:])
                 delivery_ledger.mark_sent(self.repo,mid,event_ref=str(message.get('id') or ''))
-                self._emit('message',**message)
+                # t38：〔系统〕只落库给她看，不发给主人。
+                if not head.get('system_notice'):
+                    self._emit('message',**message)
             except Exception as error:
                 delivery_ledger.fail(self.repo,mid,reason=type(error).__name__)
                 with self.repo.tx():self._save('bubble_outbox',pending[1:])
@@ -4090,9 +4101,13 @@ class Companion:
                 for index,text in enumerate(keep_texts)]
             for segment in segments:
                 # 先登记发送意图，再进 outbox；同一 message_id 不会产生第二个气泡。
+                # t38：〔系统〕署名的事实只进她的上下文，不推到主人的对话里
+                # （2026-11-21 用户要求：「不要把系统消息发给我，发给小鱼就行了」）。
+                # channels 置空＝这条不落在任何用户可见通道，但仍在历史里留痕。
+                channels = self._segment_channels(segment, delivery['targets'])
                 self._queue_delivery(dict(mid=segment['message_id'], turn_id=source.id,
                                           segment=segment['part'], text=segment['text'],
-                                          images=segment['images'], channels=delivery['targets'],
+                                          images=segment['images'], channels=channels,
                                           conversation_ref=str((route.get('input_source') or {})
                                                                .get('conversation_id') or '')))
             if silenced:
@@ -4104,7 +4119,9 @@ class Companion:
                 stored=self._store_bubble(first)
                 delivery_ledger.mark_sending(self.repo,first['message_id'])
                 delivery_ledger.mark_sent(self.repo,first['message_id'],event_ref=str(stored.get('id') or ''))
-                outgoing.append(stored)
+                # t38：〔系统〕不进 outgoing＝不推给主人，也不拼进这一轮的返回文本。
+                if not first.get('system_notice'):
+                    outgoing.append(stored)
             self._save('bubble_outbox',pending)
             promised = self._record_commitments(source,decision,route)
             self._schedule_commitments(promised,source.id)

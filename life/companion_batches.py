@@ -107,6 +107,7 @@ POLICY_FIELDS = {
     'background_window_seconds': 'delivery_background_window_seconds',
     'max_events_per_batch': 'delivery_max_events_per_batch',
     'max_batches_per_turn': 'delivery_max_batches_per_turn',
+    'max_pending_age_seconds': 'delivery_max_pending_age_seconds',
 }
 
 
@@ -1041,12 +1042,91 @@ def _expire_forgotten(repo, agent_id, scope_id, epoch):
                    (agent_id, scope_id, epoch))
 
 
-def pending_events(core, *, now=None):
-    """未送达、未过期、且仍在当前遗忘纪元内的事件。"""
-    del now
+def _heal_dangling(repo, agent_id, scope_id):
+    """把「batch_id 指向不存在批次」的行退回未展开（batch_id=''），返回修了几条。
+
+    t37 事故：batch_id 是空串（不是 NULL）时，JOIN 查不到、`IS NULL` 也查不到，
+    看起来像悬挂引用。空串本身表示「还没展开」，但指向不存在批次的非空 batch_id
+    必须被清掉，否则不变量（要么空、要么指向存在的批次）不成立。
+    """
+    with repo.tx():
+        rows = repo._all(
+            "SELECT e.event_id FROM companion_batch_events e "
+            "WHERE e.agent_id=? AND e.scope_id=? AND e.batch_id<>'' "
+            "AND NOT EXISTS (SELECT 1 FROM companion_batches b WHERE b.batch_id=e.batch_id)",
+            (agent_id, scope_id))
+        for row in rows:
+            repo._exec("UPDATE companion_batch_events SET batch_id='' WHERE event_id=?",
+                       (row['event_id'],))
+    return [row['event_id'] for row in rows]
+
+
+def dangling_events(core, *, limit=50):
+    """只读盘点：batch_id 非空、但批次表里没有对应行的条数（不变量应为 0）。"""
+    repo, agent_id, scope_id = _repo(core), _agent_id(core), _scope_id(core)
+    ensure(repo)
+    return [dict(row) for row in repo._all(
+        "SELECT e.event_id,e.source_type,e.occurred_at,e.batch_id "
+        "FROM companion_batch_events e "
+        "WHERE e.agent_id=? AND e.scope_id=? AND e.batch_id<>'' "
+        "AND NOT EXISTS (SELECT 1 FROM companion_batches b WHERE b.batch_id=e.batch_id) "
+        "ORDER BY e.created_at LIMIT ?", (agent_id, scope_id, int(limit)))]
+
+
+def expire_stale(core, *, now=None, max_age=None):
+    """未挂批的 pending 事件等太久 → 置为 expired，原因写进 payload（不删行）。
+
+    「未挂批」= batch_id 为空（还没被 select 选中）。挂在 pending 批次里的事件不算：
+    那是在等投递（attempts 记账），不能在这里判死。
+    """
     repo, agent_id, scope_id, epoch = _repo(core), _agent_id(core), _scope_id(core), _epoch(core)
     ensure(repo)
+    at = _now(now)
+    limits = thresholds(core)
+    raw = max_age if max_age is not None else limits.get('max_pending_age_seconds')
+    age = float(raw or 86400)
+    if age <= 0:
+        return []
+    rows = repo._all(
+        "SELECT event_id,payload,occurred_at,created_at,source_type FROM companion_batch_events "
+        "WHERE agent_id=? AND scope_id=? AND epoch=? AND state='pending' AND batch_id=''",
+        (agent_id, scope_id, epoch))
+    expired = []
+    with repo.tx():
+        for row in rows:
+            # 用「发生时间 / 入库时间」里较新的那个算等待时长：系统时钟回拨或补录旧事件
+            # 都不该被误判成「等了三天」。生产里两者几乎相同。
+            reference = max(float(row['occurred_at'] or at), float(row['created_at'] or at))
+            waited = max(0.0, at - reference)
+            if waited <= age:
+                continue
+            try:
+                payload = json.loads(row['payload'] or '{}')
+            except ValueError:
+                payload = {}
+            payload['settled'] = dict(
+                at=at, state='expired', rule='max_pending_age',
+                max_age_seconds=age, waited_seconds=round(waited, 1),
+                reason=('等了 %.1f 小时仍没有找到可送达的时机（最长等待 %s 秒）；'
+                        '这条没有被删除，只是不再算作待办' % (waited / 3600.0, int(age))))
+            repo._exec("UPDATE companion_batch_events SET state='expired',batch_id='',payload=? "
+                       "WHERE event_id=?", (json.dumps(payload, ensure_ascii=False), row['event_id']))
+            expired.append(dict(event_id=row['event_id'], source_type=row['source_type'],
+                                waited_seconds=round(waited, 1), reason=payload['settled']['reason']))
+    return expired
+
+
+def pending_events(core, *, now=None):
+    """未送达、未过期、且仍在当前遗忘纪元内的事件。"""
+    at = _now(now)
+    repo, agent_id, scope_id, epoch = _repo(core), _agent_id(core), _scope_id(core), _epoch(core)
+    ensure(repo)
+    _heal_dangling(repo, agent_id, scope_id)
     _expire_forgotten(repo, agent_id, scope_id, epoch)
+    try:
+        expire_stale(core, now=at)
+    except Exception:  # noqa: BLE001 - 过期结算失败不能拖垮本轮投递
+        log.warning('过期结算失败，本轮按原样继续', exc_info=True)
     rows = repo._all("SELECT * FROM companion_batch_events WHERE agent_id=? AND scope_id=? "
                      "AND state='pending' AND epoch=? ORDER BY occurred_at ASC", (agent_id, scope_id, epoch))
     return [_row_event(row) for row in rows]
@@ -1089,13 +1169,19 @@ def _last_delivered_at(core, topic):
     return float(row['at']) if row and row['at'] else 0.0
 
 
-def _due(core, level, topic, at, limits):
+def _due(core, level, topic, at, limits, events=()):
     if level in (IMMEDIATE, AWAITED, STATE):
         return True
     window_key = {CONVERSATION: 'conversation_window_seconds', DAILY: 'daily_window_seconds',
                   BACKGROUND: 'background_window_seconds'}.get(level, 'state_window_seconds')
+    window = float(limits[window_key])
+    # t37：未挂批的事件如果已经等过一个完整窗口，就不能再被「最近送过同话题」压住——
+    # 否则它会在窗口边界上永远排不上（生产 01:24–02:15 的 4 条 pending 就是这样待着的）。
+    for event in events:
+        if not str(event.get('batch_id') or '') and at - float(event.get('occurred_at') or at) >= window:
+            return True
     last = _last_delivered_at(core, topic)
-    if last and at - last < float(limits[window_key]):
+    if last and at - last < window:
         # 订阅命中的 6 级可以提前；订阅说「别叫我」的一律按窗口走。
         return False
     return True
@@ -1129,9 +1215,9 @@ def select(core, *, now=None, wake_reason='', conversation=False, purpose=None):
             break
         if level == CONVERSATION and not conversation:
             continue
-        if not _due(core, level, topic, at, limits):
-            continue
         rows = sorted(groups[(level, topic)], key=lambda item: item['occurred_at'])
+        if not _due(core, level, topic, at, limits, rows):
+            continue
         cap = int(limits['max_events_per_batch'])
         chosen, rest = rows[:cap], rows[cap:]
         batches.append(_store_batch(core, level=level, topic=topic, events=chosen, rest=rest,

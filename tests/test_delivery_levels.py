@@ -789,6 +789,95 @@ class LedgerPlacementTest(unittest.TestCase):
         self.assertEqual(delivered_events.count(first[0]['events'][0]['event_id']), 1)
 
 
+class HangingEventTest(unittest.TestCase):
+    """t37：batch_id 为空/悬挂的 pending 事件必须重挂并送达，或过期有结论；悬挂引用为 0。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='delivery-hanging-')
+        self.addCleanup(self.temp.cleanup)
+        self.life = LifeRuntime(Path(self.temp.name) / 'life.db')
+        self.addCleanup(self.life.close)
+        self.core = FakeCore(self.life)
+        batches.ensure(self.core.repo)
+
+    def _seed(self, event_id, occurred_at, *, source_type='daily_experience', level=5, batch_id=''):
+        with self.core.repo.tx():
+            self.core.repo._exec(
+                'INSERT OR IGNORE INTO companion_batch_events'
+                '(event_id,agent_id,scope_id,epoch,source_type,source_ref,action_ref,topic,level,title,detail,'
+                'audience,affects_current_action,stop_state,payload,occurred_at,created_at,state,batch_id)'
+                ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (event_id, self.life.agent_id, self.core.scope.scope_id, 0, source_type, 'ref-' + event_id,
+                 '', '', int(level), event_id, '正文', '', 0, '', '{}', occurred_at, occurred_at,
+                 'pending', batch_id))
+
+    def _row(self, event_id):
+        return self.core.repo._one('SELECT * FROM companion_batch_events WHERE event_id=?', (event_id,))
+
+    def test_unlinked_event_is_relinked_and_delivered_with_ledger(self):
+        base = 1_800_000_000.0
+        self._seed('evt-hang-1', base)
+        # 50 分钟后：过了日报窗口，select 必须把它重新挂进一个批次
+        selected = batches.select(self.core, now=base + 50 * 60, conversation=True)
+        self.assertTrue(selected)
+        row = self._row('evt-hang-1')
+        self.assertNotEqual(row['batch_id'], '')
+        self.assertEqual(row['state'], 'pending')
+        # 真的送出去：事件终态 delivered，并且投递台账里能按事件查到
+        batches.deliver(self.core, selected, 'turn-hang', now=base + 50 * 60 + 1)
+        row = self._row('evt-hang-1')
+        self.assertEqual(row['state'], 'delivered')
+        delivered = self.core.repo._all(
+            "SELECT event_id FROM companion_batch_delivery_events WHERE event_id='evt-hang-1'")
+        self.assertEqual(len(delivered), 1)
+
+    def test_dangling_batch_id_is_healed_before_select(self):
+        base = 1_800_000_000.0
+        self._seed('evt-ghost', base, batch_id='batch_does_not_exist')
+        self.assertEqual(len(batches.dangling_events(self.core)), 1)
+        # pending_events 会先修悬挂引用（退回未展开），再交给 select 重挂
+        events = batches.pending_events(self.core, now=base + 50 * 60)
+        self.assertEqual(batches.dangling_events(self.core), [])
+        self.assertEqual([event['event_id'] for event in events], ['evt-ghost'])
+        selected = batches.select(self.core, now=base + 50 * 60, conversation=True)
+        self.assertTrue(selected)
+        self.assertEqual(self._row('evt-ghost')['batch_id'], selected[0]['batch_id'])
+        self.assertEqual(batches.dangling_events(self.core), [])
+
+    def test_stale_unlinked_event_expires_with_reason_and_is_kept(self):
+        base = 1_800_000_000.0
+        self._seed('evt-stale', base - 3 * 86400)
+        # 默认最长等待 24 小时：三天没送出去的事件置为 expired，原因写进 payload
+        events = batches.pending_events(self.core, now=base)
+        self.assertEqual(events, [])
+        row = self._row('evt-stale')
+        self.assertEqual(row['state'], 'expired')
+        self.assertEqual(row['batch_id'], '')
+        payload = json.loads(row['payload'])
+        self.assertEqual(payload['settled']['state'], 'expired')
+        self.assertIn('不再算作待办', payload['settled']['reason'])
+        # 不删历史：行还在，可以查到为什么
+        self.assertIsNotNone(row)
+        # 也不会再被 select 选中
+        self.assertFalse(batches.select(self.core, now=base, conversation=True))
+
+    def test_unlinked_event_older_than_window_is_due_even_if_topic_just_delivered(self):
+        base = 1_800_000_000.0
+        # 同话题刚送过一批（窗口还没过），正常会被 _due 压住
+        with self.core.repo.tx():
+            self.core.repo._exec(
+                'INSERT INTO companion_batches(batch_id,agent_id,scope_id,epoch,level,topic,wake_reason,'
+                'coverage,unexpanded,context,state,attempts,last_error,created_at,updated_at,delivered_at)'
+                ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                ('batch_recent', self.life.agent_id, self.core.scope.scope_id, 0, 5,
+                 'daily:daily_experience', '', '{}', '{}', '{}', 'delivered', 1, '',
+                 base + 10, base + 20, base + 20))
+        self._seed('evt-overdue', base - 2000)
+        selected = batches.select(self.core, now=base + 60, conversation=True)
+        ids = [event['event_id'] for batch in selected for event in batch['events']]
+        self.assertIn('evt-overdue', ids)
+
+
 class AudienceBoundaryTest(unittest.TestCase):
     """采集边界：别的会话的投递、别的受众的日常经历、别的 scope 的子任务都不进这一批。"""
 
