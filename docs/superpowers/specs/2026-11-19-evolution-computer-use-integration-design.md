@@ -65,6 +65,62 @@ Linux启动明确配置Chromium绝对路径、专用profile、`--headless=new`�
 - 适配器关闭desktop、inbox、消息归档，使用`messages:false`和`inbox:false`，不启动Windows辅助脚本。
 - 通信走本机stdio，不开放公网MCP或CDP端口；登录凭证留在专用profile，不进入模型上下文。
 
+### 4.2.1 内存口径（2026-11-19 实测校正，此前多处判断用的是错尺子）
+
+**§4.2 里「1GiB 上限」「1.5GiB 可用」这些数，必须注明用哪个口径量。** 实测发现三套口径差异极大，混用会直接得出相反结论。
+
+判据（按问题选尺子）：
+
+| 问题 | 该看 | 不该看 |
+|---|---|---|
+| 这个服务真实占多少 | `memory.stat` 的 `anon` **+ `swap`** | `memory.current`（含可回收页缓存） |
+| 设 MemoryMax | `anon + swap` 再留余量 | `memory.current`（缓存被算进去会误杀） |
+| 这台机器还剩多少 | `/proc/meminfo` 的 `MemAvailable` | 各 cgroup 相加 |
+
+实测反例（同一台机、同一时刻）：
+
+```
+companion.service      memory.current 158 MB   anon 156 MB   file   1 MB
+                       ↑ 页缓存少时两口径接近
+companion.service(前一天) memory.current 590 MB   anon 168 MB   file 417 MB
+                       ↑ 同一服务，含缓存时报大了 3.5 倍
+companion-embedding    memory.current 497 MB   anon 218 MB   swap 219 MB
+                       ↑ 真实需求 = 218+219 = 542 MB，单看 anon 漏一半
+chrome scope           anon 150 MB / RSS 之和 1229 MB
+                       ↑ RSS 之和把同一份 ~300MB 的 chrome 二进制按进程数重复计
+systemd-journald       memory.current  41 MB   anon   0 MB
+                       ↑ 整份都是缓存
+```
+
+四条细则：
+
+1. **`memory.current` ≠ 真实占用**：等于 `anon + file(页缓存) + kernel + shmem`，页缓存可回收。
+2. **`anon` ≠ 真实需求**：不含已换出到 swap 的页。必须 `anon + swap`，或读 `/proc/<pid>/smaps_rollup` 的 `Rss + Swap`。
+3. **`anon_thp` 要单看**：`anon` 含透明大页，THP 驻留可能虚高于实际使用（本机实测该服务 `AnonHugePages = 0`，本次不影响，但口径要保留）。
+4. **RSS 相加会重复计算共享库与 CoW 页**，16 个 chrome 进程相加 1229 MB，而 cgroup 实际只有 150 MB。这个数只能用于「同一个进程前后对比」，不能用于容量判断。
+
+另：**报告任何内存数字时必须同时写明口径与取数时间**。本文档此前的 590 MB / 635 MB 等数均为 `memory.current`，已在此校正。
+
+### 4.2.2 上游依赖的真实开销：92 MB 的模型配 450 MB 的运行时
+
+`companion-embedding.service` 是浏览器接入之外、但与之竞争同一台 3.5 GB 机器的主要开销方。实测（2026-11-19 23:46）：
+
+```
+模型文件  bge-small-zh-v1.5 / model.safetensors = 92 MB
+进程内存  anon 218 MB + swap 219 MB = 真实需求 542 MB
+          → 其中约 450 MB 是 CPython + PyTorch 运行时，不是模型权重
+
+推理延迟  首次 62 ms；连续 10 次中位 102 ms（最小 100 / 最大 121）
+换页      10 次推理期间 pswpin 增量 0~1 页，pswpout 全程 0
+          → swap 里存的是长期不访问的冷数据，不是权重
+          → 单次推理不受 swap 影响
+```
+
+**结论（可直接采用，不必再验）：swap 占用本身不构成推理延迟。**
+**但这也意味着：这台机器上唯一可能大幅下降的一块，就是那个 450 MB 的运行时**（换 ONNX Runtime 等更轻的后端、或量化）。模型本身只有 92 MB，已经没有多少可降空间。
+
+**本节只记录，不建议在浏览器接入阶段动它**——换推理后端是大改动，而当前 102 ms 的延迟是合格值。留给独立的容量规划决策。
+
 ### 4.3 会话、生命周期与站点可达性
 
 同一浏览器按任务会话串行持有：一个任务多步期间不能被另一任务导航走。提供session_id/lease，完成、取消、超时释放；用户插话可取消或暂停，恢复前重新读取页面。默认空闲2分钟释放任务租约、单任务最长10分钟，均可配置；租约释放不等于自动重跑未决操作。
